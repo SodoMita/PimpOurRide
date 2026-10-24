@@ -36,6 +36,9 @@ const char *monitor_mount_name(int index){
 }
 Plane monitor_plane(int index){
  if(index==8)return (Plane){.center={-.94f,.43f,.28f},.width=1.46f,.height=.59f,.pitch=-12};
+ /* The windshield display sits behind the steeply rising cowl, fully below
+  * the shared canopy crown instead of piercing the forward roof slope. */
+ if(index==0)return (Plane){.center={0,1.05f,-.45f},.width=1.60f,.height=1.0f};
  if(index==5)return (Plane){.center={-3.0f,1.75f,.20f},.width=2.10f,.height=1.3125f,.yaw=45};
  if(index==6)return (Plane){.center={ 3.0f,1.75f,.20f},.width=2.10f,.height=1.3125f,.yaw=-45};
  static const float angles[]={0,-30,30,-62,62,0,0,180};float a=angles[index&7];

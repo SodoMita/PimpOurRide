@@ -49,9 +49,11 @@ an untrusted network. Do not place credentials in the repository.
 
 ## Spline-built electric vehicle
 
-`src/vehicle_scene.c` renders a complete concept EV in car-local coordinates.
-Longitudinal body stations and roof stations are interpolated with Catmull-Rom
-splines. This representation was chosen because it:
+`src/vehicle_scene.c` renders the electric systems in car-local coordinates;
+`src/vehicle_body.c` owns the shared body, glazing, canopy structure, and seats.
+One set of longitudinal stations is interpolated with Catmull-Rom splines and
+evaluated through one closed cross-section for the hull, hood, windshield,
+roof, and rear deck. This representation was chosen because it:
 
 - interpolates the designer's control stations rather than merely approaching
   them, so the nose, cabin, and deck remain anchored;
@@ -77,16 +79,31 @@ shell:
 - panoramic fastback glazing, flush camera mirrors and roof sensor strip, and
   thin curved LED signatures.
 
-The exterior is a closed superellipse-style loft through the same body spline
-stations, with a continuous dark panoramic canopy rather than separate upright
-roof/bumper pieces. Its rounded single-frame nose and metallic emblem are also
-geometry. The driver view uses the same stations as an interior visibility
-cutaway with transparent glazing, so neither the desktop nor the EV model is
-hidden by the exterior treatment.
+The exterior is a closed, crowned superellipse-style loft. Its belt vertices
+are shared exactly by the lower hull and upper glazing; the centre-crown value
+also shapes the painted hood and deck when there is no cabin above them. Dark
+glass is limited to the windshield, side windows, and rear slope. Painted A/C
+pillars, roof rails, and the curved header are regions of that same surface,
+not separate approximations. The single-frame nose, emblem, camera mirrors,
+and light signatures are tessellated or anchored against the actual shell.
+
+The driver view uses the identical stations with a late, transparent,
+non-depth-writing glass pass. The dashboard, doors, mirror, and windshield
+display use compatible interior hard points; there is no duplicate straight
+windshield header crossing the curved canopy. Closed-car views omit internal
+high-voltage hardware that the body should occlude, while the cutaway retains
+all of it. This also prevents orange harnesses and inverters from appearing
+inside the passenger space.
+
+Seats are sculpted 25-ring by 49-sample lofts with tapered backrests, lumbar
+and thigh profiles, separate cushions and bolsters, perforated inserts,
+double stitching, recliner hardware, headrest posts, belt buckles, and seat
+controls. They are not cuboid placeholders, and the same seat renderer is
+used in driver and systems views.
 
 F5 cycles **driver → exterior concept → EV systems cutaway**. The cutaway removes
-opaque body panels but retains their spline wire cage so the electrical and
-thermal components can be inspected in place.
+opaque body panels but retains the identical spline wire cage so the electrical
+and thermal components can be inspected in place.
 
 ## Vehicle dynamics
 
