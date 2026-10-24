@@ -13,7 +13,7 @@ and thermal loop can be inspected in an exterior systems cutaway. Fixed-step
 120 Hz dynamics make the whole car/cockpit/monitor rig drive through the 3D
 garage—without pretending to simulate wheels. F7 switches the physical steering
 wheel and driving keys between Wayland-client input and hover-car control; F5
-cycles driver, chase, and EV-systems cameras. See
+cycles driver, smooth exterior-concept, and EV-systems cameras. See
 [`docs/vehicle-and-remote.md`](docs/vehicle-and-remote.md).
 
 This is a real compositor: it implements `wl_compositor`, `wl_subcompositor`,
@@ -237,7 +237,7 @@ reverse proxy and firewall before exposing them to an untrusted network.
 | F2 | Reset to the driver's seat view |
 | F3 | Toggle a tight focus zoom on the active screen |
 | F4 | Cycle underglow color (violet / ice blue / acid lime) |
-| F5 | Cycle driver / exterior chase / EV systems cutaway |
+| F5 | Cycle driver / exterior concept / EV systems cutaway |
 | F6 | Cycle to the next connected screen |
 | F7 | Toggle client input / hover-drive ownership |
 | F8 | Recover the car pose (battery and odometer are preserved) |

@@ -353,9 +353,10 @@ static SceneCamera scene_camera(Server *s){
  }else{
   /* Exterior cameras are expressed in car-local coordinates too, so they
    * follow the same rigid transform as the cockpit instead of drifting when
-   * the vehicle moves. SYSTEMS uses a side view to expose the EV skateboard. */
-  Vec3 local_eye=s->camera_mode==VEHICLE_CAMERA_CHASE?v3(8.8f,5.4f,11.8f):v3(9.8f,3.4f,1.2f);
-  Vec3 local_target=v3(0,-.15f,0);
+   * the vehicle moves. EXTERIOR uses a low front-quarter showcase angle;
+   * SYSTEMS uses a side view to expose the EV skateboard. */
+  Vec3 local_eye=s->camera_mode==VEHICLE_CAMERA_CHASE?v3(8.4f,3.0f,-10.8f):v3(9.8f,3.4f,1.2f);
+  Vec3 local_target=s->camera_mode==VEHICLE_CAMERA_CHASE?v3(0,-.20f,-.40f):v3(0,-.15f,0);
   c.eye=vehicle_local_to_world(&s->vehicle,local_eye);
   Vec3 target=vehicle_local_to_world(&s->vehicle,local_target);
   c.forward=vnorm(vsub(target,c.eye));c.right=vnorm(vcross(c.forward,v3(0,1,0)));c.up=vcross(c.right,c.forward);

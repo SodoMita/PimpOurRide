@@ -104,7 +104,7 @@ static void hud(Server *s){
  if(w>1050){rgb(c,.33,.43,.53);mono(c,w/2-72,43,10,"CUSTOM BUILD / 001");rgb(c,.79,.82,.88);mono(c,w/2-65,64,12,"MIDNIGHT EDITION");}
  rgba(c,.075,.12,.14,.85);rounded(c,w-210,28,182,41,20);cairo_fill(c);rgb(c,.38,.88,.70);cairo_arc(c,w-189,49,3.5,0,2*PI);cairo_fill(c);mono(c,w-174,53,11,"NATIVE SESSION");
  rgba(c,.39,.45,.56,.2);cairo_set_line_width(c,1);line(c,28,91,w-28,91);
- const char *view=s->camera_mode==VEHICLE_CAMERA_DRIVER?"DRIVER VIEW  /  FIRST PERSON":s->camera_mode==VEHICLE_CAMERA_CHASE?"CHASE VIEW  /  SPLINE BODY":"EV SYSTEMS  /  800 V CUTAWAY";
+ const char *view=s->camera_mode==VEHICLE_CAMERA_DRIVER?"DRIVER VIEW  /  FIRST PERSON":s->camera_mode==VEHICLE_CAMERA_CHASE?"EXTERIOR VIEW  /  CONCEPT SPLINE BODY":"EV SYSTEMS  /  800 V CUTAWAY";
  rgb(c,.42,.49,.6);mono(c,29,116,10,view);snprintf(b,sizeof(b),"%02d CONNECTED  /  %02d BAYS",count,CD_MAX_MONITORS);mono(c,w-237,116,10,b);
  if(w>1050){snprintf(b,sizeof(b),"%3.0f%% PACK  /  %+6.1f KW",100*s->vehicle.battery_kwh/VEHICLE_BATTERY_CAPACITY_KWH,s->vehicle.power_kw);mono(c,w/2-78,116,10,b);}
  /* The control hints are chrome, not fake app controls. The actual buttons are 3D. */
@@ -123,7 +123,7 @@ static void help(Server *s){
  cairo_surface_t *im=cairo_image_surface_create(CAIRO_FORMAT_ARGB32,1000,720);cairo_t *c=cairo_create(im);rgba(c,.025,.038,.063,.98);rounded(c,1,1,998,718,25);cairo_fill(c);rgb(c,.25,.33,.43);cairo_set_line_width(c,2);rounded(c,1,1,998,718,25);cairo_stroke(c);
  rgb(c,.52,.90,.77);mono(c,58,63,15,"CHROMEDRIVE / DRIVER'S MANUAL");rgb(c,.94,.95,.97);text(c,55,130,45,"Make yourself at home.",true);rgb(c,.47,.58,.69);text(c,58,176,18,"Real Wayland apps. One virtual monitor for every window.",false);
  const char *keys[]={"MIDDLE + DRAG","CLICK A SCREEN","F7","WASD / SPACE","DRAG WHEEL","F5 / F8","F2 / F3 / F6","F4 / F12","SHIFT + BUTTON","DASH COG"};
- const char *desc[]={"Look around from the driver's seat","Send keyboard and pointer input to that app","Toggle client input / hover-drive ownership","Accelerate, reverse, steer and regenerative brake","Steer in drive mode; scroll focused app in client mode","Cycle driver/chase/systems / recover the car","Driver view / focus app / next spatial monitor","Change underglow / save a WebP screenshot","Launch another instance instead of focusing","Open native compositor Settings"};
+ const char *desc[]={"Look around from the driver's seat","Send keyboard and pointer input to that app","Toggle client input / hover-drive ownership","Accelerate, reverse, steer and regenerative brake","Steer in drive mode; scroll focused app in client mode","Cycle driver/exterior/systems / recover the car","Driver view / focus app / next spatial monitor","Change underglow / save a WebP screenshot","Launch another instance instead of focusing","Open native compositor Settings"};
  for(int i=0;i<10;i++){int y=224+i*40;rgb(c,.69,.77,.88);mono(c,61,y,14,keys[i]);rgb(c,.54,.63,.73);text(c,294,y,14,desc[i],false);rgba(c,.26,.33,.43,.4);line(c,58,y+13,942,y+13);}
  rgb(c,.40,.49,.60);text(c,58,640,15,"Dashboard controls are ray-picked in 3D. Right click is passed to apps.",false);rgb(c,.50,.87,.73);mono(c,58,686,15,"F1 TO CLOSE       CTRL + ALT + Q TO EXIT");s->help_tex=ui_texture(im,0);cairo_destroy(c);cairo_surface_destroy(im);
 }

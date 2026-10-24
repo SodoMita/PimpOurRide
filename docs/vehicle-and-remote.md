@@ -74,9 +74,17 @@ shell:
 - orange high-voltage routing, onboard charger, charge port, high-voltage to
   12 V DC/DC converter, and a low-voltage battery;
 - front heat exchanger, coolant reservoir, and a separate thermal loop;
-- roof/glazing, structural rails, seats, mirrors, lidar, and light signatures.
+- panoramic fastback glazing, flush camera mirrors and roof sensor strip, and
+  thin curved LED signatures.
 
-F5 cycles **driver → exterior chase → EV systems cutaway**. The cutaway removes
+The exterior is a closed superellipse-style loft through the same body spline
+stations, with a continuous dark panoramic canopy rather than separate upright
+roof/bumper pieces. Its rounded single-frame nose and metallic emblem are also
+geometry. The driver view uses the same stations as an interior visibility
+cutaway with transparent glazing, so neither the desktop nor the EV model is
+hidden by the exterior treatment.
+
+F5 cycles **driver → exterior concept → EV systems cutaway**. The cutaway removes
 opaque body panels but retains their spline wire cage so the electrical and
 thermal components can be inspected in place.
 
@@ -123,7 +131,7 @@ F7 changes the owner of driving input. The native HUD is authoritative.
 | S/down | Sent to focused Wayland client | Brake while moving forward, reverse at rest |
 | Space | Sent to focused Wayland client | Regenerative/service brake |
 | Left-drag 3D wheel | Horizontal pointer-axis/scroll input to focused app | Steer |
-| F5 | Driver/chase/systems camera | Same |
+| F5 | Driver/exterior/systems camera | Same |
 | F8 | Recover pose without refilling battery/resetting odometer | Same |
 | F2 | Return to driver camera | Same |
 
