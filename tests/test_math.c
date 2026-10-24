@@ -110,8 +110,8 @@ int main(void){
   assert(plane_hit(close_plane,eye,vnorm(vsub(close_point,eye)),&u,&v,&d,false));
   assert(close_hit(close_plane,(u-.5f)*close_plane.width,(.5f-v)*close_plane.height));
  }
- assert(near(clampf(-100,CD_DRIVER_FOV_MIN,CD_DRIVER_FOV_MAX),10));
+ assert(near(clampf(-100,CD_DRIVER_FOV_MIN,CD_DRIVER_FOV_MAX),1));
  assert(near(clampf(500,CD_DRIVER_FOV_MIN,CD_DRIVER_FOV_MAX),100));
- assert(near(clampf(-100,CD_DRIVER_FOV_MIN,CD_DRIVER_SCROLL_FOV_MAX),10));
+ assert(near(clampf(-100,CD_DRIVER_FOV_MIN,CD_DRIVER_SCROLL_FOV_MAX),1));
  puts("PASS: nine output transforms, fixed/sliding/flip mounts, animated-plane picking, rolled planes, Arrange transforms, anchored aspect resize, transformed close targets, FOV bounds, back-face rejection");return 0;
 }

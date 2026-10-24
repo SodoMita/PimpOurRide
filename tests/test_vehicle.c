@@ -1,4 +1,5 @@
 #include "vehicle.h"
+#include "city.h"
 
 #include <math.h>
 #include <stdio.h>
@@ -84,16 +85,30 @@ int main(void) {
        && nearf(local.z, round_trip.z, 2e-4f), "vehicle transform round-trip failed");
 
  vehicle_reset_pose(&v);
- v.position = v3(11.49f, 0, -35.49f);
- run_steps(&v, (VehicleInput){.throttle = 1, .steering = -1}, 1200);
- CHECK(v.position.x >= -11.5001f && v.position.x <= 11.5001f
-       && v.position.z >= -35.5001f && v.position.z <= 12.0001f,
-       "car escaped garage bounds: %f %f", v.position.x, v.position.z);
+ v.position = v3(5, 0, 0); v.yaw = -90; /* drive directly at the right wall */
+ bool wall_contact = false;
+ for (int i = 0; i < 1200; i++) {
+  vehicle_step(&v, (VehicleInput){.throttle = 1}, (float)VEHICLE_FIXED_DT);
+  wall_contact |= v.collision;
+ }
  Vec3 extent = vehicle_collision_extents(v.yaw);
- CHECK(v.position.x - extent.x >= -14.7001f && v.position.x + extent.x <= 14.7001f
-       && v.position.z - extent.z >= -39.7001f && v.position.z + extent.z <= 15.7001f,
-       "visible rotated car crosses a garage wall: pos=(%f,%f) extent=(%f,%f)",
+ CHECK(wall_contact && v.position.x + extent.x <= 14.7001f,
+       "visible rotated car crosses the shared home wall: pos=(%f,%f) extent=(%f,%f)",
        v.position.x, v.position.z, extent.x, extent.z);
+ /* The far wall is not a clamp anymore: its real 13 m opening leads onto the
+  * central street. A straight car must be able to leave the original hall. */
+ vehicle_reset_pose(&v);
+ bool exited = false;
+ for (int i = 0; i < 1800 && !exited; i++) {
+  vehicle_step(&v, (VehicleInput){.throttle = 1}, (float)VEHICLE_FIXED_DT);
+  exited = v.position.z < -42.0f;
+ }
+ CHECK(exited && fabsf(v.position.x) < 0.01f,
+       "car could not drive through the real home-garage opening: %f %f", v.position.x, v.position.z);
+ CHECK(city_building_count() >= 16 && city_garage_count() == 4,
+       "connected city data is incomplete");
+ CHECK(city_garage_at(v3(65, 0, -95)) == city_garage(3).name,
+       "east service garage is not enterable/addressable");
  Vec3 straight = vehicle_collision_extents(0), sideways = vehicle_collision_extents(90);
  CHECK(nearf(straight.x, VEHICLE_COLLISION_HALF_WIDTH, 1e-5f)
        && nearf(straight.z, VEHICLE_COLLISION_HALF_LENGTH, 1e-5f)
@@ -112,6 +127,54 @@ int main(void) {
  for (int i = 0; i < 120; i++) vehicle_update(&b, input, VEHICLE_FIXED_DT * 2);
  CHECK(nearf(a.position.x, b.position.x, 1e-3f) && nearf(a.position.z, b.position.z, 1e-3f)
        && nearf(a.speed, b.speed, 1e-3f), "fixed-step result depends on render cadence");
+
+ /* Autopilot is a fixed-step input controller, not a render animation. Two
+  * identical runs must match exactly, visit all three remote garages, return
+  * home without contact, and reverse out when a new run starts nose-in. */
+ {
+  Vehicle route_a, route_b;
+  vehicle_init(&route_a); vehicle_init(&route_b);
+  vehicle_autopilot_set(&route_a, true); vehicle_autopilot_set(&route_b, true);
+  for (int i = 0; i < 2400; i++) {
+   vehicle_step(&route_a, (VehicleInput){0}, (float)VEHICLE_FIXED_DT);
+   vehicle_step(&route_b, (VehicleInput){0}, (float)VEHICLE_FIXED_DT);
+  }
+  CHECK(nearf(route_a.position.x, route_b.position.x, 1e-5f)
+        && nearf(route_a.position.z, route_b.position.z, 1e-5f)
+        && nearf(route_a.speed, route_b.speed, 1e-5f)
+        && route_a.distance_m > 50.0f, "deterministic city autopilot did not drive");
+  bool visited[4] = {false}, route_collision = false;
+  int ticks = 0;
+  while (route_a.autopilot_enabled && ticks++ < 18000) {
+   vehicle_step(&route_a, (VehicleInput){0}, (float)VEHICLE_FIXED_DT);
+   route_collision |= route_a.collision;
+   const char *here = city_garage_at(route_a.position);
+   for (int g = 0; g < 4; g++) if (here == city_garage(g).name) visited[g] = true;
+  }
+  CHECK(visited[1] && visited[2] && visited[3] && !route_a.autopilot_enabled
+        && route_a.distance_m > 450.0f && !route_collision,
+        "city route did not tour every garage and park cleanly: distance=%f collision=%d",
+        route_a.distance_m, route_collision);
+  vehicle_autopilot_set(&route_a, true);
+  CHECK(route_a.autopilot_reverse, "nose-in restart did not select reverse exit");
+  bool reversed = false;
+  for (int i = 0; i < 2400; i++) {
+   vehicle_step(&route_a, (VehicleInput){0}, (float)VEHICLE_FIXED_DT);
+   reversed |= route_a.speed < -0.5f; route_collision |= route_a.collision;
+  }
+  CHECK(reversed && !route_a.autopilot_reverse && route_a.position.x < -30.0f
+        && !route_collision, "reverse exit did not resume the forward city route");
+ }
+
+ /* The physical door interlock remains authoritative in automatic mode. */
+ vehicle_reset_pose(&v); vehicle_toggle_doors(&v); run_steps(&v, (VehicleInput){0}, 240);
+ vehicle_autopilot_set(&v, true); run_steps(&v, (VehicleInput){0}, 60);
+ CHECK(v.door_target[0] == 0.0f && v.door_target[1] == 0.0f && v.speed == 0.0f,
+       "autopilot moved before the open doors were closed");
+ run_steps(&v, (VehicleInput){0}, 300);
+ CHECK(v.door_open[0] == 0.0f && v.door_open[1] == 0.0f && v.distance_m > 0.1f,
+       "autopilot did not start after door closure");
+ vehicle_autopilot_set(&v, false);
 
  /* Real door assemblies: fixed-step travel, reversible targets and one rigid
   * hinge transform shared by exterior skin, interior trim and side glass. */
@@ -181,6 +244,19 @@ int main(void) {
  CHECK(v.door_open[0] == 0.0f && v.door_target[0] == 0.0f
        && v.door_open[1] == 0.0f && v.door_target[1] == 0.0f,
        "F10 recovery did not close and latch both doors");
+
+ /* Door expansion is a collision event even without center translation. The
+  * resolver must move the rig inward rather than letting trim cross a wall. */
+ vehicle_reset_pose(&v); v.position.x = 10.5f; vehicle_toggle_doors(&v);
+ bool door_wall_contact = false;
+ for (int i = 0; i < 240; i++) {
+  vehicle_step(&v, (VehicleInput){0}, (float)VEHICLE_FIXED_DT);
+  door_wall_contact |= v.collision;
+ }
+ Vec3 door_wall_extent = vehicle_collision_extents_for_vehicle(&v);
+ CHECK(door_wall_contact && v.position.x + door_wall_extent.x <= 14.7001f,
+       "opening door crossed the home wall: x=%f extent=%f", v.position.x, door_wall_extent.x);
+ vehicle_reset_pose(&v);
 
  /* Verify bicubic Catmull-Rom hull & fastback canopy watertightness, symmetry,
   * and that all cutaway EV systems sit strictly inside the hull envelope. */

@@ -24,6 +24,7 @@ footer{min-height:30px;flex:none;display:flex;align-items:center;justify-content
   <button data-key="65471" title="Return to the first-person driver camera">Driver<span class="key">F2</span></button>
   <button data-key="65472" title="Focus the active Wayland monitor">Focus<span class="key">F3</span></button>
   <button data-meta-key="111" title="Open or close both full-height hinged doors">Doors<span class="key">Meta+O</span></button>
+  <button data-meta-key="97" title="Toggle the deterministic city autopilot; any drive key returns manual control">Autopilot<span class="key">Meta+A</span></button>
   <button data-key="65477" title="Cycle driver, exterior concept, and EV systems cutaway">View<span class="key">F8</span></button>
   <button data-key="65476" id="mode-button" title="Toggle steering-wheel and keyboard ownership">Hover drive<span class="key">F7</span></button>
   <button data-key="65479" class="optional" title="Recover the car to its garage start pose">Recover<span class="key">F10</span></button>
@@ -79,7 +80,7 @@ function tap(key){
 }
 function tapMeta(key){
  if(!connected)return;
- const meta=65515; // XK_Super_L: the same Meta+O path as a physical keyboard.
+ const meta=65515; // XK_Super_L: the same compositor Meta shortcut path as a physical keyboard.
  rfb.sendKey(meta,null,true);rfb.sendKey(key,null,true);rfb.sendKey(key,null,false);rfb.sendKey(meta,null,false);rfb.focus();
 }
 function release(key){

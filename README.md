@@ -10,8 +10,10 @@ spatial monitor** mounted around the windshield.
 The cockpit now belongs to a **spline-built electric hover car**. Its modeled
 82 kWh skateboard pack, dual drive units, power electronics, charging hardware,
 and thermal loop can be inspected in an exterior systems cutaway. Fixed-step
-120 Hz dynamics make the whole car/cockpit/monitor rig drive through the 3D
-garage—without pretending to simulate wheels. F7 switches the physical steering
+120 Hz dynamics make the whole car/cockpit/monitor rig drive through the home
+garage and a connected 3D city—without pretending to simulate wheels. Meta+A
+engages a deterministic garage-to-garage autopilot using the same throttle,
+brake and steering inputs as manual driving. F7 switches the physical steering
 wheel and driving keys between Wayland-client input and hover-car control; F8
 cycles driver, smooth exterior-concept, and EV-systems cameras, while F9
 switches between properly aligned driver and passenger seats. The shared seats,
@@ -256,12 +258,13 @@ reverse proxy and firewall before exposing them to an untrusted network.
 | F3 | Toggle a tight focus zoom on the active screen |
 | F4 | Cycle underglow color (violet / ice blue / acid lime) |
 | Meta+O | Open or close both full-height hinged doors (sill, glass, roof rail, trim and door displays move too) |
+| Meta+A | Toggle city autopilot; closes the doors first, tours the other garages, and parks at home |
 | F5 | Unbound in the compositor; reserved for browser/client restart or reload |
 | F6 | Toggle Arrange for the selected screen (move / rotate / roll / scale / resize) |
 | F7 | Toggle client input / hover-drive ownership |
 | F8 | Cycle driver / exterior concept / EV systems cutaway |
 | F9 | Switch between driver and passenger seats |
-| F10 | Recover the car pose and close the doors (battery and odometer are preserved) |
+| F10 | Recover the car pose, disengage autopilot and close the doors (battery and odometer are preserved) |
 | W/A/S/D or arrows, Space | Drive mode: throttle/steer/reverse and regenerative brake |
 | Left-drag steering wheel | Client mode: scroll focused app; drive mode: steer |
 | F11 | `--windowed` only: toggle fullscreen |

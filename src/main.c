@@ -21,7 +21,7 @@ void app_release_input(Server *s,uint32_t time){
  /* Drive keys are compositor-local and therefore are not present in the
   * Wayland seat's s->keys[] bitmap. Both sets must be released on focus loss,
   * otherwise switching windows could leave a client key or motor latched. */
- server_release_keys(s,time);clear_drive_controls(s);s->door_shortcut_down=false;scene_wheel_cancel(s);
+ server_release_keys(s,time);clear_drive_controls(s);s->door_shortcut_down=false;s->autopilot_shortcut_down=false;scene_wheel_cancel(s);
 }
 /* ---- persistent configuration (chromedrive.conf, edited by the GUI) ----
  * Precedence: built-in defaults < config file < command line. The file is
@@ -461,6 +461,12 @@ static bool drive_key(Server *s,uint32_t key,bool down){
  else if(key==KEY_D||key==KEY_RIGHT)held=&s->drive_right;
  else if(key==KEY_SPACE)held=&s->drive_brake;
  if(!held)return false;
+ if(down&&s->vehicle.autopilot_enabled){
+  /* A real driver input has priority over navigation in DRIVE mode. In CLIENT
+   * mode the same keys still belong to the Wayland app and do not cancel the
+   * route, so it remains possible to work while the car drives itself. */
+  vehicle_autopilot_set(&s->vehicle,false);app_notice(s,"Manual control / autopilot disengaged");
+ }
  *held=down;
  return true; /* consumed locally: never leak motor controls into a Wayland app */
 }
@@ -478,6 +484,17 @@ bool app_global_key(Server *s,uint32_t evdev,bool down){
   if(down&&meta&&!s->keys[KEY_O]){
    s->door_shortcut_down=true;vehicle_toggle_doors(&s->vehicle);
    app_notice(s,"%s",s->vehicle.door_target[0]>.5f?"Doors opening / Meta+O closes both":"Doors closing / Meta+O opens both");
+   return true;
+  }
+ }
+ /* Meta+A is deliberately separate from plain A (steering) and F7 (input
+  * ownership). It can be engaged while working in a Wayland client. */
+ if(evdev==KEY_A){
+  if(s->autopilot_shortcut_down){if(!down)s->autopilot_shortcut_down=false;return true;}
+  if(down&&meta&&!s->keys[KEY_A]){
+   s->autopilot_shortcut_down=true;bool enable=!s->vehicle.autopilot_enabled;
+   vehicle_autopilot_set(&s->vehicle,enable);
+   app_notice(s,"%s",enable?"Autopilot engaged / doors closing, then city route":"Autopilot disengaged / vehicle braking");
    return true;
   }
  }

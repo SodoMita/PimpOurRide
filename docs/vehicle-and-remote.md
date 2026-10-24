@@ -160,14 +160,45 @@ The model uses:
 - service/regenerative braking with zero-crossing protection, plus reverse;
 - a bounded kinematic-bicycle yaw response (no tire/contact-patch pretence);
 - one spring/damper heave degree of freedom shared by the four visual pods;
-- smoothed body roll/pitch and energy-absorbing garage-boundary contacts;
+- smoothed body roll/pitch and energy-absorbing wall/building contacts;
 - a yaw-rotated collision box covering the complete nose, tail, body width, and
-  mirror clearance, clamped against the actual inner garage wall faces.
+  mirror clearance, tested against the same home/city wall and building boxes
+  used by the renderer. The home far wall has a real opening onto the street.
 
 It is an interactive concept-car model, not a validated automotive safety or
 homologation simulation. Pack energy is a `double`: at parking load, a single
 120 Hz tick consumes only a few micro-kWh, which would round away if repeatedly
 subtracted from a `float` near 69 kWh.
+
+### Connected city, garages, and autopilot
+
+`src/city.c` owns the shared city model and navigation; `src/city_scene.c`
+renders that same geometry. Three connected streets and two cross streets join
+four enterable destinations: **ChromeDrive / Home**, **Neon Works / West**,
+**Skyline Lab / North**, and **Harbor Service / East**. The remote garages have
+real side walls, roofs, service benches, two-sided illuminated signs, and clear
+drive-through lanes. Sixteen towers, lit windows, sidewalks, lane markings,
+crosswalks, streetlights, rooftop beacons, rain, and eight moving hover cars
+provide actual 3D surroundings and ambient activity. Static city geometry is
+cached in a GL display list; traffic and weather remain time-dependent.
+
+Meta+A toggles autopilot in either input-ownership mode. Engagement requests
+both doors to close and holds the parking brake until they have physically
+finished. Each 120 Hz tick then produces an ordinary `VehicleInput`: throttle,
+regenerative/service brake, and steering pass through the same hover dynamics,
+battery/thermal telemetry, and collision path as manual input. There is no
+render-time translation of the car along a spline. The deterministic route
+visits all three remote garages and parks at home. Starting another run after
+parking nose-in first reverses out of the home doorway, then resumes forward
+driving. Ambient traffic is independent closed-form animation; it is not a
+substitute for the main car's simulated controls.
+
+In Drive mode, pressing a driving key immediately disengages autopilot and
+returns manual control. In Client mode those keys still go to the focused
+Wayland application, so it is possible to work while the car drives. F10
+recovery also disengages autopilot. The native HUD shows the current garage,
+next autopilot destination, and live FOV; the browser toolbar exposes the same
+Meta+A shortcut.
 
 ### One rig, exact picking
 
@@ -242,11 +273,13 @@ F7 changes the owner of driving input. The native HUD is authoritative.
 | F8 | Driver/exterior/systems camera | Same |
 | F9 | Switch driver/passenger seat | Same |
 | F10 | Recover pose without refilling battery/resetting odometer | Same |
+| Meta+A | Toggle deterministic city autopilot | Same |
 | F2 | Return to the selected seat camera | Same |
 
-Client mode also commands a parking brake so manipulating an application cannot
-leave the car accelerating. On mode changes and host focus loss, both Wayland
-keys and compositor-local drive keys are released. Browser hold buttons use
+Client mode normally commands a parking brake so manipulating an application
+cannot leave the car accelerating; an engaged autopilot deliberately overrides
+that parked input inside the fixed-step update. On mode changes and host focus
+loss, both Wayland keys and compositor-local drive keys are released. Browser hold buttons use
 pointer capture and release on pointer-up, pointer-cancel, lost capture, window
 blur, and disconnect.
 

@@ -141,7 +141,7 @@ struct Server {
  VehicleCameraMode camera_mode;
  VehicleSeat camera_seat;
  bool drive_forward,drive_reverse,drive_left,drive_right,drive_brake;
- bool door_shortcut_down;
+ bool door_shortcut_down,autopilot_shortcut_down;
  bool wheel_drag;
  float wheel_steer,wheel_client_angle,wheel_axis_accum,wheel_last_x,wheel_last_y;
  double time,dt,fps,start_time,last_ui_time,last_windshield_time,notice_until;
@@ -157,6 +157,9 @@ struct Server {
  pid_t children[128];int child_count;
  GLuint garage_tex,carbon_tex,console_tex,hub_tex,hud_tex,windshield_tex,help_tex,plate_tex,handles_tex;
  GLuint scene_list;bool rebuild_scene;
+ /* Cached real city geometry and destination signs. Dynamic traffic/rain are
+  * rendered separately from the static display list. */
+ GLuint city_list,city_signs[4];
  bool screenshot_requested;char screenshot_path[4096];
 };
 bool server_init(Server *s,const char *socket_name);
@@ -177,6 +180,7 @@ Surface *surface_at(Surface *root,float x,float y,float *sx,float *sy);
 void server_each_surface(Surface *root,void (*fn)(Surface*,int,int,void*),void *data);
 uint32_t sdl_to_evdev(SDL_Scancode code);
 void scene_init(Server *s);
+void city_render(Server *s);
 void scene_render(Server *s);
 void scene_update_mounts(Server *s);
 void scene_finish(Server *s);

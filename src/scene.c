@@ -76,44 +76,10 @@ static void lighting(void){
 static float garage_hash(int n){float x=sinf((float)n*127.1f)*43758.5453f;return x-floorf(x);}
 
 static void garage_city(Server *s){
- /* Night sky: one far quad with a vertical vertex-colour gradient. */
- glDisable(GL_LIGHTING);
- glBegin(GL_QUADS);glNormal3f(0,0,1);
- glColor3f(.10f,.09f,.24f);glVertex3f(-38,-2,-58);glVertex3f(38,-2,-58);
- glColor3f(.012f,.025f,.085f);glVertex3f(38,24,-58);glVertex3f(-38,24,-58);glEnd();
- /* Skyline: deterministic dark towers (same layout every frame - hash on
-  * the building index, never rand(), so nothing shimmers or re-rolls). */
- float bx[26],bw[26],bh[26];
- float x=-25.f;
- for(int i=0;i<26;i++){bw[i]=1.3f+garage_hash(i*13+5)*1.5f;bh[i]=2.5f+garage_hash(i*7+2)*7.5f;bx[i]=x+bw[i]*.5f;x+=bw[i]+.35f;}
- glEnable(GL_LIGHTING);
- for(int i=0;i<26;i++){float shade=.7f+garage_hash(i*3)*.5f;color(.018f*shade,.028f*shade,.065f*shade);box(bx[i],-1.5f+bh[i]*.5f,-52,bw[i],bh[i],1.2f);}
- /* Lit windows as points on the tower faces; a few twinkle by re-hashing
-  * against a slow time bucket. Points, not quads: ~800 windows/frame. */
- glDisable(GL_LIGHTING);glPointSize(2.f);glBegin(GL_POINTS);
- int bucket=(int)(s->time*.5);
- for(int i=0;i<26;i++)
-  for(float wy=-1.1f;wy<-1.5f+bh[i]-.3f;wy+=.45f)
-   for(float wx=bx[i]-bw[i]*.5f+.25f;wx<bx[i]+bw[i]*.5f-.2f;wx+=.35f){
-    int cell=i*1000+(int)((wy+2)*10)*37+(int)((wx+30)*10);
-    float h=garage_hash(cell);
-    if(h>.32f)continue;
-    float twinkle=(h>.28f&&garage_hash(cell+bucket*91)<.5f)?.25f:1.f;
-    if(garage_hash(cell+77)<.6f)glColor3f(.95f*twinkle,.68f*twinkle,.34f*twinkle);
-    else glColor3f(.55f*twinkle,.78f*twinkle,1.f*twinkle);
-    glVertex3f(wx,wy,-51.35f);
-   }
- glEnd();
- /* Rain streaks between the doorway and the towers, falling in +time. */
- glEnable(GL_BLEND);glBlendFunc(GL_SRC_ALPHA,GL_ONE);glDepthMask(GL_FALSE);
- glColor4f(.55f,.7f,1.f,.30f);glBegin(GL_LINES);
- for(int i=0;i<130;i++){
-  float rx=-9.f+18.f*garage_hash(i*3+1),rz=-42.f-8.f*garage_hash(i*7+4);
-  float speed=4.f+3.f*garage_hash(i*5+9);
-  float ry=garage_hash(i*11+6)*10.f-fmodf((float)s->time*speed,10.f);if(ry<0)ry+=10.f;ry-=1.5f;
-  glVertex3f(rx,ry,rz);glVertex3f(rx-.07f,ry+.5f,rz);
- }
- glEnd();glDepthMask(GL_TRUE);glDisable(GL_BLEND);glEnable(GL_LIGHTING);
+ /* The old flat skyline has been replaced by the same connected, collidable
+  * city used by navigation. Its real geometry is visible through the actual
+  * garage doorway and remains present when the car drives outside. */
+ city_render(s);
 }
 
 static void garage_reflection(float x,float z,float r,float g,float b,float alpha){
@@ -673,5 +639,7 @@ void scene_save_screenshot(Server *s,const char *path){
  free(flipped);free(pixels);
 }
 void scene_finish(Server *s){
+ if(s->city_list)glDeleteLists(s->city_list,1);
+ for(int i=0;i<4;i++)if(s->city_signs[i])glDeleteTextures(1,&s->city_signs[i]);
  GLuint textures[]={s->garage_tex,s->carbon_tex,s->console_tex,s->hub_tex,s->hud_tex,s->windshield_tex,s->help_tex,s->plate_tex,s->handles_tex};glDeleteTextures(sizeof(textures)/sizeof(textures[0]),textures);for(int i=0;i<6;i++)glDeleteTextures(1,&s->buttons[i].texture);for(int i=0;i<CD_MAX_MONITORS;i++)glDeleteTextures(1,&s->monitors[i].label);
 }

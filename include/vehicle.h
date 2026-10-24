@@ -80,7 +80,14 @@ typedef struct {
  float power_kw;       /* positive = battery discharge, negative = net charging */
  float motor_temp_c;
  float distance_m;
- bool collision;       /* true only on a tick that contacts the garage safety bounds */
+ bool collision;       /* true only on a tick that contacts visible city/garage bounds */
+
+ /* Deterministic city navigation is evaluated inside each 120 Hz fixed tick.
+  * It produces the same VehicleInput as the physical controls; it never moves
+  * the rig with a separate animation or frame-rate-dependent transform. */
+ bool autopilot_enabled;
+ bool autopilot_reverse; /* reverse out when a completed run parked nose-in */
+ int autopilot_waypoint;
 
  double accumulator;   /* fixed-step remainder carried between rendered frames */
 } Vehicle;
@@ -103,6 +110,7 @@ typedef struct {
 
 void vehicle_init(Vehicle *v);
 void vehicle_reset_pose(Vehicle *v);
+void vehicle_autopilot_set(Vehicle *v,bool enabled);
 void vehicle_step(Vehicle *v, VehicleInput input, float dt);
 void vehicle_update(Vehicle *v, VehicleInput input, double frame_dt);
 

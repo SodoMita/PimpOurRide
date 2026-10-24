@@ -1,4 +1,5 @@
 #include "chrome.h"
+#include "city.h"
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>
@@ -62,8 +63,8 @@ static void windshield_hud(Server *s){
  /* Live speed and gear at the left edge of the windshield. */
  snprintf(value,sizeof(value),"%.0f",fabs(s->vehicle.speed)*3.6);rgba(c,.80,.95,1,.92);text(c,70,218,112,value,true);
  rgba(c,.43,.68,.76,.85);mono(c,78,260,22,"KM/H");mono(c,78,305,14,"GROUND SPEED");
- const char *gear=s->steering_mode==VEHICLE_STEER_CLIENT?"C":s->vehicle.speed>.25f?"D":s->vehicle.speed<-.25f?"R":"N";
- rgba(c,.45,.95,.79,.95);text(c,358,211,72,gear,true);rgba(c,.40,.61,.69,.85);mono(c,352,260,15,s->steering_mode==VEHICLE_STEER_DRIVE?"DRIVE":"CLIENT");
+ const char *gear=s->vehicle.autopilot_enabled?"A":s->steering_mode==VEHICLE_STEER_CLIENT?"C":s->vehicle.speed>.25f?"D":s->vehicle.speed<-.25f?"R":"N";
+ rgba(c,.45,.95,.79,.95);text(c,358,211,72,gear,true);rgba(c,.40,.61,.69,.85);mono(c,352,260,15,s->vehicle.autopilot_enabled?"AUTO":s->steering_mode==VEHICLE_STEER_DRIVE?"DRIVE":"CLIENT");
  /* Pack and instantaneous power at the right edge. */
  snprintf(value,sizeof(value),"%.0f%%",100*s->vehicle.battery_kwh/VEHICLE_BATTERY_CAPACITY_KWH);rgba(c,.80,.95,1,.92);text(c,1070,190,72,value,true);
  rgba(c,.43,.68,.76,.85);mono(c,1080,232,18,"82 KWH PACK");snprintf(value,sizeof(value),"%+.0f KW",s->vehicle.power_kw);mono(c,1080,278,21,value);
@@ -72,7 +73,9 @@ static void windshield_hud(Server *s){
  rgba(c,.48,.72,.80,.72);mono(c,568,62,14,"WINDSHIELD HUD / LIVE");
  rgba(c,r,g,b,.62);cairo_set_line_width(c,4);float cx=700+s->vehicle.steering*90;
  cairo_move_to(c,cx-34,370);cairo_line_to(c,cx,352);cairo_line_to(c,cx+34,370);cairo_stroke(c);
+ char auto_mode[96];
  const char *mode=s->steering_mode==VEHICLE_STEER_DRIVE?(s->drive_brake?"REGEN BRAKE":"HOVER DRIVE"):"CLIENT INPUT / PARKED";
+ if(s->vehicle.autopilot_enabled){snprintf(auto_mode,sizeof(auto_mode),"AUTOPILOT / %.62s",city_autopilot_destination(&s->vehicle));mode=auto_mode;}
  if(s->vehicle.door_target[0]>.5f||s->vehicle.door_target[1]>.5f)mode=s->vehicle.door_open[0]>.995f&&s->vehicle.door_open[1]>.995f?"DOORS OPEN / META+O TO CLOSE":"DOORS OPENING";
  else if(s->vehicle.door_open[0]>.001f||s->vehicle.door_open[1]>.001f)mode="DOORS CLOSING";
  rgba(c,.55,.77,.82,.82);cairo_text_extents_t ex;font(c,17,false,true);cairo_text_extents(c,mode,&ex);cairo_move_to(c,700-ex.width/2,414);cairo_show_text(c,mode);
@@ -122,19 +125,22 @@ static void hud(Server *s){
  rgba(c,.39,.45,.56,.2);cairo_set_line_width(c,1);line(c,28,91,w-28,91);
  const char *view=s->camera_mode==VEHICLE_CAMERA_DRIVER?(s->camera_seat==VEHICLE_SEAT_DRIVER?"DRIVER SEAT  /  FIRST PERSON":"PASSENGER SEAT  /  FIRST PERSON"):s->camera_mode==VEHICLE_CAMERA_CHASE?"EXTERIOR VIEW  /  CONCEPT SPLINE BODY":"EV SYSTEMS  /  800 V CUTAWAY";
  rgb(c,.42,.49,.6);mono(c,29,116,10,view);snprintf(b,sizeof(b),"%02d CONNECTED  /  %02d BAYS",count,CD_APP_BAYS);mono(c,w-237,116,10,b);
+ const char *garage=city_garage_at(s->vehicle.position);if(garage){rgb(c,.38,.66,.72);mono(c,29,135,9,garage);}
+ snprintf(b,sizeof(b),"FOV %.1f DEG",s->fov);rgb(c,.38,.49,.60);mono(c,w-237,135,9,b);
  if(w>1050){snprintf(b,sizeof(b),"%3.0f%% PACK  /  %+6.1f KW",100*s->vehicle.battery_kwh/VEHICLE_BATTERY_CAPACITY_KWH,s->vehicle.power_kw);mono(c,w/2-78,116,10,b);}
  /* The control hints are chrome, not fake app controls. The actual buttons are 3D. */
  if(w>=1100){int bx=w/2-438,by=h-66;rgba(c,.025,.038,.059,.88);rounded(c,bx,by,876,43,21);cairo_fill(c);rgba(c,.35,.43,.53,.30);rounded(c,bx,by,876,43,21);cairo_stroke(c);
   if(s->arrange_mode){rgb(c,1,.70,.28);mono(c,bx+28,by+26,11,s->arrange_handles?"GIZMO: amber move | RGB axes/rings | white corners/edges resize | magenta scale":"DRAG move | HANDLES/H gizmo | SHIFT-DRAG yaw/pitch | CTRL-DRAG roll | WHEEL scale");}
   else{
-   const char *keys[]={"F7","WASD","META+O","F8","F9","F6","F1"};
-   const char *labels[]={"Input mode","Hover drive","Doors","Change view","Switch seat","Arrange","Help"};
-   int widths[]={132,148,102,139,133,117,0};int x=bx+12;
-   for(int i=0;i<7;i++){int kw=strlen(keys[i])>5?48:strlen(keys[i])>3?34:25;rgb(c,.14,.19,.25);rounded(c,x,by+11,kw,21,4);cairo_fill(c);rgb(c,.80,.85,.91);mono(c,x+5,by+25,10,keys[i]);rgb(c,.60,.67,.74);text(c,x+kw+9,by+26,11,labels[i],false);x+=widths[i];}
+   const char *keys[]={"F7","WASD","META+O","META+A","F8","F9","F6","F1"};
+   const char *labels[]={"Input","Drive","Doors","Auto","View","Seat","Arrange","Help"};
+   int widths[]={100,105,108,100,90,88,113,0};int x=bx+12;
+   for(int i=0;i<8;i++){int kw=strlen(keys[i])>5?48:strlen(keys[i])>3?34:25;rgb(c,.14,.19,.25);rounded(c,x,by+11,kw,21,4);cairo_fill(c);rgb(c,.80,.85,.91);mono(c,x+5,by+25,10,keys[i]);rgb(c,.60,.67,.74);text(c,x+kw+9,by+26,11,labels[i],false);x+=widths[i];}
   }
  }
  char mode[64]="ARRANGE MODE";if(s->arrange_mode&&s->arrange_slot>=0)snprintf(mode,sizeof(mode),"ARRANGE MODE / CD-%02d",s->arrange_slot+1);
  const char *seat_state=s->camera_mode==VEHICLE_CAMERA_SYSTEMS?"EV SKATEBOARD / NO WHEELS":s->camera_mode==VEHICLE_CAMERA_CHASE?"SPLINE-BUILT ELECTRIC HOVER CAR":s->steering_mode==VEHICLE_STEER_DRIVE?"HOVER DRIVE / F7 FOR CLIENTS":"CLIENT INPUT / WHEEL = SCROLL";
+ char auto_state[128];if(s->vehicle.autopilot_enabled){snprintf(auto_state,sizeof(auto_state),"AUTOPILOT / %.90s",city_autopilot_destination(&s->vehicle));seat_state=auto_state;}
  const char *state=s->arrange_mode?mode:s->focus_view&&s->camera_mode==VEHICLE_CAMERA_DRIVER?"FOCUS MODE":seat_state;
  rgb(c,.75,.81,.87);text(c,29,h-47,12,state,true);rgb(c,.37,.45,.55);mono(c,29,h-26,9,"NATIVE WAYLAND / v" CD_VERSION);
  rgb(c,.72,.78,.84);snprintf(b,sizeof(b),"%02.0f FPS",s->fps);mono(c,w-94,h-47,12,b);rgb(c,.39,.48,.56);mono(c,w-107,h-26,9,"OPENGL / SHM");
@@ -145,8 +151,8 @@ static void hud(Server *s){
 static void help(Server *s){
  cairo_surface_t *im=cairo_image_surface_create(CAIRO_FORMAT_ARGB32,1000,720);cairo_t *c=cairo_create(im);rgba(c,.025,.038,.063,.98);rounded(c,1,1,998,718,25);cairo_fill(c);rgb(c,.25,.33,.43);cairo_set_line_width(c,2);rounded(c,1,1,998,718,25);cairo_stroke(c);
  rgb(c,.52,.90,.77);mono(c,58,63,15,"CHROMEDRIVE / DRIVER'S MANUAL");rgb(c,.94,.95,.97);text(c,55,130,45,"Make yourself at home.",true);rgb(c,.47,.58,.69);text(c,58,176,18,"Real Wayland apps. One virtual monitor for every window.",false);
- const char *keys[]={"MIDDLE + DRAG","CLICK / DRAG FRAME","META+O / F6","F7","WASD / SPACE","DRAG WHEEL","F8 / F9 / F10","F2 / F3","F4 / F12","DASH COG"};
- const char *desc[]={"Look around from the selected seat","Focus a screen / drag its titlebar to move it","Open or close the doors / toggle Arrange mode","Toggle client input / hover-drive ownership","Accelerate, reverse, steer and regenerative brake","Steer in drive mode; scroll focused app in client mode","Change view / switch seat / recover the car","Selected seat / focus app or next spatial monitor","Change underglow / save a WebP screenshot","Settings; Shift-click a tile for another instance"};
+ const char *keys[]={"MIDDLE + DRAG","CLICK / DRAG FRAME","META+O / META+A","F7","WASD / SPACE","DRAG WHEEL","F8 / F9 / F10","F2 / F3","F4 / F12","DASH COG"};
+ const char *desc[]={"Look around from the selected seat","Focus a screen / drag its titlebar to move it","Doors / city autopilot; a drive key returns manual control","Toggle client input / hover-drive ownership","Accelerate, reverse, steer and regenerative brake","Steer in drive mode; scroll focused app in client mode","Change view / switch seat / recover the car","Selected seat / focus app or next spatial monitor","Change underglow / save a WebP screenshot","Settings; Shift-click a tile for another instance"};
  for(int i=0;i<10;i++){int y=224+i*40;rgb(c,.69,.77,.88);mono(c,61,y,14,keys[i]);rgb(c,.54,.63,.73);text(c,294,y,14,desc[i],false);rgba(c,.26,.33,.43,.4);line(c,58,y+13,942,y+13);}
  rgb(c,.40,.49,.60);text(c,58,640,14,"Arrange: Tab next - HANDLES/H gizmo - drag transforms - R reset - right-click tile assigns app",false);rgb(c,.50,.87,.73);mono(c,58,686,15,"F1 CLOSE    F6/ESC EXIT ARRANGE    CTRL+ALT+Q EXIT");s->help_tex=ui_texture(im,0);cairo_destroy(c);cairo_surface_destroy(im);
 }

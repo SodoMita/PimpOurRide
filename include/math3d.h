@@ -1,7 +1,7 @@
 #ifndef CD_MATH3D_H
 #define CD_MATH3D_H
 #include <stdbool.h>
-#define CD_DRIVER_FOV_MIN 10.0f
+#define CD_DRIVER_FOV_MIN 1.0f
 #define CD_DRIVER_FOV_MAX 100.0f
 #define CD_DRIVER_SCROLL_FOV_MAX 75.0f
 typedef struct { float x,y,z; } Vec3;

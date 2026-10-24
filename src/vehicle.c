@@ -1,4 +1,5 @@
 #include "vehicle.h"
+#include "city.h"
 
 #include <math.h>
 #include <string.h>
@@ -61,6 +62,22 @@ void vehicle_init(Vehicle *v) {
  vehicle_reset_pose(v);
 }
 
+void vehicle_autopilot_set(Vehicle *v,bool enabled){
+ v->autopilot_enabled=enabled;
+ v->autopilot_waypoint=city_nearest_route_point(v->position);
+ v->autopilot_reverse=false;
+ if(enabled){
+  /* A completed route parks nose-in. On the next request, back straight out
+   * through the same doorway instead of attempting a U-turn between the
+   * original garage walls. Initial factory start already faces the exit. */
+  if(v->autopilot_waypoint==0&&city_garage_at(v->position)&&
+     -cosf(v->yaw*CD_RAD)>.3f)v->autopilot_reverse=true;
+  /* A route starts only after the full-height doors have closed. The fixed-
+   * step controller applies its parking brake until that actually happens. */
+  v->door_target[0]=v->door_target[1]=0;
+ }
+}
+
 void vehicle_step(Vehicle *v, VehicleInput input, float dt) {
  if (dt <= 0.0f) return;
 
@@ -73,6 +90,12 @@ void vehicle_step(Vehicle *v, VehicleInput input, float dt) {
   v->door_open[i] += clampf(delta, -travel, travel);
   v->door_open[i] = clampf(v->door_open[i], 0.0f, 1.0f);
  }
+
+ /* Navigation is part of the fixed-step simulation, not a render-time path
+  * animation. Every tick produces ordinary throttle/brake/steering input and
+  * therefore retains the same hover, energy, collision and telemetry behavior
+  * as manual driving. */
+ if(v->autopilot_enabled)input=city_autopilot_input(v,dt);
 
  const float mass = 2200.0f;
  const float wheelbase = 3.25f;
@@ -127,23 +150,15 @@ void vehicle_step(Vehicle *v, VehicleInput input, float dt) {
  v->yaw += v->yaw_rate * dt * CD_DEG;
  if (v->yaw > 360.0f || v->yaw < -360.0f) v->yaw = fmodf(v->yaw, 360.0f);
 
+ Vec3 previous = v->position;
  Vec3 forward = rotate_y(v3(0, 0, -1), v->yaw);
  v->position = vadd(v->position, vmul(forward, v->speed * dt));
  v->distance_m += fabsf(v->speed) * dt;
 
- /* Collide the complete yaw-rotated visible car with the actual inner wall
-  * faces (x = +/-14.70, z = -39.70/+15.70), not a smaller skateboard box.
-  * This makes the nose, tail and mirrors contact before crossing the wall. */
- v->collision = false;
- float old_x = v->position.x, old_z = v->position.z;
- Vec3 extent = vehicle_collision_extents_for_vehicle(v);
- float x_limit = 14.70f - extent.x;
- v->position.x = clampf(v->position.x, -x_limit, x_limit);
- v->position.z = clampf(v->position.z, -39.70f + extent.z, 15.70f - extent.z);
- if (old_x != v->position.x || old_z != v->position.z) {
-  v->speed *= 0.18f;
-  v->collision = true;
- }
+ /* The same wall/building boxes used by the city renderer constrain the full
+  * yaw-rotated visible car. Home's far wall has a real opening, so the rig can
+  * now leave the original garage and drive through the connected city. */
+ city_constrain_vehicle(v,previous);
 
  float roll_target = clampf(v->steering * v->speed * v->speed * 0.004f, -4.5f, 4.5f);
  float pitch_target = clampf(v->acceleration * 0.14f, -2.8f, 3.5f);

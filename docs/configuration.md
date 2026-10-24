@@ -204,7 +204,7 @@ last until the next file edit, then the file wins for the keys it sets.
 width = 1600          # 640..7680            (restart)
 height = 1000         # 400..4320            (restart)
 fps = 60              # 1..120 frame cap
-fov = 65              # 10..100 driver FOV; background scroll clamps to 10..75
+fov = 65              # 1..100 driver FOV; background scroll clamps to 1..75
 fullscreen = false    # --windowed only      (restart)
 
 [cockpit]
