@@ -206,11 +206,50 @@ websockify --web=tools/viewer 0.0.0.0:8080 127.0.0.1:5900
 | F2 | Reset to the driver's seat view |
 | F3 | Toggle a tight focus zoom on the active screen |
 | F4 | Cycle underglow color (violet / ice blue / acid lime) |
+| F5 | Arrange the selected screen (move / rotate / roll / uniformly scale) |
 | F6 | Cycle to the next connected screen |
 | F11 | `--windowed` only: toggle fullscreen |
 | F12 | Save a screenshot to `screenshots/` |
 | Ctrl+Alt+Enter | Open a new terminal (even if slot 1 was reassigned) |
 | Ctrl+Alt+Q | Quit |
+
+#### Arrange mode (F5)
+
+Press **F5** to arrange the active screen. The selected monitor gets an amber
+outline and local red/green/blue axes; click another occupied monitor, or use
+**Tab/F6**, to choose a different one. Pointer and keyboard input are captured
+by the compositor while Arrange mode is on, so dragging a window cannot also
+click through to the app underneath.
+
+![Arrange mode: a translated, yawed, rolled and uniformly scaled monitor](docs/arrange-mode.webp)
+
+| Arrange input | Transform |
+|---|---|
+| Left-drag | Translate along the monitor plane |
+| Shift-drag or right-drag | Yaw and pitch |
+| Ctrl-drag | Roll |
+| Alt-drag | Move toward/away from the driver's eye |
+| Mouse wheel | Uniformly scale width and height together |
+| Alt + wheel | Change depth |
+| Arrow keys | Translate left/right/up/down |
+| PageUp / PageDown | Move closer / farther away |
+| A/D, W/S, Q/E | Yaw, pitch, and roll |
+| `-` / `=`, or keypad `+` / `-` | Uniform scale down/up |
+| R or 0 | Reset this screen to its default bay transform |
+| Esc or F5 | Leave Arrange mode |
+
+Hold **Shift** for larger keyboard steps or **Ctrl** for finer ones (the Ctrl
+modifier still leaves Ctrl-drag available for roll). F3 can focus the Arrange
+target without leaving the mode.
+
+The transform moves the whole physical monitor assembly — screen, frame,
+stand, label and glow — and 3D ray picking uses the same transformed plane, so
+clicks stay aligned after you leave Arrange mode. Uniform scaling preserves the
+monitor aspect ratio and does not resize the client's Wayland buffer. To keep a
+screen recoverable, scale is limited to 0.35×–2.75×, pitch to ±85°, and the
+centre stays 0.8–12 m from the eye inside the garage bounds. These are
+deliberately **session-only** transforms: they are not written to the config
+file, and a newly mapped window starts from its slot's default transform.
 
 Over VNC, keyboard input covers typing (letters use an explicit physical
 evdev table, as do keypad digits/Enter/Space), navigation keys, function keys
@@ -240,7 +279,7 @@ Launch commands for the dashboard buttons can be overridden with the
 
 ```
 include/chrome.h, math3d.h, cdconfig.h  shared types, ray/plane math, config store API
-src/math3d.c                 camera rays, plane intersection, monitor layout
+src/math3d.c                 camera rays, plane intersection, monitor layout/arrange transforms
 src/wayland.c                 the actual compositor protocol implementation
 src/dmabuf.c                  zwp_linux_dmabuf_v1: real EGLImage GPU buffer import
 src/scene.c                   OpenGL cockpit, monitors, buttons, picking, 3D garage backdrop
@@ -254,7 +293,7 @@ clients/garage3d/              Garage3D: native Wayland + GLES 3.1 client (the g
 src/cdconfig.c                 shared INI config store (compositor + GUI; Garage3D has its own loader)
 docs/garage3d-architecture.md  Garage3D architecture + Wayland lifecycle documentation
 docs/configuration.md          config files, launch-menu editing, hot-reload semantics
-tests/test_math.c             raycast/picking unit tests
+tests/test_math.c             raycast/picking and arrange-transform unit tests
 tests/test_config.c           INI store round-trip tests
 tests/protocol_probe.c        end-to-end Wayland protocol conformance test (incl. dma-buf)
 tools/viewer/                 noVNC web viewer for the headless VNC server (see prepare-viewer.sh)

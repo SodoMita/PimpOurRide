@@ -100,10 +100,13 @@ static void hud(Server *s){
  rgb(c,.42,.49,.6);mono(c,29,116,10,"DRIVER VIEW  /  FIRST PERSON");snprintf(b,sizeof(b),"%02d CONNECTED  /  %02d BAYS",count,CD_MAX_MONITORS);mono(c,w-237,116,10,b);
  /* The control hints are chrome, not fake app controls. The actual buttons are 3D. */
  if(w>=1100){int bx=w/2-438,by=h-66;rgba(c,.025,.038,.059,.88);rounded(c,bx,by,876,43,21);cairo_fill(c);rgba(c,.35,.43,.53,.30);rounded(c,bx,by,876,43,21);cairo_stroke(c);
-  const char *keys[]={"MMB","F2","F3","F4","F6","F1"};const char *labels[]={"Look around","Driver view","Focus app","Neon","Next screen","Help"};int widths[]={181,165,159,115,159,0};int x=bx+18;
-  for(int i=0;i<6;i++){rgb(c,.14,.19,.25);rounded(c,x,by+11,i?25:34,21,4);cairo_fill(c);rgb(c,.80,.85,.91);mono(c,x+5,by+25,10,keys[i]);rgb(c,.60,.67,.74);text(c,x+(i?34:44),by+26,11,labels[i],false);x+=widths[i];}
+  if(s->arrange_mode){rgb(c,1,.70,.28);mono(c,bx+28,by+26,11,"DRAG move | SHIFT/RIGHT-DRAG yaw/pitch | CTRL+DRAG roll | WHEEL scale | ALT+WHEEL depth | R reset");}
+  else{const char *keys[]={"MMB","F2","F3","F4","F5","F6","F1"};const char *labels[]={"Look around","Driver view","Focus app","Neon","Arrange","Next screen","Help"};int widths[]={155,145,135,95,120,140,0};int x=bx+14;
+  for(int i=0;i<7;i++){rgb(c,.14,.19,.25);rounded(c,x,by+11,i?25:34,21,4);cairo_fill(c);rgb(c,.80,.85,.91);mono(c,x+5,by+25,10,keys[i]);rgb(c,.60,.67,.74);text(c,x+(i?34:44),by+26,11,labels[i],false);x+=widths[i];}}
  }
- rgb(c,.75,.81,.87);text(c,29,h-47,12,s->focus_view?"FOCUS MODE":"IN THE DRIVER'S SEAT",true);rgb(c,.37,.45,.55);mono(c,29,h-26,9,"NESTED WAYLAND / v" CD_VERSION);
+ char mode[64];if(s->arrange_mode)snprintf(mode,sizeof(mode),"ARRANGE MODE%s",s->arrange_slot>=0?"":"");
+ if(s->arrange_mode&&s->arrange_slot>=0)snprintf(mode,sizeof(mode),"ARRANGE MODE / CD-%02d",s->arrange_slot+1);
+ rgb(c,.75,.81,.87);text(c,29,h-47,12,s->arrange_mode?mode:s->focus_view?"FOCUS MODE":"IN THE DRIVER'S SEAT",true);rgb(c,.37,.45,.55);mono(c,29,h-26,9,"NESTED WAYLAND / v" CD_VERSION);
  rgb(c,.72,.78,.84);snprintf(b,sizeof(b),"%02.0f FPS",s->fps);mono(c,w-94,h-47,12,b);rgb(c,.39,.48,.56);mono(c,w-107,h-26,9,"OPENGL / SHM");
  if(s->notice_until>s->time){font(c,12,false,false);cairo_text_extents_t ex;cairo_text_extents(c,s->notice,&ex);float tw=ex.width+44;rgba(c,.035,.06,.08,.94);rounded(c,(w-tw)/2,h-115,tw,31,15);cairo_fill(c);rgb(c,.53,.90,.77);text(c,(w-ex.width)/2,h-94,12,s->notice,false);}
  if(s->middle_look){rgba(c,.38,.93,.77,.8);cairo_set_line_width(c,1);line(c,w/2-9,h/2,w/2+9,h/2);line(c,w/2,h/2-9,w/2,h/2+9);}
@@ -112,9 +115,9 @@ static void hud(Server *s){
 static void help(Server *s){
  cairo_surface_t *im=cairo_image_surface_create(CAIRO_FORMAT_ARGB32,1000,720);cairo_t *c=cairo_create(im);rgba(c,.025,.038,.063,.98);rounded(c,1,1,998,718,25);cairo_fill(c);rgb(c,.25,.33,.43);cairo_set_line_width(c,2);rounded(c,1,1,998,718,25);cairo_stroke(c);
  rgb(c,.52,.90,.77);mono(c,58,63,15,"CHROMEDRIVE / DRIVER'S MANUAL");rgb(c,.94,.95,.97);text(c,55,130,45,"Make yourself at home.",true);rgb(c,.47,.58,.69);text(c,58,176,18,"Real Wayland apps. One virtual monitor for every window.",false);
- const char *keys[]={"MIDDLE + DRAG","CLICK A SCREEN","F2 / F3","F4 / F6","SHIFT + BUTTON","CTRL + ALT + ENTER","F11 / F12","DASH COG"};const char *desc[]={"Look around from the driver's seat","Send keyboard and pointer input to that app","Restore driver view / focus the selected monitor","Change underglow / cycle to the next monitor","Launch another instance instead of focusing","Open a new terminal on its own screen","Fullscreen host window / save a screenshot","Settings (right-click a tile to assign an app)"};
- for(int i=0;i<8;i++){int y=234+i*51;rgb(c,.69,.77,.88);mono(c,61,y,17,keys[i]);rgb(c,.54,.63,.73);text(c,328,y,17,desc[i],false);rgba(c,.26,.33,.43,.4);line(c,58,y+18,942,y+18);}
- rgb(c,.40,.49,.60);text(c,58,640,15,"Dashboard controls are ray-picked in 3D. Right-click elsewhere is passed to apps.",false);rgb(c,.50,.87,.73);mono(c,58,686,15,"F1 TO CLOSE       CTRL + ALT + Q TO EXIT");s->help_tex=ui_texture(im,0);cairo_destroy(c);cairo_surface_destroy(im);
+ const char *keys[]={"MIDDLE + DRAG","CLICK A SCREEN","F2 / F3","F5 / ARRANGE","F4 / F6","SHIFT + BUTTON","CTRL + ALT + ENTER","F11 / F12","DASH COG"};const char *desc[]={"Look around from the driver's seat","Send keyboard and pointer input to that app","Restore driver view / focus the selected monitor","Move, rotate, roll and uniformly scale a display","Change underglow / cycle to the next monitor","Launch another instance instead of focusing","Open a new terminal on its own screen","Fullscreen host window / save a screenshot","Settings (right-click a tile to assign an app)"};
+ for(int i=0;i<9;i++){int y=228+i*45;rgb(c,.69,.77,.88);mono(c,61,y,17,keys[i]);rgb(c,.54,.63,.73);text(c,328,y,17,desc[i],false);rgba(c,.26,.33,.43,.4);line(c,58,y+16,942,y+16);}
+ rgb(c,.40,.49,.60);text(c,58,634,14,"Arrange: drag move - Shift/right-drag yaw/pitch - Ctrl+drag roll - wheel scale - Alt+wheel depth",false);rgb(c,.50,.87,.73);mono(c,58,678,15,"F1 TO CLOSE    F5/ESC EXIT ARRANGE    CTRL + ALT + Q TO EXIT");s->help_tex=ui_texture(im,0);cairo_destroy(c);cairo_surface_destroy(im);
 }
 static void make_leather(Server *s){
  cairo_surface_t *im=cairo_image_surface_create(CAIRO_FORMAT_ARGB32,256,256);

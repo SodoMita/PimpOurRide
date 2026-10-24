@@ -108,6 +108,10 @@ struct Server {
  int width,height,fps_limit,theme,hover_button,active_slot;
  int bg_mode; /* CD_BG_*: which environment() backdrop to draw */
  bool running,middle_look,focus_view,show_help,hud_visible,fullscreen,demo,launch_pending;
+ /* F5 Arrange mode: session-only whole-monitor translate/rotate/scale.
+  * The effective transform lives in monitors[slot].plane and is reset when
+  * a new top-level maps into that bay. */
+ bool arrange_mode,arrange_dragging;int arrange_slot,arrange_drag_button,arrange_last_x,arrange_last_y;
  float yaw,pitch,target_yaw,target_pitch,fov,target_fov;
  Vec3 eye;
  double time,dt,fps,start_time,last_ui_time,notice_until;
@@ -144,6 +148,10 @@ void scene_render(Server *s);
 void scene_finish(Server *s);
 Hit scene_pick(Server *s,float x,float y,bool grab);
 void scene_focus_monitor(Server *s,int slot,bool zoom);
+void scene_monitor_reset(Server *s,int slot);
+void scene_monitor_translate(Server *s,int slot,float right,float up,float toward_eye);
+void scene_monitor_rotate(Server *s,int slot,float yaw,float pitch,float roll);
+void scene_monitor_scale(Server *s,int slot,float factor);
 void scene_reset_camera(Server *s);
 void scene_save_screenshot(Server *s,const char *path);
 void scene_neon_color(Server *s,float *r,float *g,float *b);
@@ -162,6 +170,9 @@ void app_open_settings_slot(Server *s,int slot,bool choose_app);
 void app_exec(Server *s,const char *command);
 void app_notice(Server *s,const char *fmt,...);
 bool app_global_key(Server *s,uint32_t evdev,bool down);
+bool app_arrange_pointer_button(Server *s,Hit hit,uint32_t button,bool down);
+void app_arrange_pointer_motion(Server *s,int x,int y);
+bool app_arrange_pointer_wheel(Server *s,float steps);
 /* dmabuf.c: zwp_linux_dmabuf_v1, real EGLImage-backed zero-copy GPU import. */
 void dmabuf_probe(Server *s);
 void dmabuf_register_global(Server *s);

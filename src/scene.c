@@ -42,7 +42,7 @@ static void glow_line(Vec3 a,Vec3 b,float radius,float r,float g,float bl){
 }
 void scene_neon_color(Server *s,float *r,float *g,float *b){if(s->theme==1){*r=.18;*g=.85;*b=1;}else if(s->theme==2){*r=.64;*g=1;*b=.19;}else{*r=.65;*g=.22;*b=1;}}
 #define neon scene_neon_color
-static void plane_begin(Plane p){glPushMatrix();glTranslatef(p.center.x,p.center.y,p.center.z);glRotatef(p.yaw,0,1,0);glRotatef(p.pitch,1,0,0);}
+static void plane_begin(Plane p){glPushMatrix();glTranslatef(p.center.x,p.center.y,p.center.z);glRotatef(p.yaw,0,1,0);glRotatef(p.pitch,1,0,0);glRotatef(p.roll,0,0,1);}
 static void lighting(void){
  glEnable(GL_LIGHTING);glEnable(GL_LIGHT0);glEnable(GL_LIGHT1);glEnable(GL_LIGHT2);glEnable(GL_COLOR_MATERIAL);glColorMaterial(GL_FRONT_AND_BACK,GL_AMBIENT_AND_DIFFUSE);glEnable(GL_NORMALIZE);
  GLfloat ambient[]={.29,.28,.37,1},pos[]={-3,4,4,1},diff[]={.77,.83,.98,1},spec[]={.7,.8,1,1};glLightModelfv(GL_LIGHT_MODEL_AMBIENT,ambient);glLightfv(GL_LIGHT0,GL_POSITION,pos);glLightfv(GL_LIGHT0,GL_DIFFUSE,diff);glLightfv(GL_LIGHT0,GL_SPECULAR,spec);
@@ -297,26 +297,43 @@ static void draw_cog(Server *s){
  if(hot){glEnable(GL_BLEND);glBlendFunc(GL_SRC_ALPHA,GL_ONE);glColor4f(.25,.85,.70,.15);quad(-.12,-.12,.24,.24,.033);glDisable(GL_BLEND);}
  glEnable(GL_LIGHTING);glPopMatrix();
 }
-typedef struct {float scale,w,h;int layer;} DrawSurface;
+typedef struct {float scale,w,h,z0,zstep;int layer;} DrawSurface;
 static void transformed_uv(int transform,float x,float y,float *u,float *v){float a=x,b=y;switch(transform&3){case 1:a=1-y;b=x;break;case 2:a=1-x;b=1-y;break;case 3:a=y;b=1-x;break;}if(transform>=4)a=1-a;*u=a;*v=b;}
 static void draw_app_surface(Surface *p,int sx,int sy,void *data){
- DrawSurface *d=data;float x=-d->w/2+sx*d->scale,y=d->h/2-sy*d->scale,w=p->width*d->scale,h=p->height*d->scale,z=.024f+.0007f*d->layer++;
+ DrawSurface *d=data;float x=-d->w/2+sx*d->scale,y=d->h/2-sy*d->scale,w=p->width*d->scale,h=p->height*d->scale,z=d->z0+d->zstep*d->layer++;
  glDisable(GL_LIGHTING);glEnable(GL_TEXTURE_2D);glBindTexture(GL_TEXTURE_2D,p->texture);glEnable(GL_BLEND);glBlendFunc(GL_ONE,GL_ONE_MINUS_SRC_ALPHA);glColor4f(1,1,1,1);
  float coords[4][2]={{0,0},{1,0},{1,1},{0,1}},vx[]={x,x+w,x+w,x},vy[]={y,y,y-h,y-h};glBegin(GL_QUADS);for(int i=0;i<4;i++){float u,v;transformed_uv(p->transform,coords[i][0],coords[i][1],&u,&v);glTexCoord2f(u,v);glVertex3f(vx[i],vy[i],z);}glEnd();glDisable(GL_BLEND);glDisable(GL_TEXTURE_2D);glEnable(GL_LIGHTING);
 }
 static void draw_monitor(Server *s,int i){
  Monitor *m=&s->monitors[i];if(!m->surface)return;Plane p=m->plane;float w=p.width,h=p.height;bool active=s->keyboard_focus==m->surface;
+ float k=w/monitor_plane(i).width; /* uniform whole-monitor scale */
+ bool arranging=s->arrange_mode&&s->arrange_slot==i;
  plane_begin(p);
- color(.08,.095,.13);cylinder(v3(0,-h/2-.03,-.065),v3(0,-.90,-.065),.045,16);color(.16,.18,.23);box(0,-.88,-.085,.48,.06,.25);
- color(.34,.39,.46);rbox(0,.075,-.056,w+.12,h+.25,.10,.065);
- color(.018,.027,.038);rbox(0,.075,-.003,w+.086,h+.219,.038,.055);
- glDisable(GL_LIGHTING);color(.010,.016,.026);quad(-w/2,-h/2,w,h,.019);glEnable(GL_LIGHTING);
+ color(.08,.095,.13);cylinder(v3(0,-h/2-.03f*k,-.065f*k),v3(0,-.90f*k,-.065f*k),.045f*k,16);color(.16,.18,.23);box(0,-.88f*k,-.085f*k,.48f*k,.06f*k,.25f*k);
+ color(.34,.39,.46);rbox(0,.075f*k,-.056f*k,w+.12f*k,h+.25f*k,.10f*k,.065f*k);
+ color(.018,.027,.038);rbox(0,.075f*k,-.003f*k,w+.086f*k,h+.219f*k,.038f*k,.055f*k);
+ glDisable(GL_LIGHTING);color(.010,.016,.026);quad(-w/2,-h/2,w,h,.019f*k);glEnable(GL_LIGHTING);
  float nr,ng,nb;neon(s,&nr,&ng,&nb);
- if(active)glow_line(v3(-w/2,-h/2-.022,.025),v3(w/2,-h/2-.022,.025),.004,.35,.92,.74);else glow_line(v3(-w/2,-h/2-.022,.025),v3(w/2,-h/2-.022,.025),.003,nr*.65,ng*.7,nb*.7);
- ui_monitor_label(s,i);texture(m->label,-w/2,h/2+.011,w,.137,.024);
- glEnable(GL_STENCIL_TEST);glClear(GL_STENCIL_BUFFER_BIT);glStencilMask(0xff);glStencilFunc(GL_ALWAYS,1,0xff);glStencilOp(GL_KEEP,GL_KEEP,GL_REPLACE);glColorMask(GL_FALSE,GL_FALSE,GL_FALSE,GL_FALSE);glDepthMask(GL_FALSE);quad(-w/2,-h/2,w,h,.021);glColorMask(GL_TRUE,GL_TRUE,GL_TRUE,GL_TRUE);glDepthMask(GL_TRUE);glStencilFunc(GL_EQUAL,1,0xff);glStencilOp(GL_KEEP,GL_KEEP,GL_KEEP);glStencilMask(0);
- float scale=fminf(w/m->surface->width,h/m->surface->height);DrawSurface d={.scale=scale,.w=m->surface->width*scale,.h=m->surface->height*scale};server_each_surface(m->surface,draw_app_surface,&d);
- glStencilMask(0xff);glDisable(GL_STENCIL_TEST);glPopMatrix();
+ if(arranging)glow_line(v3(-w/2,-h/2-.022f*k,.025f*k),v3(w/2,-h/2-.022f*k,.025f*k),.005f*k,1,.62,.16);
+ else if(active)glow_line(v3(-w/2,-h/2-.022f*k,.025f*k),v3(w/2,-h/2-.022f*k,.025f*k),.004f*k,.35,.92,.74);
+ else glow_line(v3(-w/2,-h/2-.022f*k,.025f*k),v3(w/2,-h/2-.022f*k,.025f*k),.003f*k,nr*.65,ng*.7,nb*.7);
+ ui_monitor_label(s,i);texture(m->label,-w/2,h/2+.011f*k,w,.137f*k,.024f*k);
+ glEnable(GL_STENCIL_TEST);glClear(GL_STENCIL_BUFFER_BIT);glStencilMask(0xff);glStencilFunc(GL_ALWAYS,1,0xff);glStencilOp(GL_KEEP,GL_KEEP,GL_REPLACE);glColorMask(GL_FALSE,GL_FALSE,GL_FALSE,GL_FALSE);glDepthMask(GL_FALSE);quad(-w/2,-h/2,w,h,.021f*k);glColorMask(GL_TRUE,GL_TRUE,GL_TRUE,GL_TRUE);glDepthMask(GL_TRUE);glStencilFunc(GL_EQUAL,1,0xff);glStencilOp(GL_KEEP,GL_KEEP,GL_KEEP);glStencilMask(0);
+ float scale=fminf(w/m->surface->width,h/m->surface->height);DrawSurface d={.scale=scale,.w=m->surface->width*scale,.h=m->surface->height*scale,.z0=.024f*k,.zstep=.0007f*k};server_each_surface(m->surface,draw_app_surface,&d);
+ glStencilMask(0xff);glDisable(GL_STENCIL_TEST);
+ if(arranging){
+  /* Amber frame + local RGB axes (right/up/normal) make the current
+   * Arrange target and its orientation legible while it is transformed. */
+  float z=.038f*k,r=.005f*k;
+  glow_line(v3(-w/2,-h/2,z),v3(w/2,-h/2,z),r,1,.62,.16);
+  glow_line(v3(w/2,-h/2,z),v3(w/2,h/2,z),r,1,.62,.16);
+  glow_line(v3(w/2,h/2,z),v3(-w/2,h/2,z),r,1,.62,.16);
+  glow_line(v3(-w/2,h/2,z),v3(-w/2,-h/2,z),r,1,.62,.16);
+  glow_line(v3(0,0,z),v3(.30f*k,0,z),r,1,.22,.22);
+  glow_line(v3(0,0,z),v3(0,.30f*k,z),r,.25,1,.35);
+  glow_line(v3(0,0,z),v3(0,0,.34f*k),r,.30,.55,1);
+ }
+ glPopMatrix();
 }
 void scene_init(Server *s){
  char path[4200];snprintf(path,sizeof(path),"%s/assets/garage.webp",s->root);s->garage_tex=ui_load_webp(path);
@@ -355,8 +372,30 @@ Hit scene_pick(Server *s,float x,float y,bool grab){
  return best;
 }
 void scene_focus_monitor(Server *s,int slot,bool zoom){
- if(slot<0||slot>=CD_MAX_MONITORS)return;Plane p=s->monitors[slot].plane;float desired=atan2f(-p.center.x,s->eye.z-p.center.z)/RAD;
- while(desired-s->yaw>180)desired-=360;while(desired-s->yaw<-180)desired+=360;s->target_yaw=desired;s->target_pitch=atan2f(p.center.y-s->eye.y,4.4f)/RAD;s->target_fov=zoom?32:65;s->focus_view=zoom;
+ if(slot<0||slot>=CD_MAX_MONITORS)return;Plane p=s->monitors[slot].plane;
+ Vec3 rel=vsub(p.center,s->eye);float horizontal=sqrtf(rel.x*rel.x+rel.z*rel.z);float dist=sqrtf(vdot(rel,rel));
+ float desired=atan2f(-rel.x,-rel.z)/RAD;
+ while(desired-s->yaw>180)desired-=360;while(desired-s->yaw<-180)desired+=360;
+ s->target_yaw=desired;
+ s->target_pitch=atan2f(rel.y,fmaxf(horizontal,.05f))/RAD;
+ s->target_fov=zoom?clampf(2.f*atanf((p.height*.85f)/fmaxf(dist,.1f))/RAD,16.f,55.f):65;
+ s->focus_view=zoom;
+}
+void scene_monitor_reset(Server *s,int slot){
+ if(slot<0||slot>=CD_MAX_MONITORS)return;
+ s->monitors[slot].plane=monitor_plane(slot);
+}
+void scene_monitor_translate(Server *s,int slot,float right,float up,float toward_eye){
+ if(slot<0||slot>=CD_MAX_MONITORS)return;
+ s->monitors[slot].plane=plane_translate(s->monitors[slot].plane,s->eye,right,up,toward_eye);
+}
+void scene_monitor_rotate(Server *s,int slot,float yaw,float pitch,float roll){
+ if(slot<0||slot>=CD_MAX_MONITORS)return;
+ s->monitors[slot].plane=plane_rotate(s->monitors[slot].plane,yaw,pitch,roll);
+}
+void scene_monitor_scale(Server *s,int slot,float factor){
+ if(slot<0||slot>=CD_MAX_MONITORS)return;
+ s->monitors[slot].plane=plane_uniform_scale(s->monitors[slot].plane,monitor_plane(slot),factor);
 }
 void scene_reset_camera(Server *s){s->target_yaw=roundf(s->yaw/360)*360;s->target_pitch=-6;s->target_fov=65;s->focus_view=false;}
 void scene_save_screenshot(Server *s,const char *path){

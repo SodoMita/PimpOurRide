@@ -15,5 +15,28 @@ int main(void){
  Vec3 corner=vadd(p.center,vadd(vmul(rotate_y(v3(1,0,0),p.yaw),p.width*.49f),vmul(rotate_y(rotate_x(v3(0,1,0),p.pitch),p.yaw),p.height*.49f)));
  assert(plane_hit(p,eye,vnorm(vsub(corner,eye)),&u,&v,&d,true));assert(near(u,.99)&&near(v,.01));
  assert(!plane_hit(p,eye,vnorm(vsub(vadd(corner,v3(2,0,0)),eye)),&u,&v,&d,true));
- puts("PASS: monitor ray picking, all eight screen transforms, camera axes, tilted cockpit buttons, back-face rejection");return 0;
+ /* Roll is around the plane normal: at +90 degrees the local right axis
+  * points world-up and local up points world-left. */
+ p=monitor_plane(0);p.roll=90;
+ Vec3 right,up,normal;plane_axes(p,&right,&up,&normal);
+ assert(near(right.x,0)&&near(right.y,1)&&near(right.z,0));
+ assert(near(up.x,-1)&&near(up.y,0)&&near(up.z,0));
+ assert(near(normal.x,0)&&near(normal.y,0)&&near(normal.z,1));
+ Vec3 rolled_point=vadd(p.center,vadd(vmul(right,p.width*.25f),vmul(up,p.height*.25f)));
+ assert(plane_hit(p,eye,vnorm(vsub(rolled_point,eye)),&u,&v,&d,true));assert(near(u,.75)&&near(v,.25));
+ /* Arrange transforms: local translation, eye-depth, wrapped/clamped
+  * rotation, and aspect-preserving uniform scale with limits. */
+ Plane moved=plane_translate(monitor_plane(0),eye,.5f,.25f,0);
+ assert(near(moved.center.x,.5f)&&near(moved.center.y,1.57f)&&near(moved.center.z,-1.6f));
+ float before=sqrtf(vdot(vsub(moved.center,eye),vsub(moved.center,eye)));
+ moved=plane_translate(moved,eye,0,0,.4f);
+ float after=sqrtf(vdot(vsub(moved.center,eye),vsub(moved.center,eye)));
+ assert(near(before-after,.4f));
+ Plane rotated=plane_rotate((Plane){.yaw=179,.pitch=84,.roll=-179},3,4,-3);
+ assert(near(rotated.yaw,-178)&&near(rotated.pitch,85)&&near(rotated.roll,178));
+ Plane scaled=plane_uniform_scale(monitor_plane(0),monitor_plane(0),10);
+ assert(near(scaled.width,2.10f*2.75f)&&near(scaled.height,1.3125f*2.75f));
+ scaled=plane_uniform_scale(scaled,monitor_plane(0),.01f);
+ assert(near(scaled.width,2.10f*.35f)&&near(scaled.height,1.3125f*.35f));
+ puts("PASS: monitor ray picking, all eight screen transforms, camera axes, tilted/rolled planes, arrange transforms, back-face rejection");return 0;
 }

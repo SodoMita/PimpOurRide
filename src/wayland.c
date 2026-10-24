@@ -28,6 +28,7 @@ static void surface_unmap(Surface *p){
  if(s->pointer_focus==p){s->pointer_focus=NULL;}
  if(s->pointer_grab==p){s->pointer_grab=NULL;s->held_buttons=0;}
  if(p->slot>=0&&s->monitors[p->slot].surface==p){
+  if(s->arrange_slot==p->slot){s->arrange_slot=-1;s->arrange_dragging=false;s->arrange_drag_button=0;}
   Resource *r;wl_list_for_each(r,&s->outputs,link)if(r->slot==p->slot&&wl_resource_get_client(r->resource)==wl_resource_get_client(p->resource))wl_surface_send_leave(p->resource,r->resource);
   s->monitors[p->slot].surface=NULL;
  }
@@ -84,6 +85,7 @@ static void surface_map(Surface *p){
  int slot=-1;if(preferred>=0&&!s->monitors[preferred].surface)slot=preferred;
  if(slot<0)for(int i=0;i<CD_MAX_MONITORS;i++)if(!s->monitors[i].surface){slot=i;break;}
  if(slot<0){app_notice(s,"All eight display bays are occupied");xdg_toplevel_send_close(p->toplevel);return;}
+ scene_monitor_reset(s,slot); /* Arrange transforms are per window/session, not inherited by the next app in this bay. */
  p->slot=slot;p->mapped=true;s->monitors[slot].surface=p;send_surface_enter(p);server_focus(s,p);
  fprintf(stderr,"[wayland] mapped %s [%s] -> CD-%02d (%dx%d)\n",p->title,p->app_id,slot+1,p->width,p->height);
  if(s->time>3.5){scene_focus_monitor(s,slot,false);app_notice(s,"CD-%02d connected / %s",slot+1,p->title);}

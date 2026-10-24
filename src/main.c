@@ -193,6 +193,105 @@ void app_open_settings_slot(Server *s,int slot,bool choose_app){
  app_exec(s,cmd);app_notice(s,choose_app?"Opening app picker...":"Opening Settings...");
 }
 void app_open_settings(Server *s){app_open_settings_slot(s,-1,false);}
+/* ---- F5 Arrange mode ---------------------------------------------------
+ * A modal, session-only transform editor for whole spatial monitors. The
+ * selected monitor's Plane is translated along its own right/up axes (and
+ * toward/away from the eye), rotated in yaw/pitch/roll, and uniformly
+ * scaled. Because rendering and scene_pick() both use that same Plane, the
+ * app remains clickable exactly where it is drawn after exiting the mode. */
+static bool arrange_valid(Server *s){
+ return s->arrange_mode&&s->arrange_slot>=0&&s->arrange_slot<CD_MAX_MONITORS&&s->monitors[s->arrange_slot].surface;
+}
+static void arrange_notice(Server *s){
+ if(!arrange_valid(s))return;
+ Plane p=s->monitors[s->arrange_slot].plane,base=monitor_plane(s->arrange_slot);
+ app_notice(s,"Arrange CD-%02d | %.2f, %.2f, %.2f m | yaw %.0f pitch %.0f roll %.0f | %.2fx",
+  s->arrange_slot+1,p.center.x,p.center.y,p.center.z,p.yaw,p.pitch,p.roll,p.width/base.width);
+}
+static bool arrange_set_target(Server *s,int slot,bool move_camera){
+ if(slot<0||slot>=CD_MAX_MONITORS||!s->monitors[slot].surface)return false;
+ s->arrange_slot=slot;s->active_slot=slot;
+ server_focus(s,s->monitors[slot].surface);
+ if(move_camera)scene_focus_monitor(s,slot,false);
+ arrange_notice(s);
+ return true;
+}
+static int arrange_find_slot(Server *s){
+ Surface *root=surface_root(s->keyboard_focus);
+ if(root&&root->slot>=0&&root->slot<CD_MAX_MONITORS&&s->monitors[root->slot].surface==root)return root->slot;
+ if(s->active_slot>=0&&s->active_slot<CD_MAX_MONITORS&&s->monitors[s->active_slot].surface)return s->active_slot;
+ for(int i=0;i<CD_MAX_MONITORS;i++)if(s->monitors[i].surface)return i;
+ return -1;
+}
+static bool arrange_ensure_target(Server *s){
+ if(arrange_valid(s))return true;
+ int slot=arrange_find_slot(s);
+ return slot>=0&&arrange_set_target(s,slot,false);
+}
+static void arrange_exit(Server *s){
+ s->arrange_mode=false;s->arrange_dragging=false;s->arrange_drag_button=0;
+ app_notice(s,"Arrange mode off");
+}
+static void arrange_toggle(Server *s){
+ if(s->arrange_mode){arrange_exit(s);return;}
+ if(s->held_buttons>0){app_notice(s,"Arrange: release the pointer button first");return;}
+ int slot=arrange_find_slot(s);
+ if(slot<0){app_notice(s,"Arrange: no window is open");return;}
+ s->arrange_mode=true;s->arrange_dragging=false;s->arrange_drag_button=0;
+ arrange_set_target(s,slot,true);
+}
+static void arrange_cycle(Server *s){
+ int start=arrange_valid(s)?s->arrange_slot:s->active_slot;
+ for(int d=1;d<=CD_MAX_MONITORS;d++){
+  int slot=(start+d)%CD_MAX_MONITORS;
+  if(arrange_set_target(s,slot,true))return;
+ }
+ app_notice(s,"Arrange: no window is open");
+}
+bool app_arrange_pointer_button(Server *s,Hit hit,uint32_t button,bool down){
+ if(!s->arrange_mode)return false;
+ if(button!=BTN_LEFT&&button!=BTN_RIGHT)return true;
+ if(down){
+  if(hit.kind==HIT_APP&&arrange_set_target(s,hit.slot,false)){
+   s->arrange_dragging=true;s->arrange_drag_button=(int)button;
+   s->arrange_last_x=s->mouse_x;s->arrange_last_y=s->mouse_y;
+  }
+  return true; /* dashboard/close/app clicks are modal while arranging */
+ }
+ if(s->arrange_dragging&&s->arrange_drag_button==(int)button){
+  s->arrange_dragging=false;s->arrange_drag_button=0;arrange_notice(s);
+ }
+ return true;
+}
+void app_arrange_pointer_motion(Server *s,int x,int y){
+ if(!s->arrange_mode)return;
+ if(!s->arrange_dragging||!arrange_ensure_target(s)){s->arrange_last_x=x;s->arrange_last_y=y;return;}
+ int dx=x-s->arrange_last_x,dy=y-s->arrange_last_y;
+ s->arrange_last_x=x;s->arrange_last_y=y;
+ if(!dx&&!dy)return;
+ bool shift=s->keys[KEY_LEFTSHIFT]||s->keys[KEY_RIGHTSHIFT];
+ bool ctrl=s->keys[KEY_LEFTCTRL]||s->keys[KEY_RIGHTCTRL];
+ bool alt=s->keys[KEY_LEFTALT]||s->keys[KEY_RIGHTALT];
+ int slot=s->arrange_slot;
+ if(ctrl)scene_monitor_rotate(s,slot,0,0,dx*.30f);
+ else if(shift||s->arrange_drag_button==BTN_RIGHT)scene_monitor_rotate(s,slot,dx*.25f,dy*.25f,0);
+ else if(alt)scene_monitor_translate(s,slot,0,0,-dy*.010f);
+ else{
+  Plane p=s->monitors[slot].plane;Vec3 rel=vsub(p.center,s->eye);
+  float dist=sqrtf(vdot(rel,rel));
+  float meters_per_pixel=2.f*dist*tanf(s->fov*.00872664626f)/(float)s->height;
+  scene_monitor_translate(s,slot,dx*meters_per_pixel,-dy*meters_per_pixel,0);
+ }
+}
+bool app_arrange_pointer_wheel(Server *s,float steps){
+ if(!s->arrange_mode)return false;
+ if(!arrange_ensure_target(s)||steps==0)return true;
+ bool alt=s->keys[KEY_LEFTALT]||s->keys[KEY_RIGHTALT];
+ if(alt)scene_monitor_translate(s,s->arrange_slot,0,0,steps*.18f);
+ else scene_monitor_scale(s,s->arrange_slot,expf(steps*.10f));
+ arrange_notice(s);
+ return true;
+}
 static void next_monitor(Server *s){for(int d=1;d<=CD_MAX_MONITORS;d++){int i=(s->active_slot+d)%CD_MAX_MONITORS;if(s->monitors[i].surface){server_focus(s,s->monitors[i].surface);scene_focus_monitor(s,i,s->focus_view);return;}}}
 /* Compositor-level hotkeys, shared by both input backends (SDL and headless/VNC).
  * Keyed on evdev codes + the live s->keys[] modifier bitmap (already updated by
@@ -202,6 +301,39 @@ bool app_global_key(Server *s,uint32_t evdev,bool down){
  bool ctrl=s->keys[KEY_LEFTCTRL]||s->keys[KEY_RIGHTCTRL];
  bool alt=s->keys[KEY_LEFTALT]||s->keys[KEY_RIGHTALT];
  if(ctrl&&alt&&(evdev==KEY_ENTER||evdev==KEY_KPENTER||evdev==KEY_Q)){if(down){if(evdev==KEY_Q)s->running=false;else launch_new_terminal(s);}return true;}
+ if(evdev==KEY_F5){if(down)arrange_toggle(s);return true;}
+ if(s->arrange_mode&&evdev!=KEY_F1&&evdev!=KEY_F2&&evdev!=KEY_F4&&evdev!=KEY_F11&&evdev!=KEY_F12){
+  bool modifier=evdev==KEY_LEFTSHIFT||evdev==KEY_RIGHTSHIFT||evdev==KEY_LEFTCTRL||evdev==KEY_RIGHTCTRL||evdev==KEY_LEFTALT||evdev==KEY_RIGHTALT||evdev==KEY_LEFTMETA||evdev==KEY_RIGHTMETA;
+  if(modifier)return false; /* let server_key maintain s->keys[] for drags */
+  if(evdev==KEY_ESC){if(down)arrange_exit(s);return true;}
+  if(evdev==KEY_F6||evdev==KEY_TAB){if(down)arrange_cycle(s);return true;}
+  if(evdev==KEY_F3){if(down&&arrange_ensure_target(s))scene_focus_monitor(s,s->arrange_slot,!s->focus_view);return true;}
+  if(!down)return true;
+  if(!arrange_ensure_target(s)){app_notice(s,"Arrange: no window is open");return true;}
+  bool shift=s->keys[KEY_LEFTSHIFT]||s->keys[KEY_RIGHTSHIFT];
+  float step=ctrl?.25f:shift?3.f:1.f;
+  int slot=s->arrange_slot;bool changed=true;
+  switch(evdev){
+  case KEY_LEFT:scene_monitor_translate(s,slot,-.08f*step,0,0);break;
+  case KEY_RIGHT:scene_monitor_translate(s,slot,.08f*step,0,0);break;
+  case KEY_UP:scene_monitor_translate(s,slot,0,.08f*step,0);break;
+  case KEY_DOWN:scene_monitor_translate(s,slot,0,-.08f*step,0);break;
+  case KEY_PAGEUP:scene_monitor_translate(s,slot,0,0,.12f*step);break;
+  case KEY_PAGEDOWN:scene_monitor_translate(s,slot,0,0,-.12f*step);break;
+  case KEY_A:scene_monitor_rotate(s,slot,-3.f*step,0,0);break;
+  case KEY_D:scene_monitor_rotate(s,slot,3.f*step,0,0);break;
+  case KEY_W:scene_monitor_rotate(s,slot,0,-3.f*step,0);break;
+  case KEY_S:scene_monitor_rotate(s,slot,0,3.f*step,0);break;
+  case KEY_Q:scene_monitor_rotate(s,slot,0,0,-3.f*step);break;
+  case KEY_E:scene_monitor_rotate(s,slot,0,0,3.f*step);break;
+  case KEY_MINUS:case KEY_KPMINUS:scene_monitor_scale(s,slot,powf(1.08f,-step));break;
+  case KEY_EQUAL:case KEY_KPPLUS:scene_monitor_scale(s,slot,powf(1.08f,step));break;
+  case KEY_R:case KEY_0:scene_monitor_reset(s,slot);break;
+  default:changed=false;break;
+  }
+  if(changed)arrange_notice(s);
+  return true;
+ }
  bool global=evdev==KEY_F1||evdev==KEY_F2||evdev==KEY_F3||evdev==KEY_F4||evdev==KEY_F6||evdev==KEY_F11||evdev==KEY_F12;
  if(!global)return false;if(!down)return true;
  switch(evdev){
@@ -216,9 +348,9 @@ bool app_global_key(Server *s,uint32_t evdev,bool down){
  }
  return true;
 }
-static void usage(const char *name){printf("ChromeDrive " CD_VERSION " — native, first-person Wayland cockpit\n\nUsage: %s [options]\n  --demo                Start a real terminal + Files + Audio clients\n  --socket NAME         Wayland socket (default: automatic)\n  --exec COMMAND        Launch an extra Wayland client (repeatable)\n  --size WIDTHxHEIGHT   Framebuffer/host window size (default 1600x1000)\n  --fps N               Frame cap, 1..120 (default 60)\n  --headless            Run with no X server: surfaceless EGL + built-in VNC server (default)\n  --windowed            Dev/debug mode: open a real SDL2/GLX window on an X server instead\n  --vnc-port N          VNC port for --headless mode (default 5900)\n  --fullscreen          --windowed only: start fullscreen, F11 to leave\n  --exit-after SECONDS   Useful for automated checks\n  --screenshot PATH     Capture a WebP after 3 seconds\n  --config PATH         Config file (default: ~/.config/chromedrive/chromedrive.conf)\n  --no-config           Ignore the config file entirely\n  --help                Show this help\n\nF1 help | F2 cockpit | F3 focus | F4 neon | F6 next display\nMiddle-drag/VNC-drag to look | Click a screen to focus | Ctrl+Alt+Enter new terminal\n",name);}
+static void usage(const char *name){printf("ChromeDrive " CD_VERSION " — native, first-person Wayland cockpit\n\nUsage: %s [options]\n  --demo                Start a real terminal + Files + Audio clients\n  --socket NAME         Wayland socket (default: automatic)\n  --exec COMMAND        Launch an extra Wayland client (repeatable)\n  --size WIDTHxHEIGHT   Framebuffer/host window size (default 1600x1000)\n  --fps N               Frame cap, 1..120 (default 60)\n  --headless            Run with no X server: surfaceless EGL + built-in VNC server (default)\n  --windowed            Dev/debug mode: open a real SDL2/GLX window on an X server instead\n  --vnc-port N          VNC port for --headless mode (default 5900)\n  --fullscreen          --windowed only: start fullscreen, F11 to leave\n  --exit-after SECONDS   Useful for automated checks\n  --screenshot PATH     Capture a WebP after 3 seconds\n  --config PATH         Config file (default: ~/.config/chromedrive/chromedrive.conf)\n  --no-config           Ignore the config file entirely\n  --help                Show this help\n\nF1 help | F2 cockpit | F3 focus | F4 neon | F5 arrange window | F6 next display\nMiddle-drag/VNC-drag to look | Click a screen to focus | Ctrl+Alt+Enter new terminal\n",name);}
 int main(int argc,char **argv){
- Server s={.width=1600,.height=1000,.fps_limit=60,.running=true,.hud_visible=true,.hover_button=-1,.keymap_fd=-1,.fov=65,.target_fov=65,.eye={0,1.0f,2.8f},.headless=true,.vnc_port=5900};
+ Server s={.width=1600,.height=1000,.fps_limit=60,.running=true,.hud_visible=true,.hover_button=-1,.keymap_fd=-1,.arrange_slot=-1,.fov=65,.target_fov=65,.eye={0,1.0f,2.8f},.headless=true,.vnc_port=5900};
  const char *socket_name=NULL;double exit_after=0;bool auto_screenshot=false;
  /* Config pre-scan: --config/--no-config must be known before the file is
   * read, and the file must be read before the real option pass below so

@@ -82,21 +82,29 @@ void cd_vnc_ptr(int mask,int x,int y,rfbClientPtr cl){
  s->mouse_x=x;s->mouse_y=y;
  if(middle){
   if(!prev_middle){s->middle_look=true;server_pointer_motion(s,(Hit){0},now);}
-  else{s->target_yaw-=(x-s->vnc_prev_x)*.5f;s->target_pitch=clampf(s->target_pitch-(y-s->vnc_prev_y)*.4f,-35,32);s->focus_view=false;}
+  else{s->target_yaw-=(x-s->vnc_prev_x)*.5f;s->target_pitch=clampf(s->target_pitch-(y-s->vnc_prev_y)*.4f,-35,32);s->focus_view=false;s->arrange_last_x=x;s->arrange_last_y=y;}
  }else{
   if(prev_middle)s->middle_look=false;
-  Hit hit=scene_pick(s,x,y,s->pointer_grab!=NULL);server_pointer_motion(s,hit,now);
+  Hit hit=scene_pick(s,x,y,s->pointer_grab!=NULL);
   bool left=(mask&CD_VNC_LEFT)!=0,prev_left=(s->vnc_prev_mask&CD_VNC_LEFT)!=0;
-  if(left&&!prev_left&&hit.kind==HIT_BUTTON)app_launch(s,hit.button,false);
-  else if(left&&!prev_left&&hit.kind==HIT_COG)app_open_settings(s);
-  else if(left&&!prev_left&&hit.kind==HIT_CLOSE)server_close_surface(hit.surface);
-  else if(left!=prev_left&&(hit.kind==HIT_APP||s->pointer_grab))server_pointer_button(s,BTN_LEFT,left,now);
   bool right=(mask&CD_VNC_RIGHT)!=0,prev_right=(s->vnc_prev_mask&CD_VNC_RIGHT)!=0;
-  if(right&&!prev_right&&hit.kind==HIT_BUTTON)app_open_settings_slot(s,hit.button,true);
-  else if(right!=prev_right&&(hit.kind==HIT_APP||s->pointer_grab))server_pointer_button(s,BTN_RIGHT,right,now);
   bool wu=(mask&CD_VNC_WHEEL_UP)&&!(s->vnc_prev_mask&CD_VNC_WHEEL_UP);
   bool wd=(mask&CD_VNC_WHEEL_DOWN)&&!(s->vnc_prev_mask&CD_VNC_WHEEL_DOWN);
-  if(wu||wd){if(hit.kind==HIT_APP)server_pointer_axis(s,0,wu?-3:3,now);else s->target_fov=clampf(s->target_fov-(wu?3:-3),30,75);}
+  if(s->arrange_mode){
+   if(left!=prev_left)app_arrange_pointer_button(s,hit,BTN_LEFT,left);
+   if(right!=prev_right)app_arrange_pointer_button(s,hit,BTN_RIGHT,right);
+   if(left||right)app_arrange_pointer_motion(s,x,y);
+   if(wu||wd)app_arrange_pointer_wheel(s,wu?1.f:-1.f);
+  }else{
+   server_pointer_motion(s,hit,now);
+   if(left&&!prev_left&&hit.kind==HIT_BUTTON)app_launch(s,hit.button,false);
+   else if(left&&!prev_left&&hit.kind==HIT_COG)app_open_settings(s);
+   else if(left&&!prev_left&&hit.kind==HIT_CLOSE)server_close_surface(hit.surface);
+   else if(left!=prev_left&&(hit.kind==HIT_APP||s->pointer_grab))server_pointer_button(s,BTN_LEFT,left,now);
+   if(right&&!prev_right&&hit.kind==HIT_BUTTON)app_open_settings_slot(s,hit.button,true);
+   else if(right!=prev_right&&(hit.kind==HIT_APP||s->pointer_grab))server_pointer_button(s,BTN_RIGHT,right,now);
+   if(wu||wd){if(hit.kind==HIT_APP)server_pointer_axis(s,0,wu?-3:3,now);else s->target_fov=clampf(s->target_fov-(wu?3:-3),30,75);}
+  }
  }
  s->vnc_prev_mask=mask;s->vnc_prev_x=x;s->vnc_prev_y=y;
 }
