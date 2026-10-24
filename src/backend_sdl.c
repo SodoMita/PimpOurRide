@@ -37,7 +37,7 @@ void backend_sdl_poll(Server *s){
    bool down=e.type==SDL_MOUSEBUTTONDOWN;s->mouse_x=e.button.x;s->mouse_y=e.button.y;
    if(e.button.button==SDL_BUTTON_MIDDLE){s->middle_look=down;if(down)server_pointer_motion(s,(Hit){0},now);continue;}
    Hit hit=scene_pick(s,s->mouse_x,s->mouse_y,s->pointer_grab!=NULL);server_pointer_motion(s,hit,now);
-   if(down&&e.button.button==SDL_BUTTON_LEFT){if(hit.kind==HIT_BUTTON){app_launch(s,hit.button,(SDL_GetModState()&KMOD_SHIFT)!=0);continue;}if(hit.kind==HIT_CLOSE){server_close_surface(hit.surface);continue;}}
+   if(down&&e.button.button==SDL_BUTTON_LEFT){if(hit.kind==HIT_BUTTON){app_launch(s,hit.button,(SDL_GetModState()&KMOD_SHIFT)!=0);continue;}if(hit.kind==HIT_CLOSE){server_close_surface(hit.surface);continue;}if(hit.kind==HIT_COG){app_open_settings(s);continue;}}
    uint32_t button=e.button.button==SDL_BUTTON_LEFT?BTN_LEFT:e.button.button==SDL_BUTTON_RIGHT?BTN_RIGHT:e.button.button==SDL_BUTTON_X1?BTN_SIDE:BTN_EXTRA;
    if(hit.kind==HIT_APP||s->pointer_grab)server_pointer_button(s,button,down,now);
   }else if(e.type==SDL_MOUSEWHEEL){Hit hit=scene_pick(s,s->mouse_x,s->mouse_y,false);if(hit.kind==HIT_APP)server_pointer_axis(s,e.wheel.preciseX,e.wheel.preciseY,now);else s->target_fov=clampf(s->target_fov-e.wheel.preciseY*2,30,75);}

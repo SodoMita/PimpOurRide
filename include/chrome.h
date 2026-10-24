@@ -74,7 +74,7 @@ typedef struct { Plane plane;Surface *surface;GLuint label;char label_text[300];
  * (chromedrive.conf [app.*], edited by bin/chromedrive-config) and applied
  * live: DashButton owns copies, ui_refresh_buttons() re-renders textures. */
 typedef struct { Plane plane;char name[48],sub[64];int action,icon;bool enabled;GLuint texture; } DashButton;
-typedef enum {HIT_NONE,HIT_APP,HIT_BUTTON,HIT_CLOSE} HitKind;
+typedef enum {HIT_NONE,HIT_APP,HIT_BUTTON,HIT_CLOSE,HIT_COG} HitKind;
 typedef struct { HitKind kind;Surface *surface;int slot,button;float x,y,distance; } Hit;
 typedef struct { uint32_t format;uint64_t modifiers[CD_DMABUF_MAX_MODIFIERS];int modifier_count; } DmabufFormat;
 struct Server {
@@ -87,6 +87,11 @@ struct Server {
  Surface *keyboard_focus,*pointer_focus,*pointer_grab;int held_buttons;
  float pointer_sx,pointer_sy;int mouse_x,mouse_y;
  Monitor monitors[CD_MAX_MONITORS];DashButton buttons[6];
+ /* The settings cog: a slowly spinning 3D gear medallioned into the sloped
+  * dash between wheel and console (scene.c draw_cog). Clicking it opens
+  * bin/chromedrive-config. Picked by ray against cog's plane + radial test,
+  * like the buttons. */
+ Plane cog;bool cog_hover;float cog_angle;double cog_spin_until;
  DataSource *selection;
  /* Backend: exactly one of these is used, chosen at startup by --headless (default) or --windowed. */
  bool headless;
@@ -147,6 +152,7 @@ void ui_update(Server *s);
 void ui_monitor_label(Server *s,int slot);
 void ui_draw_overlay(Server *s);
 void app_launch(Server *s,int action,bool force_new);
+void app_open_settings(Server *s);
 void app_exec(Server *s,const char *command);
 void app_notice(Server *s,const char *fmt,...);
 bool app_global_key(Server *s,uint32_t evdev,bool down);

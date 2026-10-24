@@ -88,6 +88,7 @@ void cd_vnc_ptr(int mask,int x,int y,rfbClientPtr cl){
   Hit hit=scene_pick(s,x,y,s->pointer_grab!=NULL);server_pointer_motion(s,hit,now);
   bool left=(mask&CD_VNC_LEFT)!=0,prev_left=(s->vnc_prev_mask&CD_VNC_LEFT)!=0;
   if(left&&!prev_left&&hit.kind==HIT_BUTTON)app_launch(s,hit.button,false);
+  else if(left&&!prev_left&&hit.kind==HIT_COG)app_open_settings(s);
   else if(left&&!prev_left&&hit.kind==HIT_CLOSE)server_close_surface(hit.surface);
   else if(left!=prev_left&&(hit.kind==HIT_APP||s->pointer_grab))server_pointer_button(s,BTN_LEFT,left,now);
   bool right=(mask&CD_VNC_RIGHT)!=0,prev_right=(s->vnc_prev_mask&CD_VNC_RIGHT)!=0;

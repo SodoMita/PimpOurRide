@@ -12,6 +12,16 @@ the cockpit's Launch Control shows the new label about half a second later.
 
 ## Running the GUI
 
+From inside the cockpit, just **click the spinning cog on the dashboard**
+(the little steel gear medallioned into the dash between the steering wheel
+and Launch Control). It idles at a slow spin, brightens under the pointer,
+and a click launches `chromedrive-config` onto the next free monitor — or
+focuses it if it's already open. F1's Driver's Manual lists it too.
+
+![The settings cog on the dashboard](config-cog.webp)
+
+From a shell:
+
 ```sh
 make                        # builds bin/chromedrive-config with everything else
 ./bin/chromedrive-config                       # on any Wayland session

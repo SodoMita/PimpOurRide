@@ -143,7 +143,10 @@ yet through ChromeDrive itself.
 ![Launch Menu editor](docs/config-launch-menu.webp)
 
 `bin/chromedrive-config` is a native settings app (wl_shm + cairo, like the
-demo clients) for both programs, built by plain `make`. Its first tab is a
+demo clients) for both programs, built by plain `make`. In the cockpit it is
+one click away: the slowly spinning **3D cog on the dashboard** (between the
+steering wheel and Launch Control) launches it, or focuses it if already
+open. Its first tab is a
 KDE-menu-editor-style **Launch Menu editor**: rename any of the six Launch
 Control entries, change their icons/descriptions, point the four app slots
 at arbitrary commands (e.g. `dolphin`, or Garage3D), set the `app_id` used
@@ -191,6 +194,7 @@ websockify --web=tools/viewer 0.0.0.0:8080 127.0.0.1:5900
 | Scroll over a screen | Scroll inside that app |
 | Scroll elsewhere | Zoom (narrow the field of view) |
 | Click a dashboard button | Launch/focus that app |
+| Click the dashboard cog | Open Settings (`chromedrive-config`) |
 | Shift + dashboard button | Force a new instance |
 | F1 | Help overlay |
 | F2 | Reset to the driver's seat view |

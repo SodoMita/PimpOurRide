@@ -130,6 +130,14 @@ void app_launch(Server *s,int action,bool force_new){
  if(!force_new&&*s->app_ids[action]){for(int i=0;i<CD_MAX_MONITORS;i++){Surface *p=s->monitors[i].surface;if(p&&strstr(p->app_id,s->app_ids[action])){server_focus(s,p);scene_focus_monitor(s,i,true);return;}}}
  app_exec(s,s->launch_commands[action]);
 }
+/* The dash cog: focus the settings GUI if it is already on a monitor,
+ * otherwise launch it (it maps to the next free screen like any app). */
+void app_open_settings(Server *s){
+ s->cog_spin_until=s->time+0.9;
+ for(int i=0;i<CD_MAX_MONITORS;i++){Surface *p=s->monitors[i].surface;if(p&&strstr(p->app_id,"chromedrive.config")){server_focus(s,p);scene_focus_monitor(s,i,true);app_notice(s,"Settings");return;}}
+ char cmd[4400];snprintf(cmd,sizeof(cmd),"'%s/bin/chromedrive-config'",s->root);
+ app_exec(s,cmd);app_notice(s,"Opening Settings...");
+}
 static void next_monitor(Server *s){for(int d=1;d<=CD_MAX_MONITORS;d++){int i=(s->active_slot+d)%CD_MAX_MONITORS;if(s->monitors[i].surface){server_focus(s,s->monitors[i].surface);scene_focus_monitor(s,i,s->focus_view);return;}}}
 /* Compositor-level hotkeys, shared by both input backends (SDL and headless/VNC).
  * Keyed on evdev codes + the live s->keys[] modifier bitmap (already updated by
@@ -214,7 +222,8 @@ int main(int argc,char **argv){
   int status;pid_t pid;while((pid=waitpid(-1,&status,WNOHANG))>0){for(int i=0;i<s.child_count;i++)if(s.children[i]==pid){s.children[i]=s.children[--s.child_count];break;}if(WIFEXITED(status)&&WEXITSTATUS(status)!=0){fprintf(stderr,"[launch] pid %d exited %d\n",(int)pid,WEXITSTATUS(status));app_notice(&s,"Client exited with status %d — see launch log",WEXITSTATUS(status));}}
   if(s.demo&&!initial_focus&&s.time>2.0&&s.monitors[0].surface){server_focus(&s,s.monitors[0].surface);initial_focus=true;}
   float blend=1.f-expf(-(float)s.dt*12.f);s.yaw+=(s.target_yaw-s.yaw)*blend;s.pitch+=(s.target_pitch-s.pitch)*blend;s.fov+=(s.target_fov-s.fov)*blend;
-  Hit hover=scene_pick(&s,s.mouse_x,s.mouse_y,false);s.hover_button=hover.kind==HIT_BUTTON?hover.button:-1;
+  Hit hover=scene_pick(&s,s.mouse_x,s.mouse_y,false);s.hover_button=hover.kind==HIT_BUTTON?hover.button:-1;s.cog_hover=hover.kind==HIT_COG;
+  s.cog_angle+=((s.time<s.cog_spin_until)?540.f:s.cog_hover?160.f:20.f)*(float)s.dt;if(s.cog_angle>=360.f)s.cog_angle-=360.f;
   glBindFramebuffer(GL_FRAMEBUFFER,s.target_fbo);
   ui_update(&s);scene_render(&s);ui_draw_overlay(&s);
   if(auto_screenshot&&s.time>3){s.screenshot_requested=true;auto_screenshot=false;}if(s.screenshot_requested){scene_save_screenshot(&s,s.screenshot_path);s.screenshot_requested=false;app_notice(&s,"Screenshot saved");}

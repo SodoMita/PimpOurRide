@@ -1240,9 +1240,26 @@ static void p_axis(void *data, struct wl_pointer *p, uint32_t t, uint32_t axis, 
     if (axis == WL_POINTER_AXIS_VERTICAL_SCROLL)
         gui_wheel(&a->gui, wl_fixed_to_double(v) / 15.0);
 }
+/*
+ * ALL wl_pointer slots up to v5 must be non-NULL: libwayland aborts the
+ * client ("listener function for opcode N of wl_pointer is NULL") when an
+ * event arrives for an empty slot, and compositors (ChromeDrive included)
+ * send frame/axis_source/axis_discrete routinely on v5+ pointers. We apply
+ * motion/button immediately instead of batching per frame, so frame and
+ * friends are deliberate no-ops; axis_discrete duplicates the continuous
+ * axis values we already consume, so it is ignored to avoid double-scroll.
+ * (axis_value120/axis_relative_direction are v8/v9 - the seat is capped at
+ * v7 below, so no compositor may legally send them to this proxy.)
+ */
+static void p_frame(void *d, struct wl_pointer *p) { (void)d; (void)p; }
+static void p_axis_source(void *d, struct wl_pointer *p, uint32_t s) { (void)d; (void)p; (void)s; }
+static void p_axis_stop(void *d, struct wl_pointer *p, uint32_t t, uint32_t a) { (void)d; (void)p; (void)t; (void)a; }
+static void p_axis_discrete(void *d, struct wl_pointer *p, uint32_t a, int32_t v) { (void)d; (void)p; (void)a; (void)v; }
 static const struct wl_pointer_listener pointer_listener = {
     .enter = p_enter, .leave = p_leave, .motion = p_motion,
-    .button = p_button, .axis = p_axis,
+    .button = p_button, .axis = p_axis, .frame = p_frame,
+    .axis_source = p_axis_source, .axis_stop = p_axis_stop,
+    .axis_discrete = p_axis_discrete,
 };
 static void k_keymap(void *data, struct wl_keyboard *k, uint32_t format, int32_t fd, uint32_t size) {
     (void)k; App *a = data;
@@ -1295,8 +1312,13 @@ static void t_motion(void *data, struct wl_touch *t, uint32_t time, int32_t id, 
 }
 static void t_frame(void *d, struct wl_touch *t) { (void)d; (void)t; }
 static void t_cancel(void *data, struct wl_touch *t) { (void)t; App *a = data; a->touch_id = -1; gui_release(&a->gui); }
+/* shape/orientation (v6): same NULL-slot abort rule as wl_pointer - the
+ * GUI is a point-and-drag UI, so contact geometry is a deliberate no-op. */
+static void t_shape(void *d, struct wl_touch *t, int32_t id, wl_fixed_t maj, wl_fixed_t min) { (void)d; (void)t; (void)id; (void)maj; (void)min; }
+static void t_orientation(void *d, struct wl_touch *t, int32_t id, wl_fixed_t o) { (void)d; (void)t; (void)id; (void)o; }
 static const struct wl_touch_listener touch_listener = {
     .down = t_down, .up = t_up, .motion = t_motion, .frame = t_frame, .cancel = t_cancel,
+    .shape = t_shape, .orientation = t_orientation,
 };
 static void seat_caps(void *data, struct wl_seat *seat, uint32_t caps) {
     App *a = data;

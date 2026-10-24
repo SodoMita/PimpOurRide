@@ -272,6 +272,31 @@ static void steering_wheel(Server *s){
 }
 static void draw_buttons(Server *s){for(int i=0;i<6;i++){DashButton *b=&s->buttons[i];plane_begin(b->plane);color(.16,.19,.26);rbox(0,0,-.02,b->plane.width+.02,b->plane.height+.02,.04,.018);color(.04,.06,.085);rbox(0,0,.005,b->plane.width,b->plane.height,.022,.013);texture(b->texture,-b->plane.width/2,-b->plane.height/2,b->plane.width,b->plane.height,.019);
  if(s->hover_button==i){glDisable(GL_LIGHTING);glEnable(GL_BLEND);glBlendFunc(GL_SRC_ALPHA,GL_ONE);glColor4f(.25,.85,.70,.18);quad(-b->plane.width/2,-b->plane.height/2,b->plane.width,b->plane.height,.021);glDisable(GL_BLEND);glEnable(GL_LIGHTING);}glPopMatrix();}}
+/* The settings cog: a real little gear (torus rim + 8 teeth + hub + spokes)
+ * medallioned onto the sloped dash between wheel and console. It
+ * idles at a slow spin so it is discoverable, brightens on hover, and does
+ * a fast twirl after a click (cog_spin_until, set by app_open_settings).
+ * Angle integration lives in main.c beside the hover pick; this only draws
+ * from Server state. Clicking it opens bin/chromedrive-config. */
+static void draw_cog(Server *s){
+ float nr,ng,nb;neon(s,&nr,&ng,&nb);
+ bool hot=s->cog_hover||s->time<s->cog_spin_until;
+ plane_begin(s->cog);
+ color(.05,.045,.09);cylinder(v3(0,0,-.030),v3(0,0,-.004),.118,48);       /* recessed boss */
+ color(.30,.32,.40);torus(.113,.006,64,10);                               /* machined rim ring */
+ glPushMatrix();glRotatef(s->cog_angle,0,0,1);
+ if(hot)color(.58,.63,.76);else color(.42,.46,.56);
+ torus(.080,.021,64,14);
+ for(int i=0;i<8;i++){glPushMatrix();glRotatef(i*45.f,0,0,1);glTranslatef(0,.096f,0);box(0,0,0,.034f,.038f,.042f);glPopMatrix();}
+ for(int i=0;i<4;i++){glPushMatrix();glRotatef(22.5f+i*90.f,0,0,1);glTranslatef(0,.048f,0);box(0,0,0,.020f,.058f,.030f);glPopMatrix();}
+ cylinder(v3(0,0,-.014),v3(0,0,.020),.030,32);
+ glPopMatrix();
+ /* Non-rotating center cap + neon pip, so the rotation reads at a glance. */
+ color(.06,.07,.11);cylinder(v3(0,0,.020),v3(0,0,.030),.020,32);
+ glDisable(GL_LIGHTING);if(hot)color(.55,1,.85);else color(nr,ng,nb);quad(-.006,-.006,.012,.012,.031);
+ if(hot){glEnable(GL_BLEND);glBlendFunc(GL_SRC_ALPHA,GL_ONE);glColor4f(.25,.85,.70,.15);quad(-.12,-.12,.24,.24,.033);glDisable(GL_BLEND);}
+ glEnable(GL_LIGHTING);glPopMatrix();
+}
 typedef struct {float scale,w,h;int layer;} DrawSurface;
 static void transformed_uv(int transform,float x,float y,float *u,float *v){float a=x,b=y;switch(transform&3){case 1:a=1-y;b=x;break;case 2:a=1-x;b=1-y;break;case 3:a=y;b=1-x;break;}if(transform>=4)a=1-a;*u=a;*v=b;}
 static void draw_app_surface(Surface *p,int sx,int sy,void *data){
@@ -301,12 +326,19 @@ void scene_init(Server *s){
  /* Built-in menu defaults; [app.*] config (applied in main.c after ui_init)
   * may relabel/re-icon/disable any of these live. */
  for(int i=0;i<6;i++){float x=(i%3-1)*.48f,y=i<3?.095f:-.22f;s->buttons[i].plane=(Plane){.center=vadd(panel.center,vadd(vadd(vmul(right,x),vmul(up,y)),vmul(normal,.084f))),.width=.426,.height=.248,.yaw=panel.yaw,.pitch=panel.pitch};snprintf(s->buttons[i].name,sizeof(s->buttons[i].name),"%s",names[i]);snprintf(s->buttons[i].sub,sizeof(s->buttons[i].sub),"%s",subs[i]);s->buttons[i].action=i;s->buttons[i].icon=i;s->buttons[i].enabled=true;s->buttons[i].texture=0;}
+ /* Settings cog medallion on the sloped dash between wheel and console.
+  * The dash profile segment (z .2,y .14)->(z .88,y -.24) has geometric
+  * normal (0,.873,.487); pitch -61 lays the gear flush on it, and the
+  * center sits .02 along that normal from the slope point (-.30,-.084,.60)
+  * so the boss reads as recessed into the padding. (The violet strip box
+  * at z=.37 is behind this sloped surface from the driver's seat.) */
+ s->cog=(Plane){.center={-.30f,-.066f,.610f},.width=.24f,.height=.24f,.yaw=0,.pitch=-61};
 }
 void scene_render(Server *s){
  glViewport(0,0,s->width,s->height);glClear(GL_COLOR_BUFFER_BIT|GL_DEPTH_BUFFER_BIT|GL_STENCIL_BUFFER_BIT);glEnable(GL_DEPTH_TEST);
  glMatrixMode(GL_PROJECTION);glLoadIdentity();double t=tan(s->fov*RAD/2)*.05;glFrustum(-t*s->width/s->height,t*s->width/s->height,-t,t,.05,150);
  glMatrixMode(GL_MODELVIEW);glLoadIdentity();glRotatef(-s->pitch,1,0,0);glRotatef(-s->yaw,0,1,0);glTranslatef(-s->eye.x,-s->eye.y,-s->eye.z);
- lighting();environment(s);lighting();dashboard(s);draw_buttons(s);for(int i=0;i<CD_MAX_MONITORS;i++)draw_monitor(s,i);steering_wheel(s);
+ lighting();environment(s);lighting();dashboard(s);draw_buttons(s);draw_cog(s);for(int i=0;i<CD_MAX_MONITORS;i++)draw_monitor(s,i);steering_wheel(s);
 }
 Hit scene_pick(Server *s,float x,float y,bool grab){
  Hit best={.kind=HIT_NONE,.distance=1e9f};Vec3 ray=camera_ray(x,y,s->width,s->height,s->fov,s->yaw,s->pitch);float u,v,d;
@@ -316,7 +348,11 @@ Hit scene_pick(Server *s,float x,float y,bool grab){
   if(u<0||u>1||v<0||v>1)continue;float scale=fminf(p.width/m->surface->width,p.height/m->surface->height);float sx=(u-.5f)*p.width/scale+m->surface->width/2.f,sy=(v-.5f)*p.height/scale+m->surface->height/2.f,px,py;
   Surface *surface=surface_at(m->surface,sx,sy,&px,&py);if(surface)best=(Hit){.kind=HIT_APP,.surface=surface,.slot=i,.x=px,.y=py,.distance=d};
  }
- for(int i=0;i<6;i++)if(plane_hit(s->buttons[i].plane,s->eye,ray,&u,&v,&d,true)&&d<best.distance)best=(Hit){.kind=HIT_BUTTON,.button=i,.distance=d};return best;
+ for(int i=0;i<6;i++)if(plane_hit(s->buttons[i].plane,s->eye,ray,&u,&v,&d,true)&&d<best.distance)best=(Hit){.kind=HIT_BUTTON,.button=i,.distance=d};
+ /* Cog: same pick plane as drawn, then a radial test so only the gear
+  * itself (teeth at .115 m of the .12 m half-plane) is clickable. */
+ if(plane_hit(s->cog,s->eye,ray,&u,&v,&d,false)&&d<best.distance){float du=u-.5f,dv=v-.5f;if(du*du+dv*dv<=.25f)best=(Hit){.kind=HIT_COG,.distance=d};}
+ return best;
 }
 void scene_focus_monitor(Server *s,int slot,bool zoom){
  if(slot<0||slot>=CD_MAX_MONITORS)return;Plane p=s->monitors[slot].plane;float desired=atan2f(-p.center.x,s->eye.z-p.center.z)/RAD;
