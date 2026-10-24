@@ -78,8 +78,15 @@ typedef struct { Plane plane;Surface *surface;GLuint label;char label_text[300];
  * of the three; slots 5/6 merely default to the built-ins. */
 enum { CD_BUTTON_APP=0, CD_BUTTON_NEON=1, CD_BUTTON_COCKPIT=2 };
 typedef struct { Plane plane;char name[48],sub[64];int action,icon;bool enabled;GLuint texture; } DashButton;
-typedef enum {HIT_NONE,HIT_APP,HIT_BUTTON,HIT_CLOSE,HIT_COG} HitKind;
-typedef struct { HitKind kind;Surface *surface;int slot,button;float x,y,distance; } Hit;
+typedef enum {HIT_NONE,HIT_APP,HIT_BUTTON,HIT_CLOSE,HIT_COG,HIT_FRAME,HIT_HANDLES_BUTTON,HIT_ARRANGE_HANDLE} HitKind;
+/* Arrange gizmo handles, in a monitor's local plane coordinates. Resize
+ * IDs are ordered clockwise from north-west so scene.c/main.c can share
+ * the same geometry table without another mapping layer. */
+enum { CD_HANDLE_NONE=0,CD_HANDLE_MOVE,CD_HANDLE_AXIS_X,CD_HANDLE_AXIS_Y,CD_HANDLE_AXIS_Z,
+ CD_HANDLE_ROTATE_YAW,CD_HANDLE_ROTATE_PITCH,CD_HANDLE_ROTATE_ROLL,CD_HANDLE_SCALE,
+ CD_HANDLE_RESIZE_NW,CD_HANDLE_RESIZE_N,CD_HANDLE_RESIZE_NE,CD_HANDLE_RESIZE_E,
+ CD_HANDLE_RESIZE_SE,CD_HANDLE_RESIZE_S,CD_HANDLE_RESIZE_SW,CD_HANDLE_RESIZE_W };
+typedef struct { HitKind kind;Surface *surface;int slot,button,handle;float x,y,distance; } Hit;
 typedef struct { uint32_t format;uint64_t modifiers[CD_DMABUF_MAX_MODIFIERS];int modifier_count; } DmabufFormat;
 struct Server {
  struct wl_display *display;struct wl_event_loop *loop;
@@ -111,7 +118,11 @@ struct Server {
  /* F5 Arrange mode: session-only whole-monitor translate/rotate/scale.
   * The effective transform lives in monitors[slot].plane and is reset when
   * a new top-level maps into that bay. */
- bool arrange_mode,arrange_dragging;int arrange_slot,arrange_drag_button,arrange_last_x,arrange_last_y;
+ bool arrange_mode,arrange_dragging,arrange_handles;int arrange_slot,arrange_drag_button,arrange_last_x,arrange_last_y;
+ int arrange_handle,arrange_start_x,arrange_start_y;Plane arrange_start_plane;float arrange_start_local_x,arrange_start_local_y;
+ /* KWin-like titlebar/frame drag outside Arrange mode: just translation,
+  * without making the whole input path modal. */
+ bool frame_dragging;int frame_drag_slot,frame_last_x,frame_last_y;
  float yaw,pitch,target_yaw,target_pitch,fov,target_fov;
  Vec3 eye;
  double time,dt,fps,start_time,last_ui_time,notice_until;
@@ -124,7 +135,7 @@ struct Server {
   * focuses the running app; app_autostart[s] joins the --demo set. */
  char app_ids[6][128];bool app_autostart[6];
  pid_t children[128];int child_count;
- GLuint garage_tex,carbon_tex,gauge_tex,console_tex,hub_tex,hud_tex,help_tex,plate_tex;
+ GLuint garage_tex,carbon_tex,gauge_tex,console_tex,hub_tex,hud_tex,help_tex,plate_tex,handles_tex;
  GLuint scene_list;bool rebuild_scene;
  bool screenshot_requested;char screenshot_path[4096];
 };
@@ -152,6 +163,7 @@ void scene_monitor_reset(Server *s,int slot);
 void scene_monitor_translate(Server *s,int slot,float right,float up,float toward_eye);
 void scene_monitor_rotate(Server *s,int slot,float yaw,float pitch,float roll);
 void scene_monitor_scale(Server *s,int slot,float factor);
+void scene_monitor_set_plane(Server *s,int slot,Plane plane);
 void scene_reset_camera(Server *s);
 void scene_save_screenshot(Server *s,const char *path);
 void scene_neon_color(Server *s,float *r,float *g,float *b);
@@ -173,6 +185,8 @@ bool app_global_key(Server *s,uint32_t evdev,bool down);
 bool app_arrange_pointer_button(Server *s,Hit hit,uint32_t button,bool down);
 void app_arrange_pointer_motion(Server *s,int x,int y);
 bool app_arrange_pointer_wheel(Server *s,float steps);
+bool app_frame_pointer_button(Server *s,Hit hit,uint32_t button,bool down);
+void app_frame_pointer_motion(Server *s,int x,int y);
 /* dmabuf.c: zwp_linux_dmabuf_v1, real EGLImage-backed zero-copy GPU import. */
 void dmabuf_probe(Server *s);
 void dmabuf_register_global(Server *s);

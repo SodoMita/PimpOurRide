@@ -38,5 +38,17 @@ int main(void){
  assert(near(scaled.width,2.10f*2.75f)&&near(scaled.height,1.3125f*2.75f));
  scaled=plane_uniform_scale(scaled,monitor_plane(0),.01f);
  assert(near(scaled.width,2.10f*.35f)&&near(scaled.height,1.3125f*.35f));
- puts("PASS: monitor ray picking, all eight screen transforms, camera axes, tilted/rolled planes, arrange transforms, back-face rejection");return 0;
+ /* Handle operations: a right-edge resize leaves the left edge fixed, a
+  * top-edge resize leaves the bottom fixed, uniform scale then retains
+  * that resized aspect, and the Z handle moves along the plane normal. */
+ Plane resized=plane_resize(monitor_plane(0),monitor_plane(0),eye,3.15f,1.3125f,-1,0);
+ assert(near(resized.center.x,.525f)&&near(resized.center.x-resized.width/2,-1.05f));
+ resized=plane_resize(resized,monitor_plane(0),eye,resized.width,2.625f,0,-1);
+ assert(near(resized.center.y,1.97625f)&&near(resized.center.y-resized.height/2,.66375f));
+ float ratio=resized.width/resized.height;
+ Plane aspect=plane_uniform_scale(resized,monitor_plane(0),1.1f);
+ assert(near(aspect.width/aspect.height,ratio));
+ Plane axis=plane_translate_local(monitor_plane(0),eye,0,0,.5f);
+ assert(near(axis.center.z,-1.1f));
+ puts("PASS: monitor ray picking, all eight screen transforms, camera axes, tilted/rolled planes, arrange/handle transforms, back-face rejection");return 0;
 }

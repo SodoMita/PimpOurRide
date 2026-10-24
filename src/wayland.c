@@ -28,7 +28,8 @@ static void surface_unmap(Surface *p){
  if(s->pointer_focus==p){s->pointer_focus=NULL;}
  if(s->pointer_grab==p){s->pointer_grab=NULL;s->held_buttons=0;}
  if(p->slot>=0&&s->monitors[p->slot].surface==p){
-  if(s->arrange_slot==p->slot){s->arrange_slot=-1;s->arrange_dragging=false;s->arrange_drag_button=0;}
+  if(s->arrange_slot==p->slot){s->arrange_slot=-1;s->arrange_dragging=false;s->arrange_drag_button=0;s->arrange_handle=CD_HANDLE_NONE;}
+  if(s->frame_drag_slot==p->slot){s->frame_dragging=false;s->frame_drag_slot=-1;}
   Resource *r;wl_list_for_each(r,&s->outputs,link)if(r->slot==p->slot&&wl_resource_get_client(r->resource)==wl_resource_get_client(p->resource))wl_surface_send_leave(p->resource,r->resource);
   s->monitors[p->slot].surface=NULL;
  }

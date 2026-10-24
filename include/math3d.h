@@ -17,8 +17,10 @@ Vec3 camera_ray(float x,float y,int w,int h,float fov,float yaw,float pitch);
 void plane_axes(Plane p,Vec3 *right,Vec3 *up,Vec3 *normal);
 bool plane_hit(Plane p,Vec3 origin,Vec3 ray,float *u,float *v,float *distance,bool clip);
 Plane plane_translate(Plane p,Vec3 eye,float right,float up,float toward_eye);
+Plane plane_translate_local(Plane p,Vec3 eye,float right,float up,float normal);
 Plane plane_rotate(Plane p,float yaw,float pitch,float roll);
 Plane plane_uniform_scale(Plane p,Plane base,float factor);
+Plane plane_resize(Plane p,Plane base,Vec3 eye,float width,float height,int fixed_x,int fixed_y);
 Plane monitor_plane(int index);
 float clampf(float v,float lo,float hi);
 #endif

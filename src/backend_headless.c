@@ -82,7 +82,7 @@ void cd_vnc_ptr(int mask,int x,int y,rfbClientPtr cl){
  s->mouse_x=x;s->mouse_y=y;
  if(middle){
   if(!prev_middle){s->middle_look=true;server_pointer_motion(s,(Hit){0},now);}
-  else{s->target_yaw-=(x-s->vnc_prev_x)*.5f;s->target_pitch=clampf(s->target_pitch-(y-s->vnc_prev_y)*.4f,-35,32);s->focus_view=false;s->arrange_last_x=x;s->arrange_last_y=y;}
+  else{s->target_yaw-=(x-s->vnc_prev_x)*.5f;s->target_pitch=clampf(s->target_pitch-(y-s->vnc_prev_y)*.4f,-35,32);s->focus_view=false;s->arrange_last_x=x;s->arrange_last_y=y;s->frame_last_x=x;s->frame_last_y=y;}
  }else{
   if(prev_middle)s->middle_look=false;
   Hit hit=scene_pick(s,x,y,s->pointer_grab!=NULL);
@@ -95,6 +95,9 @@ void cd_vnc_ptr(int mask,int x,int y,rfbClientPtr cl){
    if(right!=prev_right)app_arrange_pointer_button(s,hit,BTN_RIGHT,right);
    if(left||right)app_arrange_pointer_motion(s,x,y);
    if(wu||wd)app_arrange_pointer_wheel(s,wu?1.f:-1.f);
+  }else if(s->frame_dragging||((hit.kind==HIT_FRAME||hit.kind==HIT_HANDLES_BUTTON)&&left!=prev_left)){
+   if(left!=prev_left)app_frame_pointer_button(s,hit,BTN_LEFT,left);
+   if(left&&s->frame_dragging)app_frame_pointer_motion(s,x,y);
   }else{
    server_pointer_motion(s,hit,now);
    if(left&&!prev_left&&hit.kind==HIT_BUTTON)app_launch(s,hit.button,false);

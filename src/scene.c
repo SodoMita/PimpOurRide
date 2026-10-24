@@ -304,12 +304,86 @@ static void draw_app_surface(Surface *p,int sx,int sy,void *data){
  glDisable(GL_LIGHTING);glEnable(GL_TEXTURE_2D);glBindTexture(GL_TEXTURE_2D,p->texture);glEnable(GL_BLEND);glBlendFunc(GL_ONE,GL_ONE_MINUS_SRC_ALPHA);glColor4f(1,1,1,1);
  float coords[4][2]={{0,0},{1,0},{1,1},{0,1}},vx[]={x,x+w,x+w,x},vy[]={y,y,y-h,y-h};glBegin(GL_QUADS);for(int i=0;i<4;i++){float u,v;transformed_uv(p->transform,coords[i][0],coords[i][1],&u,&v);glTexCoord2f(u,v);glVertex3f(vx[i],vy[i],z);}glEnd();glDisable(GL_BLEND);glDisable(GL_TEXTURE_2D);glEnable(GL_LIGHTING);
 }
+static float monitor_iso_scale(Plane p,int slot){
+ Plane base=monitor_plane(slot);float kx=p.width/base.width,ky=p.height/base.height;
+ return sqrtf(fmaxf(kx*ky,.0001f));
+}
+static void handles_button_rect(Plane p,float k,float *x,float *y,float *w,float *h){
+ *w=.36f*k;*h=.105f*k;*x=p.width*.11f-*w*.5f;*y=p.height*.5f+.026f*k;
+}
+static bool handles_button_at(Plane p,float k,float lx,float ly){
+ float x,y,w,h;handles_button_rect(p,k,&x,&y,&w,&h);
+ return lx>=x&&lx<=x+w&&ly>=y&&ly<=y+h;
+}
+static void arrange_handle_point(Plane p,float k,int handle,float *x,float *y){
+ float hw=p.width*.5f,hh=p.height*.5f;
+ switch(handle){
+ case CD_HANDLE_MOVE:*x=.32f*k;*y=-.32f*k;break;
+ case CD_HANDLE_AXIS_X:*x=.42f*k;*y=0;break;
+ case CD_HANDLE_AXIS_Y:*x=0;*y=.42f*k;break;
+ case CD_HANDLE_AXIS_Z:*x=0;*y=0;break;
+ case CD_HANDLE_ROTATE_YAW:*x=hw+.28f*k;*y=0;break;
+ case CD_HANDLE_ROTATE_PITCH:*x=-hw-.28f*k;*y=0;break;
+ case CD_HANDLE_ROTATE_ROLL:*x=0;*y=hh+.30f*k;break;
+ case CD_HANDLE_SCALE:*x=hw-.34f*k;*y=-hh+.34f*k;break; /* just inside SE corner: outside would hide behind the dash in focus view */
+ case CD_HANDLE_RESIZE_NW:*x=-hw;*y=hh;break;
+ case CD_HANDLE_RESIZE_N:*x=0;*y=hh;break;
+ case CD_HANDLE_RESIZE_NE:*x=hw;*y=hh;break;
+ case CD_HANDLE_RESIZE_E:*x=hw;*y=0;break;
+ case CD_HANDLE_RESIZE_SE:*x=hw;*y=-hh;break;
+ case CD_HANDLE_RESIZE_S:*x=0;*y=-hh;break;
+ case CD_HANDLE_RESIZE_SW:*x=-hw;*y=-hh;break;
+ case CD_HANDLE_RESIZE_W:*x=-hw;*y=0;break;
+ default:*x=0;*y=0;break;
+ }
+}
+static int arrange_handle_at(Plane p,float k,float lx,float ly){
+ static const int ids[]={CD_HANDLE_MOVE,CD_HANDLE_AXIS_X,CD_HANDLE_AXIS_Y,CD_HANDLE_AXIS_Z,
+  CD_HANDLE_ROTATE_YAW,CD_HANDLE_ROTATE_PITCH,CD_HANDLE_ROTATE_ROLL,CD_HANDLE_SCALE,
+  CD_HANDLE_RESIZE_NW,CD_HANDLE_RESIZE_N,CD_HANDLE_RESIZE_NE,CD_HANDLE_RESIZE_E,
+  CD_HANDLE_RESIZE_SE,CD_HANDLE_RESIZE_S,CD_HANDLE_RESIZE_SW,CD_HANDLE_RESIZE_W};
+ float tol=.115f*k,best=tol*tol;int found=CD_HANDLE_NONE;
+ for(unsigned i=0;i<sizeof(ids)/sizeof(ids[0]);i++){float x,y;arrange_handle_point(p,k,ids[i],&x,&y);float dx=lx-x,dy=ly-y,d=dx*dx+dy*dy;if(d<=best){best=d;found=ids[i];}}
+ if(found!=CD_HANDLE_NONE)return found;
+ if(lx>=0&&lx<=.42f*k&&fabsf(ly)<=.055f*k)return CD_HANDLE_AXIS_X;
+ if(ly>=0&&ly<=.42f*k&&fabsf(lx)<=.055f*k)return CD_HANDLE_AXIS_Y;
+ return CD_HANDLE_NONE;
+}
+static void handle_box(float x,float y,float z,float size,float r,float g,float b){
+ color(.015,.02,.035);box(x,y,z,size*1.28f,size*1.28f,size*.30f);
+ color(r,g,b);box(x,y,z+size*.10f,size,size,size*.34f);
+}
+static void handle_ring(float x,float y,float z,float radius,float r,float g,float b){
+ glPushMatrix();glTranslatef(x,y,z);color(r,g,b);torus(radius,radius*.17f,36,8);glPopMatrix();
+}
+static void draw_arrange_handles(Server *s,Plane p,float k){
+ (void)s;float z=.052f*k,size=.105f*k,x,y;
+ /* Window-border resize grips: white corner/edge squares. */
+ for(int id=CD_HANDLE_RESIZE_NW;id<=CD_HANDLE_RESIZE_W;id++){arrange_handle_point(p,k,id,&x,&y);bool corner=id==CD_HANDLE_RESIZE_NW||id==CD_HANDLE_RESIZE_NE||id==CD_HANDLE_RESIZE_SE||id==CD_HANDLE_RESIZE_SW;handle_box(x,y,z,size*(corner?1.08f:.88f),.94,.96,1);}
+ /* Local axes from the centre. The blue Z knob sits toward the viewer;
+  * the amber square offset from centre is unconstrained plane movement. */
+ glow_line(v3(0,0,z),v3(.42f*k,0,z),.006f*k,1,.22,.22);
+ glow_line(v3(.42f*k,0,z),v3(.35f*k,.055f*k,z),.005f*k,1,.22,.22);glow_line(v3(.42f*k,0,z),v3(.35f*k,-.055f*k,z),.005f*k,1,.22,.22);
+ glow_line(v3(0,0,z),v3(0,.42f*k,z),.006f*k,.25,1,.35);
+ glow_line(v3(0,.42f*k,z),v3(.055f*k,.35f*k,z),.005f*k,.25,1,.35);glow_line(v3(0,.42f*k,z),v3(-.055f*k,.35f*k,z),.005f*k,.25,1,.35);
+ glow_line(v3(0,0,z),v3(0,0,.44f*k),.006f*k,.30,.55,1);
+ arrange_handle_point(p,k,CD_HANDLE_MOVE,&x,&y);handle_box(x,y,z,size*1.08f,1,.62,.16);
+ glow_line(v3(x-.035f*k,y,z+.025f*k),v3(x+.035f*k,y,z+.025f*k),.004f*k,.04,.05,.07);glow_line(v3(x,y-.035f*k,z+.025f*k),v3(x,y+.035f*k,z+.025f*k),.004f*k,.04,.05,.07);
+ handle_box(.42f*k,0,z,size*.82f,1,.22,.22);handle_box(0,.42f*k,z,size*.82f,.25,1,.35);handle_box(0,0,.44f*k,size*.88f,.30,.55,1);
+ /* Rotation rings just outside the frame; their colours match the axis
+  * they rotate around (yaw=Y/green, pitch=X/red, roll=Z/blue). */
+ arrange_handle_point(p,k,CD_HANDLE_ROTATE_YAW,&x,&y);handle_ring(x,y,z,.105f*k,.25,1,.35);
+ arrange_handle_point(p,k,CD_HANDLE_ROTATE_PITCH,&x,&y);handle_ring(x,y,z,.105f*k,1,.22,.22);
+ arrange_handle_point(p,k,CD_HANDLE_ROTATE_ROLL,&x,&y);handle_ring(x,y,z,.105f*k,.30,.55,1);
+ /* Magenta diamond: uniform scale, preserving the current aspect. */
+ arrange_handle_point(p,k,CD_HANDLE_SCALE,&x,&y);glPushMatrix();glTranslatef(x,y,z);glRotatef(45,0,0,1);color(.015,.02,.035);box(0,0,0,size*1.22f,size*1.22f,size*.28f);color(.94,.30,.92);box(0,0,size*.09f,size,size,size*.32f);glPopMatrix();
+}
 static void draw_monitor(Server *s,int i){
  Monitor *m=&s->monitors[i];if(!m->surface)return;Plane p=m->plane;float w=p.width,h=p.height;bool active=s->keyboard_focus==m->surface;
- float k=w/monitor_plane(i).width; /* uniform whole-monitor scale */
+ float k=monitor_iso_scale(p,i); /* isotropic detail scale; w/h may differ after an edge resize */
  bool arranging=s->arrange_mode&&s->arrange_slot==i;
  plane_begin(p);
- color(.08,.095,.13);cylinder(v3(0,-h/2-.03f*k,-.065f*k),v3(0,-.90f*k,-.065f*k),.045f*k,16);color(.16,.18,.23);box(0,-.88f*k,-.085f*k,.48f*k,.06f*k,.25f*k);
+ color(.08,.095,.13);cylinder(v3(0,-h/2-.03f*k,-.065f*k),v3(0,-h/2-.24f*k,-.065f*k),.045f*k,16);color(.16,.18,.23);box(0,-h/2-.22f*k,-.085f*k,.48f*k,.06f*k,.25f*k);
  color(.34,.39,.46);rbox(0,.075f*k,-.056f*k,w+.12f*k,h+.25f*k,.10f*k,.065f*k);
  color(.018,.027,.038);rbox(0,.075f*k,-.003f*k,w+.086f*k,h+.219f*k,.038f*k,.055f*k);
  glDisable(GL_LIGHTING);color(.010,.016,.026);quad(-w/2,-h/2,w,h,.019f*k);glEnable(GL_LIGHTING);
@@ -318,6 +392,7 @@ static void draw_monitor(Server *s,int i){
  else if(active)glow_line(v3(-w/2,-h/2-.022f*k,.025f*k),v3(w/2,-h/2-.022f*k,.025f*k),.004f*k,.35,.92,.74);
  else glow_line(v3(-w/2,-h/2-.022f*k,.025f*k),v3(w/2,-h/2-.022f*k,.025f*k),.003f*k,nr*.65,ng*.7,nb*.7);
  ui_monitor_label(s,i);texture(m->label,-w/2,h/2+.011f*k,w,.137f*k,.024f*k);
+ {float bx,by,bw,bh;handles_button_rect(p,k,&bx,&by,&bw,&bh);if(s->handles_tex)texture(s->handles_tex,bx,by,bw,bh,.032f*k);if(arranging&&s->arrange_handles){float z=.040f*k,r=.004f*k;glow_line(v3(bx,by,z),v3(bx+bw,by,z),r,1,.62,.16);glow_line(v3(bx+bw,by,z),v3(bx+bw,by+bh,z),r,1,.62,.16);glow_line(v3(bx+bw,by+bh,z),v3(bx,by+bh,z),r,1,.62,.16);glow_line(v3(bx,by+bh,z),v3(bx,by,z),r,1,.62,.16);}}
  glEnable(GL_STENCIL_TEST);glClear(GL_STENCIL_BUFFER_BIT);glStencilMask(0xff);glStencilFunc(GL_ALWAYS,1,0xff);glStencilOp(GL_KEEP,GL_KEEP,GL_REPLACE);glColorMask(GL_FALSE,GL_FALSE,GL_FALSE,GL_FALSE);glDepthMask(GL_FALSE);quad(-w/2,-h/2,w,h,.021f*k);glColorMask(GL_TRUE,GL_TRUE,GL_TRUE,GL_TRUE);glDepthMask(GL_TRUE);glStencilFunc(GL_EQUAL,1,0xff);glStencilOp(GL_KEEP,GL_KEEP,GL_KEEP);glStencilMask(0);
  float scale=fminf(w/m->surface->width,h/m->surface->height);DrawSurface d={.scale=scale,.w=m->surface->width*scale,.h=m->surface->height*scale,.z0=.024f*k,.zstep=.0007f*k};server_each_surface(m->surface,draw_app_surface,&d);
  glStencilMask(0xff);glDisable(GL_STENCIL_TEST);
@@ -332,6 +407,7 @@ static void draw_monitor(Server *s,int i){
   glow_line(v3(0,0,z),v3(.30f*k,0,z),r,1,.22,.22);
   glow_line(v3(0,0,z),v3(0,.30f*k,z),r,.25,1,.35);
   glow_line(v3(0,0,z),v3(0,0,.34f*k),r,.30,.55,1);
+  if(s->arrange_handles)draw_arrange_handles(s,p,k);
  }
  glPopMatrix();
 }
@@ -361,8 +437,16 @@ Hit scene_pick(Server *s,float x,float y,bool grab){
  Hit best={.kind=HIT_NONE,.distance=1e9f};Vec3 ray=camera_ray(x,y,s->width,s->height,s->fov,s->yaw,s->pitch);float u,v,d;
  if(grab&&s->pointer_grab){Surface *root=surface_root(s->pointer_grab);if(root&&root->slot>=0){Plane p=s->monitors[root->slot].plane;if(plane_hit(p,s->eye,ray,&u,&v,&d,false)){float scale=fminf(p.width/root->width,p.height/root->height);float sx=(u-.5f)*p.width/scale+root->width/2.f,sy=(v-.5f)*p.height/scale+root->height/2.f;Surface *child=s->pointer_grab;while(child!=root&&child){sx-=child->x;sy-=child->y;child=child->parent;}return (Hit){.kind=HIT_APP,.surface=s->pointer_grab,.slot=root->slot,.x=sx,.y=sy,.distance=d};}}return best;}
  for(int i=0;i<CD_MAX_MONITORS;i++){Monitor *m=&s->monitors[i];if(!m->surface)continue;Plane p=m->plane;if(!plane_hit(p,s->eye,ray,&u,&v,&d,false)||d>=best.distance)continue;
+  float lx=(u-.5f)*p.width,ly=(.5f-v)*p.height,k=monitor_iso_scale(p,i);
+  if(handles_button_at(p,k,lx,ly)){best=(Hit){.kind=HIT_HANDLES_BUTTON,.surface=m->surface,.slot=i,.x=lx,.y=ly,.distance=d};continue;}
+  if(s->arrange_mode&&s->arrange_handles&&s->arrange_slot==i){int handle=arrange_handle_at(p,k,lx,ly);if(handle!=CD_HANDLE_NONE){best=(Hit){.kind=HIT_ARRANGE_HANDLE,.surface=m->surface,.slot=i,.handle=handle,.x=lx,.y=ly,.distance=d};continue;}}
   if(u>.92&&u<1.01&&v<0&&v>-.12){best=(Hit){.kind=HIT_CLOSE,.surface=m->surface,.slot=i,.distance=d};continue;}
-  if(u<0||u>1||v<0||v>1)continue;float scale=fminf(p.width/m->surface->width,p.height/m->surface->height);float sx=(u-.5f)*p.width/scale+m->surface->width/2.f,sy=(v-.5f)*p.height/scale+m->surface->height/2.f,px,py;
+  if(u<0||u>1||v<0||v>1){
+   bool frame=lx>=-(p.width*.5f+.07f*k)&&lx<=p.width*.5f+.07f*k&&ly>=-(p.height*.5f+.06f*k)&&ly<=p.height*.5f+.21f*k;
+   if(frame)best=(Hit){.kind=HIT_FRAME,.surface=m->surface,.slot=i,.x=lx,.y=ly,.distance=d};
+   continue;
+  }
+  float scale=fminf(p.width/m->surface->width,p.height/m->surface->height);float sx=(u-.5f)*p.width/scale+m->surface->width/2.f,sy=(v-.5f)*p.height/scale+m->surface->height/2.f,px,py;
   Surface *surface=surface_at(m->surface,sx,sy,&px,&py);if(surface)best=(Hit){.kind=HIT_APP,.surface=surface,.slot=i,.x=px,.y=py,.distance=d};
  }
  for(int i=0;i<6;i++)if(plane_hit(s->buttons[i].plane,s->eye,ray,&u,&v,&d,true)&&d<best.distance)best=(Hit){.kind=HIT_BUTTON,.button=i,.distance=d};
@@ -378,7 +462,8 @@ void scene_focus_monitor(Server *s,int slot,bool zoom){
  while(desired-s->yaw>180)desired-=360;while(desired-s->yaw<-180)desired+=360;
  s->target_yaw=desired;
  s->target_pitch=atan2f(rel.y,fmaxf(horizontal,.05f))/RAD;
- s->target_fov=zoom?clampf(2.f*atanf((p.height*.85f)/fmaxf(dist,.1f))/RAD,16.f,55.f):65;
+ float fit_fov=fmaxf(2.f*atanf((p.height*.85f)/fmaxf(dist,.1f)),2.f*atanf((p.width*.85f)/(fmaxf(dist,.1f)*fmaxf((float)s->width/(float)s->height,.1f))))/RAD;
+ s->target_fov=zoom?clampf(fit_fov,16.f,55.f):65;
  s->focus_view=zoom;
 }
 void scene_monitor_reset(Server *s,int slot){
@@ -396,6 +481,10 @@ void scene_monitor_rotate(Server *s,int slot,float yaw,float pitch,float roll){
 void scene_monitor_scale(Server *s,int slot,float factor){
  if(slot<0||slot>=CD_MAX_MONITORS)return;
  s->monitors[slot].plane=plane_uniform_scale(s->monitors[slot].plane,monitor_plane(slot),factor);
+}
+void scene_monitor_set_plane(Server *s,int slot,Plane plane){
+ if(slot<0||slot>=CD_MAX_MONITORS)return;
+ s->monitors[slot].plane=plane;
 }
 void scene_reset_camera(Server *s){s->target_yaw=roundf(s->yaw/360)*360;s->target_pitch=-6;s->target_fov=65;s->focus_view=false;}
 void scene_save_screenshot(Server *s,const char *path){

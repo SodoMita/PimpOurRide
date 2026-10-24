@@ -196,6 +196,8 @@ websockify --web=tools/viewer 0.0.0.0:8080 127.0.0.1:5900
 |---|---|
 | Middle-drag (mouse or VNC) | Look around (first-person) |
 | Click a screen | Focus it — keyboard/pointer now go to that app |
+| Drag a monitor titlebar/frame | Move that whole window/monitor in its plane (KWin-style) |
+| Click **HANDLES** on a titlebar | Enter Arrange for that window and show its move/rotate/scale/resize gizmo |
 | Scroll over a screen | Scroll inside that app |
 | Scroll elsewhere | Zoom (narrow the field of view) |
 | Click a dashboard button | Launch/focus that app (or run its built-in action) |
@@ -206,7 +208,7 @@ websockify --web=tools/viewer 0.0.0.0:8080 127.0.0.1:5900
 | F2 | Reset to the driver's seat view |
 | F3 | Toggle a tight focus zoom on the active screen |
 | F4 | Cycle underglow color (violet / ice blue / acid lime) |
-| F5 | Arrange the selected screen (move / rotate / roll / uniformly scale) |
+| F5 | Arrange the selected screen (move / rotate / roll / scale / resize) |
 | F6 | Cycle to the next connected screen |
 | F11 | `--windowed` only: toggle fullscreen |
 | F12 | Save a screenshot to `screenshots/` |
@@ -215,17 +217,21 @@ websockify --web=tools/viewer 0.0.0.0:8080 127.0.0.1:5900
 
 #### Arrange mode (F5)
 
-Press **F5** to arrange the active screen. The selected monitor gets an amber
+You do not need Arrange mode just to move a window: **drag its titlebar or
+frame** and the whole monitor follows in its own plane, like dragging a
+normal window frame. For the full transform editor, press **F5** or click the
+**HANDLES** button in a monitor's titlebar. The selected monitor gets an amber
 outline and local red/green/blue axes; click another occupied monitor, or use
-**Tab/F6**, to choose a different one. Pointer and keyboard input are captured
+**Tab/F6**, to choose a different one. Click **HANDLES** again (or press **H**)
+to show/hide the larger gizmo handles. Pointer and keyboard input are captured
 by the compositor while Arrange mode is on, so dragging a window cannot also
 click through to the app underneath.
 
-![Arrange mode: a translated, yawed, rolled and uniformly scaled monitor](docs/arrange-mode.webp)
+![Arrange mode with move, axis, rotation, uniform-scale and resize handles](docs/arrange-mode.webp)
 
 | Arrange input | Transform |
 |---|---|
-| Left-drag | Translate along the monitor plane |
+| Left-drag screen or frame | Translate along the monitor plane |
 | Shift-drag or right-drag | Yaw and pitch |
 | Ctrl-drag | Roll |
 | Alt-drag | Move toward/away from the driver's eye |
@@ -238,18 +244,34 @@ click through to the app underneath.
 | R or 0 | Reset this screen to its default bay transform |
 | Esc or F5 | Leave Arrange mode |
 
+When the gizmo is shown, its handles are ray-picked in 3D just like the
+dashboard buttons:
+
+| Handle | Drag result |
+|---|---|
+| Amber square | Free movement in the monitor plane |
+| Red / green / blue axis arrows and end knobs | Move only along local X / Y / Z (drag the blue Z knob up/down) |
+| Green / red / blue rings outside the frame | Yaw / pitch / roll around the matching local axis |
+| White corner squares | Resize width + height, anchoring the opposite corner; hold Shift to preserve aspect |
+| White edge squares | Resize only width or height, anchoring the opposite edge |
+| Magenta diamond | Uniformly scale both dimensions, preserving the current aspect |
+
 Hold **Shift** for larger keyboard steps or **Ctrl** for finer ones (the Ctrl
 modifier still leaves Ctrl-drag available for roll). F3 can focus the Arrange
 target without leaving the mode.
 
 The transform moves the whole physical monitor assembly — screen, frame,
 stand, label and glow — and 3D ray picking uses the same transformed plane, so
-clicks stay aligned after you leave Arrange mode. Uniform scaling preserves the
-monitor aspect ratio and does not resize the client's Wayland buffer. To keep a
-screen recoverable, scale is limited to 0.35×–2.75×, pitch to ±85°, and the
-centre stays 0.8–12 m from the eye inside the garage bounds. These are
-deliberately **session-only** transforms: they are not written to the config
-file, and a newly mapped window starts from its slot's default transform.
+clicks stay aligned after you leave Arrange mode. Corner/edge resizing changes
+the physical monitor's width/height (and therefore its aspect); the client's
+Wayland buffer is not resized, so its image is letterboxed on the resized
+screen. The magenta uniform-scale handle and mouse wheel instead scale both
+dimensions together, preserving whatever aspect the monitor currently has.
+To keep a screen recoverable, each dimension is limited to 0.35×–2.75× its
+default, pitch to ±85°, and the centre stays 0.8–12 m from the eye inside the
+garage bounds. Frame moves and Arrange transforms are deliberately
+**session-only**: they are not written to the config file, and a newly mapped
+window starts from its slot's default transform.
 
 Over VNC, keyboard input covers typing (letters use an explicit physical
 evdev table, as do keypad digits/Enter/Space), navigation keys, function keys

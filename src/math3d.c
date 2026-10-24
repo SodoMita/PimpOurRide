@@ -41,13 +41,7 @@ static float wrap_degrees(float a){
  while(a<=-180.f)a+=360.f;
  return a;
 }
-Plane plane_translate(Plane p,Vec3 eye,float right_amount,float up_amount,float toward_eye){
- Vec3 right,up;plane_axes(p,&right,&up,NULL);
- p.center=vadd(p.center,vadd(vmul(right,right_amount),vmul(up,up_amount)));
- if(toward_eye!=0.f){
-  Vec3 to_eye=vnorm(vsub(eye,p.center));
-  p.center=vadd(p.center,vmul(to_eye,toward_eye));
- }
+static Plane plane_clamp_center(Plane p,Vec3 eye){
  /* Keep an arranged display inside the garage volume and out of the
   * driver's face. The default ring extends behind the eye (slot 8), hence
   * the generous Z range. */
@@ -59,6 +53,20 @@ Plane plane_translate(Plane p,Vec3 eye,float right_amount,float up_amount,float 
  else if(dist>12.f)p.center=vadd(eye,vmul(rel,12.f/dist));
  return p;
 }
+Plane plane_translate_local(Plane p,Vec3 eye,float right_amount,float up_amount,float normal_amount){
+ Vec3 right,up,normal;plane_axes(p,&right,&up,&normal);
+ p.center=vadd(p.center,vadd(vadd(vmul(right,right_amount),vmul(up,up_amount)),vmul(normal,normal_amount)));
+ return plane_clamp_center(p,eye);
+}
+Plane plane_translate(Plane p,Vec3 eye,float right_amount,float up_amount,float toward_eye){
+ p=plane_translate_local(p,eye,right_amount,up_amount,0);
+ if(toward_eye!=0.f){
+  Vec3 to_eye=vnorm(vsub(eye,p.center));
+  p.center=vadd(p.center,vmul(to_eye,toward_eye));
+  p=plane_clamp_center(p,eye);
+ }
+ return p;
+}
 Plane plane_rotate(Plane p,float yaw,float pitch,float roll){
  p.yaw=wrap_degrees(p.yaw+yaw);
  p.pitch=clampf(p.pitch+pitch,-85.f,85.f);
@@ -66,11 +74,30 @@ Plane plane_rotate(Plane p,float yaw,float pitch,float roll){
  return p;
 }
 Plane plane_uniform_scale(Plane p,Plane base,float factor){
- if(base.width<=0.f||base.height<=0.f||factor<=0.f)return p;
- float scale=clampf((p.width/base.width)*factor,.35f,2.75f);
- p.width=base.width*scale;
- p.height=base.height*scale;
+ if(base.width<=0.f||base.height<=0.f||p.width<=0.f||p.height<=0.f||factor<=0.f)return p;
+ /* Preserve the plane's current aspect (which an edge resize may have
+  * changed), while keeping both relative dimensions inside the limits. */
+ float sx=p.width/base.width,sy=p.height/base.height;
+ float lo=.35f/fminf(sx,sy),hi=2.75f/fmaxf(sx,sy);
+ if(lo>hi)return p;
+ float f=clampf(factor,lo,hi);
+ p.width*=f;p.height*=f;
  return p;
+}
+Plane plane_resize(Plane p,Plane base,Vec3 eye,float width,float height,int fixed_x,int fixed_y){
+ if(base.width<=0.f||base.height<=0.f)return p;
+ float new_w=clampf(width,base.width*.35f,base.width*2.75f);
+ float new_h=clampf(height,base.height*.35f,base.height*2.75f);
+ float dw=new_w-p.width,dh=new_h-p.height;
+ Vec3 right,up;plane_axes(p,&right,&up,NULL);
+ /* fixed_x/fixed_y identify the stationary edge: -1 = left/bottom,
+  * +1 = right/top, 0 = centre. Moving the centre by half the size
+  * change in the opposite direction keeps that edge anchored, exactly
+  * like dragging a normal window border. */
+ if(fixed_x)p.center=vadd(p.center,vmul(right,-(float)fixed_x*dw*.5f));
+ if(fixed_y)p.center=vadd(p.center,vmul(up,-(float)fixed_y*dh*.5f));
+ p.width=new_w;p.height=new_h;
+ return plane_clamp_center(p,eye);
 }
 Plane monitor_plane(int index){
  static const float angles[]={0,-30,30,-62,62,-94,94,180};float a=angles[index%8];
