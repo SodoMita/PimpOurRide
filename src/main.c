@@ -52,17 +52,18 @@ static void apply_config(Server *s,const CdConfig *cfg,bool startup,const char *
   if(mode>=0)s->bg_mode=mode;else fprintf(stderr,"[config] unknown background '%s' (want 3d|texture|none)\n",bg);}
 }
 /* ---- Launch Control menu configuration ([app.*]) ----
- * The KDE-menu-editor half of the config file. Each of the four app slots
- * has a section ([app.terminal] ... [app.meters]) with:
- *   name, sub       button label lines (also for [app.neon]/[app.cockpit])
- *   exec            shell command; "%root%" expands to the install root
+ * The KDE-menu-editor half of the config file. Each of the six physical
+ * Launch Control slots has a section ([app.terminal] ... [app.cockpit]):
+ *   action          app | neon | cockpit (slots 5/6 default to built-ins)
+ *   name, sub       button label lines
+ *   exec            shell command for action=app; "%root%" = install root
  *   app_id          substring matched to focus an already-running instance
  *   icon            0..5 (prompt, folder, music, bars, sun, wheel)
  *   enabled         false greys the button out (click = notice)
- *   autostart       join the --demo launch set
- * Everything applies live: relabels regenerate button textures, exec/app_id
- * take effect on the next click. CHROMEDRIVE_* env vars still win for exec
- * (they are an explicit launch-time override - the GUI shows this state). */
+ *   autostart       join the --demo launch set (action=app slots)
+ * Everything applies live: relabels regenerate button textures, assignment
+ * changes take effect on the next click. CHROMEDRIVE_TERMINAL/FILES/AUDIO/
+ * METERS still win for those four legacy sections' exec values. */
 static char *expand_root(const char *in,const char *root){
  const char *needle="%root%";size_t nl=strlen(needle),rl=strlen(root),count=0;
  for(const char *p=in;(p=strstr(p,needle))!=NULL;p+=nl)count++;
@@ -83,13 +84,22 @@ static void apply_app_config(Server *s,const CdConfig *cfg){
   long icon=cd_config_get_int(cfg,sec,"icon",b->icon);
   if(icon>=0&&icon<=5)b->icon=(int)icon;else if(cd_config_has(cfg,sec,"icon"))fprintf(stderr,"[config] %s icon out of range 0..5\n",sec);
   b->enabled=cd_config_get_bool(cfg,sec,"enabled",b->enabled);
-  if(i<4){
-   const char *id=cd_config_get_string(cfg,sec,"app_id",NULL);
-   if(id)snprintf(s->app_ids[i],sizeof(s->app_ids[i]),"%s",id);
-   s->app_autostart[i]=cd_config_get_bool(cfg,sec,"autostart",s->app_autostart[i]);
-   const char *exec=cd_config_get_string(cfg,sec,"exec",NULL);
-   if(exec&&*exec&&!getenv(envnames[i])){char *x=expand_root(exec,s->root);if(x){free(s->launch_commands[i]);s->launch_commands[i]=x;}}
-   else if(exec&&*exec)fprintf(stderr,"[config] %s exec ignored: $%s is set\n",sec,envnames[i]);
+  const char *action=cd_config_get_string(cfg,sec,"action",NULL);
+  if(action){
+   if(!strcmp(action,"app"))b->action=CD_BUTTON_APP;
+   else if(!strcmp(action,"neon"))b->action=CD_BUTTON_NEON;
+   else if(!strcmp(action,"cockpit"))b->action=CD_BUTTON_COCKPIT;
+   else fprintf(stderr,"[config] %s unknown action '%s' (want app|neon|cockpit)\n",sec,action);
+  }
+  const char *id=cd_config_get_string(cfg,sec,"app_id",NULL);
+  if(id)snprintf(s->app_ids[i],sizeof(s->app_ids[i]),"%s",id);
+  s->app_autostart[i]=cd_config_get_bool(cfg,sec,"autostart",s->app_autostart[i]);
+  const char *exec=cd_config_get_string(cfg,sec,"exec",NULL);
+  if(exec){
+   if(*exec){
+    if(i<4&&getenv(envnames[i]))fprintf(stderr,"[config] %s exec ignored: $%s is set\n",sec,envnames[i]);
+    else {char *x=expand_root(exec,s->root);if(x){free(s->launch_commands[i]);s->launch_commands[i]=x;}}
+   }else if(i>=4||!getenv(envnames[i])){free(s->launch_commands[i]);s->launch_commands[i]=NULL;}
   }
  }
  ui_refresh_buttons(s);
@@ -122,22 +132,67 @@ void app_exec(Server *s,const char *command){
  if(err){app_notice(s,"Launch failed: %s",strerror(err));fprintf(stderr,"[launch] %s: %s\n",command,strerror(err));return;}
  s->children[s->child_count++]=pid;fprintf(stderr,"[launch] pid=%d %s\n",(int)pid,command);app_notice(s,"Connecting a new native Wayland client...");
 }
+static void action_cycle_neon(Server *s){s->theme=(s->theme+1)%3;s->rebuild_scene=true;app_notice(s,"Underglow / %s",s->theme==0?"ULTRAVIOLET":s->theme==1?"ICE BLUE":"ACID LIME");}
+static void action_driver_view(Server *s){scene_reset_camera(s);app_notice(s,"Driver view restored");}
 void app_launch(Server *s,int action,bool force_new){
- if(action>=0&&action<6&&!s->buttons[action].enabled){app_notice(s,"%s is disabled in the menu configuration",s->buttons[action].name);return;}
- if(action==4){s->theme=(s->theme+1)%3;s->rebuild_scene=true;app_notice(s,"Underglow / %s",s->theme==0?"ULTRAVIOLET":s->theme==1?"ICE BLUE":"ACID LIME");return;}
- if(action==5){scene_reset_camera(s);app_notice(s,"Driver view restored");return;}
- if(action<0||action>3)return;
+ if(action<0||action>=6)return;
+ if(!s->buttons[action].enabled){app_notice(s,"%s is disabled in the menu configuration",s->buttons[action].name);return;}
+ if(s->buttons[action].action==CD_BUTTON_NEON){action_cycle_neon(s);return;}
+ if(s->buttons[action].action==CD_BUTTON_COCKPIT){action_driver_view(s);return;}
+ if(!s->launch_commands[action]||!*s->launch_commands[action]){app_notice(s,"No app assigned to %s - right-click it to choose one",s->buttons[action].name);return;}
  if(!force_new&&*s->app_ids[action]){for(int i=0;i<CD_MAX_MONITORS;i++){Surface *p=s->monitors[i].surface;if(p&&strstr(p->app_id,s->app_ids[action])){server_focus(s,p);scene_focus_monitor(s,i,true);return;}}}
  app_exec(s,s->launch_commands[action]);
 }
-/* The dash cog: focus the settings GUI if it is already on a monitor,
- * otherwise launch it (it maps to the next free screen like any app). */
-void app_open_settings(Server *s){
- s->cog_spin_until=s->time+0.9;
- for(int i=0;i<CD_MAX_MONITORS;i++){Surface *p=s->monitors[i].surface;if(p&&strstr(p->app_id,"chromedrive.config")){server_focus(s,p);scene_focus_monitor(s,i,true);app_notice(s,"Settings");return;}}
- char cmd[4400];snprintf(cmd,sizeof(cmd),"'%s/bin/chromedrive-config'",s->root);
- app_exec(s,cmd);app_notice(s,"Opening Settings...");
+static bool contains_ci(const char *haystack,const char *needle){return haystack&&strcasestr(haystack,needle);}
+static bool slot_looks_terminal(Server *s,int i){
+ if(s->buttons[i].action!=CD_BUTTON_APP||!s->launch_commands[i]||!*s->launch_commands[i])return false;
+ static const char *const words[]={"terminal","console","konsole","foot","alacritty","kitty","wezterm","xterm","zutty","terminator","tilix","ptyxis","blackbox","contour",NULL};
+ for(int w=0;words[w];w++)if(contains_ci(s->buttons[i].name,words[w])||contains_ci(s->app_ids[i],words[w])||contains_ci(s->launch_commands[i],words[w]))return true;
+ return false;
 }
+/* Ctrl+Alt+Enter keeps its documented meaning even when slot 1 has been
+ * reassigned: prefer any slot that still points at a terminal, then the
+ * historical slot-1 command, then the environment/default terminal. */
+static void launch_new_terminal(Server *s){
+ for(int i=0;i<6;i++)if(slot_looks_terminal(s,i)){app_exec(s,s->launch_commands[i]);app_notice(s,"New terminal launched");return;}
+ if(s->buttons[0].action==CD_BUTTON_APP&&s->launch_commands[0]&&*s->launch_commands[0]){app_exec(s,s->launch_commands[0]);app_notice(s,"New terminal launched");return;}
+ const char *env=getenv("CHROMEDRIVE_TERMINAL");
+ const char *cmd=env&&*env?env:(s->launch_commands[0]&&*s->launch_commands[0]?s->launch_commands[0]:"foot");
+ app_exec(s,cmd);app_notice(s,"New terminal launched");
+}
+/* A running settings GUI cannot receive new argv, so the compositor leaves
+ * it a one-line request file ("<slot> <nonce>") in the private runtime dir.
+ * chromedrive-config polls for it and opens its picker. The temp+rename
+ * dance means the GUI never observes a half-written request. */
+static bool settings_picker_request(Server *s,int slot){
+ if(slot<0||slot>=6||!*s->runtime)return false;
+ const char *base=strrchr(s->socket,'/');base=base?base+1:s->socket;
+ char safe[128];size_t j=0;
+ for(size_t i=0;base[i]&&j+1<sizeof(safe);i++){unsigned char ch=(unsigned char)base[i];safe[j++]=((ch>='A'&&ch<='Z')||(ch>='a'&&ch<='z')||(ch>='0'&&ch<='9')||ch=='.'||ch=='_'||ch=='-')?(char)ch:'_';}
+ safe[j]=0;if(!*safe)snprintf(safe,sizeof(safe),"wayland-0");
+ char path[4400],tmp[4400];
+ if(snprintf(path,sizeof(path),"%s/chromedrive-config.%s.picker-request",s->runtime,safe)>=(int)sizeof(path))return false;
+ if(snprintf(tmp,sizeof(tmp),"%s.tmp-%d",path,(int)getpid())>=(int)sizeof(tmp))return false;
+ FILE *f=fopen(tmp,"w");if(!f)return false;
+ unsigned long long nonce=((unsigned long long)(clock_now()*1000000.0)<<20)^(unsigned long long)s->frames^(unsigned long long)getpid();
+ bool ok=fprintf(f,"%d %llu\n",slot,nonce)>=0;
+ if(fclose(f)!=0)ok=false;
+ if(ok&&rename(tmp,path)==0)return true;
+ unlink(tmp);return false;
+}
+/* The dash cog / right-clicking a Launch Control tile: focus the settings
+ * GUI if it is already on a monitor, otherwise launch it. A fresh launch may
+ * be deep-linked to one slot with its app picker already open; an already
+ * running GUI gets the same deep link through the request file above. */
+void app_open_settings_slot(Server *s,int slot,bool choose_app){
+ s->cog_spin_until=s->time+0.9;
+ for(int i=0;i<CD_MAX_MONITORS;i++){Surface *p=s->monitors[i].surface;if(p&&strstr(p->app_id,"chromedrive.config")){server_focus(s,p);scene_focus_monitor(s,i,true);bool requested=choose_app&&settings_picker_request(s,slot);app_notice(s,choose_app?(requested?"Opening app picker...":"Right-click the slot in Settings to assign an app"):"Settings");return;}}
+ char cmd[4400];
+ if(slot>=0&&slot<6)snprintf(cmd,sizeof(cmd),"'%s/bin/chromedrive-config' --slot %d%s",s->root,slot,choose_app?" --choose-app":"");
+ else snprintf(cmd,sizeof(cmd),"'%s/bin/chromedrive-config'",s->root);
+ app_exec(s,cmd);app_notice(s,choose_app?"Opening app picker...":"Opening Settings...");
+}
+void app_open_settings(Server *s){app_open_settings_slot(s,-1,false);}
 static void next_monitor(Server *s){for(int d=1;d<=CD_MAX_MONITORS;d++){int i=(s->active_slot+d)%CD_MAX_MONITORS;if(s->monitors[i].surface){server_focus(s,s->monitors[i].surface);scene_focus_monitor(s,i,s->focus_view);return;}}}
 /* Compositor-level hotkeys, shared by both input backends (SDL and headless/VNC).
  * Keyed on evdev codes + the live s->keys[] modifier bitmap (already updated by
@@ -146,14 +201,14 @@ static void next_monitor(Server *s){for(int d=1;d<=CD_MAX_MONITORS;d++){int i=(s
 bool app_global_key(Server *s,uint32_t evdev,bool down){
  bool ctrl=s->keys[KEY_LEFTCTRL]||s->keys[KEY_RIGHTCTRL];
  bool alt=s->keys[KEY_LEFTALT]||s->keys[KEY_RIGHTALT];
- if(ctrl&&alt&&(evdev==KEY_ENTER||evdev==KEY_Q)){if(down){if(evdev==KEY_Q)s->running=false;else app_launch(s,0,true);}return true;}
+ if(ctrl&&alt&&(evdev==KEY_ENTER||evdev==KEY_KPENTER||evdev==KEY_Q)){if(down){if(evdev==KEY_Q)s->running=false;else launch_new_terminal(s);}return true;}
  bool global=evdev==KEY_F1||evdev==KEY_F2||evdev==KEY_F3||evdev==KEY_F4||evdev==KEY_F6||evdev==KEY_F11||evdev==KEY_F12;
  if(!global)return false;if(!down)return true;
  switch(evdev){
  case KEY_F1:s->show_help=!s->show_help;break;
  case KEY_F2:scene_reset_camera(s);break;
  case KEY_F3:if(s->keyboard_focus)scene_focus_monitor(s,s->keyboard_focus->slot,!s->focus_view);else next_monitor(s);break;
- case KEY_F4:app_launch(s,4,false);break;
+ case KEY_F4:action_cycle_neon(s);break;
  case KEY_F6:next_monitor(s);break;
  case KEY_F11:if(!s->headless&&s->window){s->fullscreen=!s->fullscreen;SDL_SetWindowFullscreen(s->window,s->fullscreen?SDL_WINDOW_FULLSCREEN_DESKTOP:0);}break;
  case KEY_F12:snprintf(s->screenshot_path,sizeof(s->screenshot_path),"%.4000s/screenshots/cockpit-%llu.webp",s->root,(unsigned long long)SDL_GetTicks64());s->screenshot_requested=true;break;
@@ -208,11 +263,11 @@ int main(int argc,char **argv){
  const char *def_ids[4]={"foot","chromedrive.files","chromedrive.audio","chromedrive.telemetry"};
  const bool def_autostart[4]={true,true,true,false};
  const char *envnames[]={"CHROMEDRIVE_TERMINAL","CHROMEDRIVE_FILES","CHROMEDRIVE_AUDIO","CHROMEDRIVE_METERS"};
- for(int i=0;i<4;i++){s.launch_commands[i]=getenv(envnames[i])?strdup(getenv(envnames[i])):expand_root(templates[i],s.root);snprintf(s.app_ids[i],sizeof(s.app_ids[i]),"%s",def_ids[i]);s.app_autostart[i]=def_autostart[i];}
+ for(int i=0;i<6;i++){if(i<4){s.launch_commands[i]=getenv(envnames[i])?strdup(getenv(envnames[i])):expand_root(templates[i],s.root);snprintf(s.app_ids[i],sizeof(s.app_ids[i]),"%s",def_ids[i]);s.app_autostart[i]=def_autostart[i];}else{s.launch_commands[i]=NULL;s.app_ids[i][0]=0;s.app_autostart[i]=false;}}
  scene_init(&s);ui_init(&s);
  if(config_enabled){CdConfig *cfg=cd_config_load(config_path);if(cfg){apply_app_config(&s,cfg);cd_config_free(cfg);}} /* needs buttons+GL: after ui_init */
  s.start_time=clock_now();double last=s.start_time,fps_start=last;uint64_t fps_frames=0;bool initial_focus=false;
- if(s.demo){for(int i=0;i<4;i++)if(s.buttons[i].enabled&&s.app_autostart[i])app_exec(&s,s.launch_commands[i]);}for(int i=0;i<s.exec_count;i++)app_exec(&s,s.exec_commands[i]);
+ if(s.demo){for(int i=0;i<6;i++)if(s.buttons[i].enabled&&s.buttons[i].action==CD_BUTTON_APP&&s.app_autostart[i])app_exec(&s,s.launch_commands[i]);}for(int i=0;i<s.exec_count;i++)app_exec(&s,s.exec_commands[i]);
  app_notice(&s,"Welcome to the driver's seat. F1 for controls.");
  while(s.running&&!interrupted){
   double frame_start=clock_now();s.time=frame_start-s.start_time;s.dt=frame_start-last;last=frame_start;
@@ -236,5 +291,5 @@ int main(int argc,char **argv){
  for(int i=0;i<s.child_count;i++)kill(-s.children[i],SIGTERM);
  server_finish(&s);scene_finish(&s);
  if(s.headless)backend_headless_shutdown(&s);else backend_sdl_shutdown(&s);
- SDL_Quit();for(int i=0;i<4;i++)free(s.launch_commands[i]);return 0;
+ SDL_Quit();for(int i=0;i<6;i++)free(s.launch_commands[i]);return 0;
 }

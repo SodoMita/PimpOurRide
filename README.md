@@ -148,12 +148,17 @@ one click away: the slowly spinning **3D cog on the dashboard** (between the
 steering wheel and Launch Control) launches it, or focuses it if already
 open. Its first tab is a
 KDE-menu-editor-style **Launch Menu editor**: rename any of the six Launch
-Control entries, change their icons/descriptions, point the four app slots
-at arbitrary commands (e.g. `dolphin`, or Garage3D), set the `app_id` used
-to focus a running instance instead of relaunching, toggle entries on/off,
-and choose the `--demo` autostart set. The other tabs cover every Garage3D
-tunable (neon colours, fog, rain, physics…) and every compositor setting
-(size/FPS/FOV, underglow, 3D-vs-texture backdrop, VNC port…).
+Control entries, change their icons/descriptions, and assign **any slot** an
+installed app or one of the built-in underglow/driver-view actions. Right-click
+a slot in Settings—or right-click its 3D tile in the cockpit—for a searchable
+picker listing the built-ins, ChromeDrive's bundled programs, and visible apps
+from the system's desktop-entry databases. You can still hand-tune the command
+(e.g. `dolphin`, or Garage3D), set the `app_id` used to focus a running
+instance instead of relaunching, toggle entries on/off, and choose the
+`--demo` autostart set. The other tabs cover every Garage3D tunable (neon
+colours, fog, rain, physics…) and every compositor setting (size/FPS/FOV,
+underglow, 3D-vs-texture backdrop, and the VNC port as an exact typed
+number—not a slider).
 
 It edits `~/.config/chromedrive/chromedrive.conf` and
 `~/.config/garage3d/garage3d.conf` (plain INI, hand-editable). Both programs
@@ -193,7 +198,8 @@ websockify --web=tools/viewer 0.0.0.0:8080 127.0.0.1:5900
 | Click a screen | Focus it — keyboard/pointer now go to that app |
 | Scroll over a screen | Scroll inside that app |
 | Scroll elsewhere | Zoom (narrow the field of view) |
-| Click a dashboard button | Launch/focus that app |
+| Click a dashboard button | Launch/focus that app (or run its built-in action) |
+| Right-click a dashboard button | Choose which app/action that button launches (Settings picker) |
 | Click the dashboard cog | Open Settings (`chromedrive-config`) |
 | Shift + dashboard button | Force a new instance |
 | F1 | Help overlay |
@@ -203,13 +209,15 @@ websockify --web=tools/viewer 0.0.0.0:8080 127.0.0.1:5900
 | F6 | Cycle to the next connected screen |
 | F11 | `--windowed` only: toggle fullscreen |
 | F12 | Save a screenshot to `screenshots/` |
-| Ctrl+Alt+Enter | Open a new terminal |
+| Ctrl+Alt+Enter | Open a new terminal (even if slot 1 was reassigned) |
 | Ctrl+Alt+Q | Quit |
 
-Over VNC, keyboard input covers typing, navigation keys, function keys and
-modifiers (see `keysym_to_evdev` in `src/backend_headless.c`); key auto-repeat
-is handled client-side (by each app's own xkb repeat timer), same as a real
-compositor — holding a key sends one press/release pair, not a flood of events.
+Over VNC, keyboard input covers typing (letters use an explicit physical
+evdev table, as do keypad digits/Enter/Space), navigation keys, function keys
+and modifiers (see `keysym_to_evdev` in `src/backend_headless.c`); key
+auto-repeat is handled client-side (by each app's own xkb repeat timer), same
+as a real compositor — holding a key sends one press/release pair, not a flood
+of events.
 
 A neon crosshair reticle is drawn directly into every frame at the pointer
 position (brightening/widening over a clickable dashboard button) — there is

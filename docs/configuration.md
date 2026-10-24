@@ -18,6 +18,11 @@ and Launch Control). It idles at a slow spin, brightens under the pointer,
 and a click launches `chromedrive-config` onto the next free monitor — or
 focuses it if it's already open. F1's Driver's Manual lists it too.
 
+To change what a particular Launch Control tile launches, **right-click the
+3D tile itself**. That opens/focuses Settings at that exact slot with the
+installed-app picker already open. Right-clicks on an app's monitor still go
+to that app as normal pointer input.
+
 ![The settings cog on the dashboard](config-cog.webp)
 
 From a shell:
@@ -33,64 +38,121 @@ Three tabs:
 
 1. **Launch Menu** — the app-menu editor (next section). This is the main event.
 2. **Garage3D** — window/camera/scene/physics of the 3D client.
-3. **Compositor** — display/cockpit/session of ChromeDrive itself.
+3. **Compositor** — display/cockpit/session of ChromeDrive itself. The VNC
+   port here is a typed numeric field (1024–65535), not a slider: click it,
+   type the exact port, press Enter; Escape cancels and invalid values are
+   not saved.
 
 Sliders, toggles, colour pickers and the entry list work with pointer and
 touch. Text fields need a physical keyboard (there is no text-input/OSK
 protocol support; on a touch-only device, edit text in the file directly).
 Headless modes for scripts/CI: `--selftest` drives the real widgets against
-temp files and verifies the round-trip (also part of `make test`), and
-`--screenshot OUT.webp --tab 0|1|2` renders a tab offscreen.
+temp config files and a temp desktop-entry fixture, then verifies the
+round-trip (also part of `make test`); `--screenshot OUT.webp --tab 0|1|2`
+renders a tab offscreen. `--slot N --choose-app` opens the app picker for
+slot `N` (0–5), which is how the cockpit deep-links a tile right-click.
 
 ## The Launch Menu editor
 
-The cockpit's Launch Control has six entries. Four are app slots
-(`app.terminal`, `app.files`, `app.audio`, `app.meters`); two are built-in
-actions (`app.neon` = cycle underglow, `app.cockpit` = reset camera). All six
-are editable; app slots expose the full KDE-menu-editor-style field set:
+The cockpit's Launch Control has six physical slots, stored in the six
+`[app.*]` sections (`terminal`, `files`, `audio`, `meters`, `neon`,
+`cockpit`). The section names are historical slot IDs, not fixed meanings:
+**every slot can hold either an application or a built-in cockpit action**.
+The defaults are apps in slots 1–4, cycle-underglow (`neon`) in slot 5, and
+driver-view (`cockpit`) in slot 6. A config without an `action` key keeps
+those defaults, so older files work unchanged.
+
+### Assigning an app to an icon
+
+Right-click a slot in the Launch Menu list, click the blue **Choose app**
+bar, or right-click the corresponding 3D tile in the cockpit. The searchable
+picker lists, in order:
+
+1. the two built-in actions (*Cycle underglow* and *Driver view*);
+2. the programs bundled with ChromeDrive (Terminal, Files, Audio, Meters,
+   Garage3D, and ChromeDrive Settings); and
+3. visible installed applications (`Type=Application`) from the desktop-entry
+   databases under `$XDG_DATA_HOME/applications` and each
+   `$XDG_DATA_DIRS/applications`, including subdirectories. The usual Flatpak
+   and Snap export directories are also checked as fallbacks when a bare
+   SSH/headless environment has no desktop-session `XDG_DATA_DIRS`.
+
+![Choosing an app for a Launch Control icon](config-app-picker.webp)
+
+Type to filter, scroll with the wheel or arrow keys, then click an entry or
+press Enter to assign it; Escape cancels. The current assignment is marked.
+Assignment writes the slot's `action`, `name`, a generated `sub`, `exec`,
+`app_id`, and `icon`, and enables the slot; the cockpit relabels itself when
+it hot-reloads the file.
+
+The catalog follows normal desktop-entry precedence: a user-level file claims
+its desktop ID before lower-priority system copies are considered, so a
+`Hidden=true` user override (or the usual `.desktop` symlink to `/dev/null`)
+masks the system app instead of letting it reappear. `NoDisplay`/`Hidden` entries and entries whose `TryExec` is missing
+are omitted. `Exec` field codes such as `%U` are removed for the stored shell
+command, `Terminal=true` programs are wrapped in `foot`, and a no-`Exec`
+`DBusActivatable=true` entry is launched with `gio launch` when `gio` is
+available. The focus-match app ID comes from `StartupWMClass` when present,
+otherwise from the desktop-file ID; a cockpit glyph is inferred from the
+entry's categories/name/command.
+
+Each slot exposes the full KDE-menu-editor-style field set:
 
 | Field (key) | Meaning |
 |---|---|
+| Action (`action`) | `app` = run `exec`; `neon` = cycle underglow; `cockpit` = reset the driver camera. Any action can be assigned to any slot. |
 | Name (`name`) | Button label, first line. |
 | Description (`sub`) | Small second line (e.g. `02 / EXPLORE`). |
-| Command (`exec`) | Shell command run on click (via `sh -lc`). `%root%` expands to the ChromeDrive install root, so configs stay portable: `exec = %root%/clients/garage3d/bin/garage3d`. |
-| App ID match (`app_id`) | Substring matched against a mapped window's `app_id`: clicking a running app focuses its monitor instead of launching a second copy. Empty = always launch new. |
+| Command (`exec`) | For `action=app`: shell command run on click (via `sh -lc`). `%root%` expands to the ChromeDrive install root, so configs stay portable: `exec = %root%/clients/garage3d/bin/garage3d`. |
+| App ID match (`app_id`) | For `action=app`: substring matched against a mapped window's `app_id`: clicking a running app focuses its monitor instead of launching a second copy. Empty = always launch new. |
 | Icon (`icon`) | One of the six cockpit glyphs: `0` prompt, `1` folder, `2` music, `3` meters, `4` sun, `5` wheel. |
-| Enabled (`enabled`) | `false` greys the button out ("DISABLED"); clicks show a notice instead of launching. |
-| Autostart (`autostart`) | Whether the app joins the `--demo` / `session.demo` launch set. |
+| Enabled (`enabled`) | `false` greys the button out ("DISABLED"); clicks show a notice instead of launching. Disabling a built-in assignment only disables that tile; F2/F4 still work. |
+| Autostart (`autostart`) | Whether an `action=app` slot joins the `--demo` / `session.demo` launch set. |
 
-Built-in entries accept `name`, `sub`, `icon`, `enabled` (disabling NEON or
-COCKPIT removes that action from the pad; F-keys still work).
-
-**Adding your own app (example).** Point slot 2 at any Wayland program —
-here, Garage3D itself, and a file manager with a proper app-id for focusing:
+**Adding your own app (example).** The picker writes INI like this. Here the
+physical COCKPIT slot (slot 6) becomes Garage3D, slot 3 becomes Dolphin, and
+slot 2 takes over the driver-view action:
 
 ```ini
-[app.files]
+[app.cockpit]
+action = app
 name = GARAGE3D
-sub = 02 / 3D SCENE
+sub = 06 / 3D SCENE
 exec = %root%/clients/garage3d/bin/garage3d
 app_id = chromedrive.garage3d
 icon = 5
 autostart = true
 
 [app.audio]
+action = app
 name = DOLPHIN
 sub = 03 / FILES
 exec = dolphin
 app_id = org.kde.dolphin
 icon = 1
+
+[app.files]
+action = cockpit
+name = COCKPIT
+sub = 02 / DRIVER VIEW
+icon = 5
 ```
 
 Notes and caveats:
 
 - The six slots' *positions* are fixed cockpit geometry (2 rows x 3); editing
   changes everything about an entry except which physical button it is.
+- `F2` always restores the driver view and `F4` always cycles the underglow,
+  even if slots 5/6 have been reassigned to apps. `Ctrl+Alt+Enter` likewise
+  stays “new terminal”: it looks for a terminal-like app slot even if slot 1
+  now holds something else.
 - `CHROMEDRIVE_TERMINAL/FILES/AUDIO/METERS` environment variables, if set,
-  win over `exec` (they are an explicit launch-time override from before the
-  config file existed). The GUI warns inside the Command field when one is set.
-- Changes are live: labels/icons regenerate immediately; a new `exec` or
-  `app_id` is used from the next click. Already-running apps are unaffected.
+  win over `exec` for their four historical sections (an explicit launch-time
+  override from before the config file existed). The GUI warns inside the
+  Command field when one is set.
+- Changes are live: labels/icons regenerate immediately; a new `action`,
+  `exec`, or `app_id` is used from the next click. Already-running apps are
+  unaffected.
 
 ## Files, format, precedence
 
@@ -145,11 +207,12 @@ background = 3d       # 3d | texture (flat poster) | none
 
 [session]
 headless = true       # false = SDL/GLX dev window   (restart)
-vnc_port = 5900       # headless VNC          (restart)
+vnc_port = 5900       # headless VNC, 1024..65535; typed field in GUI (restart)
 demo = false          # launch autostart apps (restart)
 socket =              # Wayland socket name, empty = automatic (restart; file-only)
 
 [app.terminal]        # + app.files / app.audio / app.meters / app.neon / app.cockpit
+action = app          # app | neon | cockpit; missing = per-slot default above
 name = TERMINAL
 sub = 01 / SHELL
 exec = foot --config='%root%/assets/foot.ini' --title='Terminal' /bin/sh '%root%/assets/terminal-welcome.sh'
@@ -212,3 +275,12 @@ balls = true
 - The GUI (`clients/config.c`) is schema-driven for the slider tabs and
   hand-built for the menu editor; one `draw_ui()` builds both pixels and
   hitboxes, so `--selftest` can click real widget coordinates headlessly.
+  Its installed-app catalog is loaded at GUI startup from the desktop-entry
+  locations described above.
+- A cockpit tile right-click deep-links the GUI in two ways. If Settings is
+  not running, the compositor launches it with `--slot N --choose-app`. If it
+  is already mapped, new argv cannot be delivered to that process, so the
+  compositor atomically writes `<slot> <nonce>` to
+  `$XDG_RUNTIME_DIR/chromedrive-config.<wayland-socket>.picker-request`
+  (temp file + `rename()`); the GUI polls that socket-keyed file, ignores a
+  stale request left from before it started, and consumes each nonce once.

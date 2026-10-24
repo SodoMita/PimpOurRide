@@ -72,7 +72,11 @@ struct Surface {
 typedef struct { Plane plane;Surface *surface;GLuint label;char label_text[300]; } Monitor;
 /* One Launch Control entry. name/sub/icon/enabled are user-configurable
  * (chromedrive.conf [app.*], edited by bin/chromedrive-config) and applied
- * live: DashButton owns copies, ui_refresh_buttons() re-renders textures. */
+ * live: DashButton owns copies, ui_refresh_buttons() re-renders textures.
+ * `action` says what a click does: launch the slot's assigned app, or run
+ * one of the two built-in cockpit actions. Any physical slot may hold any
+ * of the three; slots 5/6 merely default to the built-ins. */
+enum { CD_BUTTON_APP=0, CD_BUTTON_NEON=1, CD_BUTTON_COCKPIT=2 };
 typedef struct { Plane plane;char name[48],sub[64];int action,icon;bool enabled;GLuint texture; } DashButton;
 typedef enum {HIT_NONE,HIT_APP,HIT_BUTTON,HIT_CLOSE,HIT_COG} HitKind;
 typedef struct { HitKind kind;Surface *surface;int slot,button;float x,y,distance; } Hit;
@@ -109,11 +113,12 @@ struct Server {
  double time,dt,fps,start_time,last_ui_time,notice_until;
  uint64_t frames,commits;
  char socket[128],root[4096],runtime[4096],notice[256];
- char *launch_commands[4];char *exec_commands[16];int exec_count;
- /* Launch-menu configuration per app slot (see [app.*] in chromedrive.conf):
-  * app_ids[s] is the substring matched against a mapped surface's app_id so
-  * re-clicking focuses the running app; app_autostart[s] joins the --demo set. */
- char app_ids[4][128];bool app_autostart[4];
+ char *launch_commands[6];char *exec_commands[16];int exec_count;
+ /* Launch-menu configuration per Launch Control slot (see [app.*] in
+  * chromedrive.conf). Every slot may launch an app: app_ids[s] is the
+  * substring matched against a mapped surface's app_id so re-clicking
+  * focuses the running app; app_autostart[s] joins the --demo set. */
+ char app_ids[6][128];bool app_autostart[6];
  pid_t children[128];int child_count;
  GLuint garage_tex,carbon_tex,gauge_tex,console_tex,hub_tex,hud_tex,help_tex,plate_tex;
  GLuint scene_list;bool rebuild_scene;
@@ -153,6 +158,7 @@ void ui_monitor_label(Server *s,int slot);
 void ui_draw_overlay(Server *s);
 void app_launch(Server *s,int action,bool force_new);
 void app_open_settings(Server *s);
+void app_open_settings_slot(Server *s,int slot,bool choose_app);
 void app_exec(Server *s,const char *command);
 void app_notice(Server *s,const char *fmt,...);
 bool app_global_key(Server *s,uint32_t evdev,bool down);

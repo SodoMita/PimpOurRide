@@ -92,7 +92,8 @@ void cd_vnc_ptr(int mask,int x,int y,rfbClientPtr cl){
   else if(left&&!prev_left&&hit.kind==HIT_CLOSE)server_close_surface(hit.surface);
   else if(left!=prev_left&&(hit.kind==HIT_APP||s->pointer_grab))server_pointer_button(s,BTN_LEFT,left,now);
   bool right=(mask&CD_VNC_RIGHT)!=0,prev_right=(s->vnc_prev_mask&CD_VNC_RIGHT)!=0;
-  if(right!=prev_right&&(hit.kind==HIT_APP||s->pointer_grab))server_pointer_button(s,BTN_RIGHT,right,now);
+  if(right&&!prev_right&&hit.kind==HIT_BUTTON)app_open_settings_slot(s,hit.button,true);
+  else if(right!=prev_right&&(hit.kind==HIT_APP||s->pointer_grab))server_pointer_button(s,BTN_RIGHT,right,now);
   bool wu=(mask&CD_VNC_WHEEL_UP)&&!(s->vnc_prev_mask&CD_VNC_WHEEL_UP);
   bool wd=(mask&CD_VNC_WHEEL_DOWN)&&!(s->vnc_prev_mask&CD_VNC_WHEEL_DOWN);
   if(wu||wd){if(hit.kind==HIT_APP)server_pointer_axis(s,0,wu?-3:3,now);else s->target_fov=clampf(s->target_fov-(wu?3:-3),30,75);}
@@ -103,10 +104,13 @@ void cd_vnc_ptr(int mask,int x,int y,rfbClientPtr cl){
  * and modifiers — enough for terminals/file managers/clients typically used
  * here. libvncserver hands us rfbKeySym values (== X11 keysymdef values). */
 uint32_t keysym_to_evdev(uint32_t key){
- if(key>='a'&&key<='z')return KEY_A+(key-'a');
+ /* Evdev codes follow the physical keyboard matrix, not alphabet order:
+  * KEY_A+('g'-'a') is KEY_J, for example. Spell the letters out. */
+ if((key>='a'&&key<='z')||(key>='A'&&key<='Z')){static const uint32_t letters[26]={KEY_A,KEY_B,KEY_C,KEY_D,KEY_E,KEY_F,KEY_G,KEY_H,KEY_I,KEY_J,KEY_K,KEY_L,KEY_M,KEY_N,KEY_O,KEY_P,KEY_Q,KEY_R,KEY_S,KEY_T,KEY_U,KEY_V,KEY_W,KEY_X,KEY_Y,KEY_Z};uint32_t lower=key>='A'&&key<='Z'?key+('a'-'A'):key;return letters[lower-'a'];}
  if(key>='0'&&key<='9'){static const uint32_t row[10]={KEY_0,KEY_1,KEY_2,KEY_3,KEY_4,KEY_5,KEY_6,KEY_7,KEY_8,KEY_9};return row[key-'0'];}
+ if(key>=XK_KP_0&&key<=XK_KP_9){static const uint32_t kp[10]={KEY_KP0,KEY_KP1,KEY_KP2,KEY_KP3,KEY_KP4,KEY_KP5,KEY_KP6,KEY_KP7,KEY_KP8,KEY_KP9};return kp[key-XK_KP_0];}
  switch(key){
- case XK_space:return KEY_SPACE;case XK_Return:return KEY_ENTER;case XK_BackSpace:return KEY_BACKSPACE;case XK_Tab:return KEY_TAB;case XK_Escape:return KEY_ESC;case XK_Delete:return KEY_DELETE;
+ case XK_space:case XK_KP_Space:return KEY_SPACE;case XK_Return:return KEY_ENTER;case XK_KP_Enter:return KEY_KPENTER;case XK_BackSpace:return KEY_BACKSPACE;case XK_Tab:return KEY_TAB;case XK_Escape:return KEY_ESC;case XK_Delete:return KEY_DELETE;
  case XK_minus:return KEY_MINUS;case XK_equal:return KEY_EQUAL;case XK_bracketleft:return KEY_LEFTBRACE;case XK_bracketright:return KEY_RIGHTBRACE;
  case XK_semicolon:return KEY_SEMICOLON;case XK_apostrophe:return KEY_APOSTROPHE;case XK_grave:return KEY_GRAVE;case XK_backslash:return KEY_BACKSLASH;
  case XK_comma:return KEY_COMMA;case XK_period:return KEY_DOT;case XK_slash:return KEY_SLASH;

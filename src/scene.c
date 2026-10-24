@@ -325,7 +325,7 @@ void scene_init(Server *s){
  const char *names[]={"TERMINAL","FILES","AUDIO","METERS","NEON","COCKPIT"};const char *subs[]={"01 / SHELL","02 / EXPLORE","03 / SESSION","04 / LIVE","05 / COLOR","06 / HOME"};
  /* Built-in menu defaults; [app.*] config (applied in main.c after ui_init)
   * may relabel/re-icon/disable any of these live. */
- for(int i=0;i<6;i++){float x=(i%3-1)*.48f,y=i<3?.095f:-.22f;s->buttons[i].plane=(Plane){.center=vadd(panel.center,vadd(vadd(vmul(right,x),vmul(up,y)),vmul(normal,.084f))),.width=.426,.height=.248,.yaw=panel.yaw,.pitch=panel.pitch};snprintf(s->buttons[i].name,sizeof(s->buttons[i].name),"%s",names[i]);snprintf(s->buttons[i].sub,sizeof(s->buttons[i].sub),"%s",subs[i]);s->buttons[i].action=i;s->buttons[i].icon=i;s->buttons[i].enabled=true;s->buttons[i].texture=0;}
+ for(int i=0;i<6;i++){float x=(i%3-1)*.48f,y=i<3?.095f:-.22f;s->buttons[i].plane=(Plane){.center=vadd(panel.center,vadd(vadd(vmul(right,x),vmul(up,y)),vmul(normal,.084f))),.width=.426,.height=.248,.yaw=panel.yaw,.pitch=panel.pitch};snprintf(s->buttons[i].name,sizeof(s->buttons[i].name),"%s",names[i]);snprintf(s->buttons[i].sub,sizeof(s->buttons[i].sub),"%s",subs[i]);s->buttons[i].action=i==4?CD_BUTTON_NEON:i==5?CD_BUTTON_COCKPIT:CD_BUTTON_APP;s->buttons[i].icon=i;s->buttons[i].enabled=true;s->buttons[i].texture=0;}
  /* Settings cog medallion on the sloped dash between wheel and console.
   * The dash profile segment (z .2,y .14)->(z .88,y -.24) has geometric
   * normal (0,.873,.487); pitch -61 lays the gear flush on it, and the
