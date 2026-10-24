@@ -50,10 +50,166 @@ static void lighting(void){
  GLfloat p2[]={4,2,1,1},d2[]={.36,.1,.5,1};glLightfv(GL_LIGHT2,GL_POSITION,p2);glLightfv(GL_LIGHT2,GL_DIFFUSE,d2);
  GLfloat shine[]={.5,.52,.62,1};glMaterialfv(GL_FRONT_AND_BACK,GL_SPECULAR,shine);glMaterialf(GL_FRONT_AND_BACK,GL_SHININESS,65);
 }
+/* ------------------------------------------------------------------ *
+ * environment(): the garage beyond the windshield, as real geometry.
+ *
+ * This replaces the original implementation, which drew assets/garage.webp
+ * as one flat 90x38 textured quad at z=-35 (a poster, not a place: looking
+ * left/right with middle-drag slid across a photograph). It now builds the
+ * same visual from boxes/cylinders in compositor world space - the car
+ * (eye at z=2.8) sits *inside* a 30 m wide, 13.5 m high, 56 m deep
+ * concrete hall whose far wall (z=-40) has the mockup's rectangular
+ * opening onto a rainy procedural city. Parallax, the existing fixed-
+ * function lights (teal LIGHT1 left / violet LIGHT2 right) and the
+ * cockpit's own occlusion now all agree, which a backdrop never could.
+ *
+ * The standalone clients/garage3d program contains the full GLES 3.1
+ * version of this scene (scene graph, shaders, physics). This port keeps
+ * the compositor's immediate-mode style/helpers (box/cylinder/glow_line)
+ * so both backends (SDL/GLX and surfaceless EGL) render it unchanged;
+ * only closed-form time functions are used here, so no extra state had
+ * to be added to Server. garage.webp is still loaded for the tiny
+ * rear-view-mirror reflection in dashboard() - a deliberate homage, not
+ * the world geometry any more.
+ * ------------------------------------------------------------------ */
+static float garage_hash(int n){float x=sinf((float)n*127.1f)*43758.5453f;return x-floorf(x);}
+
+static void garage_city(Server *s){
+ /* Night sky: one far quad with a vertical vertex-colour gradient. */
+ glDisable(GL_LIGHTING);
+ glBegin(GL_QUADS);glNormal3f(0,0,1);
+ glColor3f(.10f,.09f,.24f);glVertex3f(-38,-2,-58);glVertex3f(38,-2,-58);
+ glColor3f(.012f,.025f,.085f);glVertex3f(38,24,-58);glVertex3f(-38,24,-58);glEnd();
+ /* Skyline: deterministic dark towers (same layout every frame - hash on
+  * the building index, never rand(), so nothing shimmers or re-rolls). */
+ float bx[26],bw[26],bh[26];
+ float x=-25.f;
+ for(int i=0;i<26;i++){bw[i]=1.3f+garage_hash(i*13+5)*1.5f;bh[i]=2.5f+garage_hash(i*7+2)*7.5f;bx[i]=x+bw[i]*.5f;x+=bw[i]+.35f;}
+ glEnable(GL_LIGHTING);
+ for(int i=0;i<26;i++){float shade=.7f+garage_hash(i*3)*.5f;color(.018f*shade,.028f*shade,.065f*shade);box(bx[i],-1.5f+bh[i]*.5f,-52,bw[i],bh[i],1.2f);}
+ /* Lit windows as points on the tower faces; a few twinkle by re-hashing
+  * against a slow time bucket. Points, not quads: ~800 windows/frame. */
+ glDisable(GL_LIGHTING);glPointSize(2.f);glBegin(GL_POINTS);
+ int bucket=(int)(s->time*.5);
+ for(int i=0;i<26;i++)
+  for(float wy=-1.1f;wy<-1.5f+bh[i]-.3f;wy+=.45f)
+   for(float wx=bx[i]-bw[i]*.5f+.25f;wx<bx[i]+bw[i]*.5f-.2f;wx+=.35f){
+    int cell=i*1000+(int)((wy+2)*10)*37+(int)((wx+30)*10);
+    float h=garage_hash(cell);
+    if(h>.32f)continue;
+    float twinkle=(h>.28f&&garage_hash(cell+bucket*91)<.5f)?.25f:1.f;
+    if(garage_hash(cell+77)<.6f)glColor3f(.95f*twinkle,.68f*twinkle,.34f*twinkle);
+    else glColor3f(.55f*twinkle,.78f*twinkle,1.f*twinkle);
+    glVertex3f(wx,wy,-51.35f);
+   }
+ glEnd();
+ /* Rain streaks between the doorway and the towers, falling in +time. */
+ glEnable(GL_BLEND);glBlendFunc(GL_SRC_ALPHA,GL_ONE);glDepthMask(GL_FALSE);
+ glColor4f(.55f,.7f,1.f,.30f);glBegin(GL_LINES);
+ for(int i=0;i<130;i++){
+  float rx=-9.f+18.f*garage_hash(i*3+1),rz=-42.f-8.f*garage_hash(i*7+4);
+  float speed=4.f+3.f*garage_hash(i*5+9);
+  float ry=garage_hash(i*11+6)*10.f-fmodf((float)s->time*speed,10.f);if(ry<0)ry+=10.f;ry-=1.5f;
+  glVertex3f(rx,ry,rz);glVertex3f(rx-.07f,ry+.5f,rz);
+ }
+ glEnd();glDepthMask(GL_TRUE);glDisable(GL_BLEND);glEnable(GL_LIGHTING);
+}
+
+static void garage_reflection(float x,float z,float r,float g,float b,float alpha){
+ /* Additive streak on the wet floor running from a tube towards the car;
+  * alpha fades along its length (per-vertex colour does the gradient). */
+ glBegin(GL_QUADS);glNormal3f(0,1,0);
+ glColor4f(r,g,b,alpha);glVertex3f(x-.16f,-1.485f,z);glVertex3f(x+.16f,-1.485f,z);
+ glColor4f(r,g,b,.015f);glVertex3f(x+.30f,-1.485f,z+10.f);glVertex3f(x-.30f,-1.485f,z+10.f);glEnd();
+}
+
 static void environment(Server *s){
- glDisable(GL_LIGHTING);glDisable(GL_DEPTH_TEST);texture(s->garage_tex,-45,-17.8,90,38.2,-35);glEnable(GL_DEPTH_TEST);
- color(.021,.019,.036);glBegin(GL_QUADS);glNormal3f(0,1,0);glVertex3f(-50,-1.5,-35);glVertex3f(50,-1.5,-35);glVertex3f(50,-1.5,35);glVertex3f(-50,-1.5,35);glEnd();
- glDisable(GL_LIGHTING);glEnable(GL_BLEND);glBlendFunc(GL_SRC_ALPHA,GL_ONE_MINUS_SRC_ALPHA);glColor4f(.28,.28,.5,.2);glBegin(GL_LINES);for(int i=-25;i<=25;i+=3){glVertex3f(i,-1.495,-35);glVertex3f(i,-1.495,25);glVertex3f(-35,-1.495,i);glVertex3f(35,-1.495,i);}glEnd();glDisable(GL_BLEND);glEnable(GL_LIGHTING);
+ const float floor_y=-1.5f,ceil_y=12.f,wall_x=15.f,far_z=-40.f,near_z=16.f,center_z=-12.f,len=56.f;
+ const float mid_y=(floor_y+ceil_y)*.5f,height=ceil_y-floor_y;
+ static const float pillar_z[]={-4.f,-11.5f,-19.f,-26.5f,-34.f};
+ static const float bay_z[]={-7.75f,-15.25f,-22.75f,-30.25f};
+ /* Fog is scoped to the hall: enabled here, disabled before the cockpit
+  * is drawn, so the dashboard at z~0 stays crisp while the far wall
+  * melts into the same violet as the city opening. */
+ GLfloat fog_color[]={.035f,.03f,.09f,1};
+ glEnable(GL_FOG);glFogi(GL_FOG_MODE,GL_EXP2);glFogfv(GL_FOG_COLOR,fog_color);glFogf(GL_FOG_DENSITY,.010f);
+
+ garage_city(s);
+
+ /* Shell. Boxes (not single quads) so wall/pillar edges catch light and
+  * thickness reads correctly when the driver looks sideways. */
+ color(.020f,.027f,.048f);box(0,floor_y-.05f,center_z,wall_x*2,.1f,len);          /* wet floor slab */
+ color(.035f,.035f,.052f);box(0,ceil_y,center_z,wall_x*2,.5f,len);               /* ceiling */
+ color(.070f,.085f,.105f);box(-wall_x,mid_y,center_z,.6f,height,len);            /* left wall */
+ color(.070f,.085f,.105f);box( wall_x,mid_y,center_z,.6f,height,len);            /* right wall */
+ /* Far wall around the city opening (half-width 6.5, lintel above y=6). */
+ color(.065f,.078f,.098f);box(-10.75f,mid_y,far_z,8.5f,height,.6f);
+ color(.065f,.078f,.098f);box( 10.75f,mid_y,far_z,8.5f,height,.6f);
+ color(.065f,.078f,.098f);box(0,9.f,far_z,13.f,6.f,.6f);
+ color(.10f,.11f,.14f);box(0,6.35f,far_z+.45f,13.6f,.7f,.8f);                     /* shutter housing */
+ color(.065f,.078f,.098f);box(0,mid_y,near_z,wall_x*2,height,.6f);                /* rear wall (180-degree monitor sits inside the hall) */
+
+ /* Structure: pillars, transverse beams, longitudinal beams, duct, pipes. */
+ for(int i=0;i<5;i++){
+  color(.055f,.062f,.082f);box(-14.4f,mid_y,pillar_z[i],1.6f,height,1.4f);
+  color(.055f,.062f,.082f);box( 14.4f,mid_y,pillar_z[i],1.6f,height,1.4f);
+  color(.040f,.042f,.062f);box(0,ceil_y-.7f,pillar_z[i],wall_x*2,1.2f,1.f);
+ }
+ color(.040f,.042f,.062f);box(-7,ceil_y-.6f,center_z,1,.8f,len);box(7,ceil_y-.6f,center_z,1,.8f,len);
+ color(.075f,.082f,.105f);box(0,ceil_y-.75f,center_z,2.6f,.7f,len);              /* central duct */
+ for(int i=0;i<7;i++){color(.16f,.18f,.22f);box(0,ceil_y-1.13f,-2.f-i*5.f,2.f,.08f,1.2f);}
+ color(.22f,.25f,.30f);cylinder(v3(14,ceil_y-1.3f,near_z-1),v3(14,ceil_y-1.3f,-39),.13f,12);
+ color(.13f,.15f,.19f);cylinder(v3(14,ceil_y-1.65f,near_z-1),v3(14,ceil_y-1.65f,-39),.09f,12);
+ color(.22f,.25f,.30f);cylinder(v3(-14,ceil_y-1.3f,near_z-1),v3(-14,ceil_y-1.3f,-39),.13f,12);
+ /* Shallow wall panels between pillars (the mockup's concrete bays). */
+ for(int i=0;i<4;i++)for(int side=-1;side<=1;side+=2){
+  color(.082f,.096f,.118f);box(side*14.62f,mid_y,bay_z[i],.14f,height-2.f,5.6f);
+ }
+
+ /* Neon tubes: cyan left, magenta right, two per bay (glow_line gives a
+  * core + additive halo cylinders). One right-hand tube flickers, in
+  * 12 Hz hash buckets exactly like the standalone client. */
+ int flicker_bucket=(int)(s->time*12);
+ float flicker=garage_hash(flicker_bucket*17+3)<.12f?.15f:1.f;
+ glDisable(GL_LIGHTING);glEnable(GL_BLEND);glBlendFunc(GL_SRC_ALPHA,GL_ONE);glDepthMask(GL_FALSE);
+ for(int i=0;i<4;i++)for(int side=-1;side<=1;side+=2)
+  for(int t=-1;t<=1;t+=2){
+   float z=bay_z[i]+t*1.6f;
+   float r=side<0?.15f:.92f,g=side<0?.95f:.25f,b=side<0?.90f:1.f;
+   if(side>0&&i==0&&t<0){r*=flicker;g*=flicker;b*=flicker;}
+   garage_reflection(side*14.3f,z,r,g,b,.16f);
+  }
+ glDepthMask(GL_TRUE);glDisable(GL_BLEND);glEnable(GL_LIGHTING);
+ for(int i=0;i<4;i++)for(int side=-1;side<=1;side+=2)
+  for(int t=-1;t<=1;t+=2){
+   float z=bay_z[i]+t*1.6f,x=side*14.5f;
+   float r=side<0?.15f:.92f,g=side<0?.95f:.25f,b=side<0?.90f:1.f;
+   if(side>0&&i==0&&t<0){r*=flicker;g*=flicker;b*=flicker;}
+   glow_line(v3(x,.8f,z),v3(x,5.6f,z),.055f,r,g,b);
+  }
+
+ /* Hanging work lamp on a closed-form pendulum (the standalone client
+  * integrates the ODE; here a backdrop prop should not add Server state). */
+ float swing_x=.30f*sinf((float)s->time*.9f),swing_z=.22f*sinf((float)s->time*.75f+1.1f);
+ Vec3 pivot=v3(0,ceil_y-.5f,-17),lamp_end=v3(sinf(swing_z)*4.2f,ceil_y-.5f-cosf(swing_x)*cosf(swing_z)*4.2f,-17+sinf(swing_x)*4.2f);
+ color(.05f,.05f,.07f);cylinder(pivot,lamp_end,.035f,8);
+ color(.25f,.28f,.34f);cylinder(lamp_end,v3(lamp_end.x,lamp_end.y-.35f,lamp_end.z),.34f,16);
+ glow_line(v3(lamp_end.x,lamp_end.y-.38f,lamp_end.z),v3(lamp_end.x,lamp_end.y-.55f,lamp_end.z),.13f,1.f,.88f,.62f);
+
+ /* A few props parked against the far walls; the centre aisle stays
+  * empty, as in the mockup (and clear of the virtual monitors). */
+ color(.09f,.14f,.17f);cylinder(v3(-12.2f,floor_y,-28),v3(-12.2f,floor_y+1.3f,-28),.5f,16);
+ color(.09f,.14f,.17f);cylinder(v3(-11.2f,floor_y,-27.4f),v3(-11.2f,floor_y+1.3f,-27.4f),.5f,16);
+ color(.14f,.11f,.08f);box(12.1f,floor_y+.65f,-24,1.5f,1.3f,1.5f);box(12.3f,floor_y+1.8f,-24.1f,1.1f,1.f,1.1f);
+
+ /* Doorway mist: two soft additive sheets drifting across the opening. */
+ glDisable(GL_LIGHTING);glEnable(GL_BLEND);glBlendFunc(GL_SRC_ALPHA,GL_ONE);glDepthMask(GL_FALSE);
+ float drift=sinf((float)s->time*.10f)*1.4f;
+ glColor4f(.42f,.30f,.72f,.06f);quad(-6.5f+drift,floor_y+.3f,13,3.2f,far_z+1.2f);
+ glColor4f(.42f,.30f,.72f,.045f);quad(-6.5f-drift,floor_y+.8f,13,2.6f,far_z+2.6f);
+ glDepthMask(GL_TRUE);glDisable(GL_BLEND);glEnable(GL_LIGHTING);
+
+ glDisable(GL_FOG);
 }
 static void dashboard(Server *s){
  float nr,ng,nb;neon(s,&nr,&ng,&nb);

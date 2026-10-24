@@ -1,6 +1,8 @@
 # Build output
 /bin/
 /.generated/
+/clients/garage3d/bin/
+/clients/garage3d/.generated/
 
 # Runtime-generated screenshots (never commit raw frame captures —
 # docs/hero.webp is the curated, compressed exception, added deliberately)

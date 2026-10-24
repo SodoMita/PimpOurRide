@@ -10,7 +10,7 @@ BIN = bin
 SOURCES = src/main.c src/wayland.c src/scene.c src/ui.c src/math3d.c src/dmabuf.c src/backend_sdl.c src/backend_headless.c
 PROTOCOLS = $(GEN)/xdg-shell-protocol.c $(GEN)/xdg-decoration-protocol.c $(GEN)/linux-dmabuf-protocol.c
 HEADERS = $(GEN)/xdg-shell-server.h $(GEN)/xdg-decoration-server.h $(GEN)/linux-dmabuf-server.h
-.PHONY: all clean test sanitize
+.PHONY: all clean test sanitize garage3d garage3d-test garage3d-clean
 all: $(BIN)/chromedrive $(BIN)/chromedrive-demo
 $(GEN) $(BIN):
 	mkdir -p $@
@@ -38,6 +38,15 @@ $(BIN)/test-math: tests/test_math.c src/math3d.c include/math3d.h | $(BIN)
 	$(CC) -Iinclude $(CFLAGS) tests/test_math.c src/math3d.c -o $@ -lm
 $(BIN)/protocol-probe: tests/protocol_probe.c $(GEN)/xdg-shell-client.h $(GEN)/xdg-shell-protocol.c $(GEN)/linux-dmabuf-protocol.c $(GEN)/linux-dmabuf-client.h | $(BIN)
 	$(CC) -I$(GEN) $(CFLAGS) $(shell pkg-config --cflags wayland-client) tests/protocol_probe.c $(GEN)/xdg-shell-protocol.c $(GEN)/linux-dmabuf-protocol.c -o $@ $(shell pkg-config --libs wayland-client)
+# garage3d (clients/garage3d) is a standalone native Wayland/GLES client with
+# its own Makefile and extra deps (wayland-cursor, GLES3). It is deliberately
+# NOT part of `all`, so building the compositor never requires them.
+garage3d:
+	$(MAKE) -C clients/garage3d
+garage3d-test:
+	$(MAKE) -C clients/garage3d test
+garage3d-clean:
+	$(MAKE) -C clients/garage3d clean
 test: $(BIN)/test-math
 	./$(BIN)/test-math
 sanitize:

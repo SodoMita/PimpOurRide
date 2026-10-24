@@ -34,7 +34,9 @@ It runs two ways:
   all genuine `wl_shm` clients speaking real Wayland, source in
   `clients/demo.c`), the headless EGL+VNC pipeline, and the
   `zwp_linux_dmabuf_v1` GPU-import code path (real EGLImage calls — see
-  caveat below).
+  caveat below). The garage beyond the windshield is real 3D geometry now,
+  not the flat `assets/garage.webp` backdrop quad it used to be — see
+  “Garage3D” below.
 - **Limitations in this build**: no layer-shell, Xwayland, or DRM/KMS backend
   — it never owns real display hardware directly, it's always either nested
   (`--windowed`) or headless-with-VNC-output (`--headless`); 8 virtual
@@ -75,10 +77,12 @@ rasterizer because that's all the sandbox exposes.
 
 ```sh
 sudo apt-get install -y libsdl2-dev libwayland-dev wayland-protocols \
-  libgl-dev libegl-dev libgles2-mesa-dev mesa-common-dev libxkbcommon-dev \
+  libgl-dev libegl-dev libgles-dev libgles2-mesa-dev mesa-common-dev libxkbcommon-dev libwebp-dev \
   libcairo2-dev libdrm-dev libvncserver-dev foot
 make -j"$(nproc)"
 make test        # math/raycast unit tests
+make garage3d    # optional: the standalone GLES 3.1 garage client (below)
+make garage3d-test
 ```
 
 `make bin/protocol-probe` builds the Wayland protocol conformance test; run it
@@ -99,6 +103,40 @@ the socket it prints:
 WAYLAND_DISPLAY=<printed-socket> foot &
 WAYLAND_DISPLAY=<printed-socket> weston-terminal &
 ```
+
+### Garage3D: the backdrop, rebuilt as a 3D Wayland client
+
+![Garage3D client](docs/garage3d-client.webp)
+
+`clients/garage3d/` is a standalone native Wayland client (raw
+`libwayland-client` + `xdg-shell` + EGL/`wl_egl_window` + OpenGL ES 3.1, no
+SDL/GLFW/toolkit) that rebuilds the old flat `assets/garage.webp` backdrop as an
+explorable 3D scene: scene graph with parent-child hierarchies, perspective
+camera, a directional light plus six attenuated point lights (one of them the
+swinging work lamp, integrated as pendulum physics), bouncing/rolling balls,
+420 rain streaks outside the far doorway, a procedural city skyline, and
+pointer/keyboard/**touch** camera control (one-finger orbit, pinch zoom,
+two-finger pan, double-tap reset). Animation is procedural + fixed-step
+(120 Hz) physics, all delta-time based; rendering is throttled purely by
+`wl_surface` frame callbacks. The same hall also replaced the compositor's
+own background quad in `src/scene.c:environment()`, so looking around the
+cockpit now has real parallax (`garage.webp` survives only in the rear-view
+mirror).
+
+```sh
+make garage3d
+./clients/garage3d/bin/garage3d                       # on weston/sway/GNOME/KDE/…
+WAYLAND_DISPLAY=<printed-socket> ./clients/garage3d/bin/garage3d   # inside ChromeDrive
+make -C clients/garage3d smoke                        # headless weston pixel check
+```
+
+Architecture, the full Wayland surface lifecycle, and the frame-callback
+render loop are documented in
+[`docs/garage3d-architecture.md`](docs/garage3d-architecture.md).
+Note the touch asymmetry: the *client* implements `wl_touch` fully, but the
+ChromeDrive *compositor* does not yet advertise or forward touch (its seat is
+pointer+keyboard), so gestures work on touch-capable host compositors, not
+yet through ChromeDrive itself.
 
 ### Watching the headless session (VNC / browser preview)
 
@@ -166,12 +204,14 @@ include/chrome.h, math3d.h   shared types + ray/plane math API
 src/math3d.c                 camera rays, plane intersection, monitor layout
 src/wayland.c                 the actual compositor protocol implementation
 src/dmabuf.c                  zwp_linux_dmabuf_v1: real EGLImage GPU buffer import
-src/scene.c                   OpenGL cockpit, monitors, buttons, picking
+src/scene.c                   OpenGL cockpit, monitors, buttons, picking, 3D garage backdrop
 src/ui.c                      cairo-rendered textures: gauges, HUD, labels
 src/main.c                    CLI parsing, event loop, process spawn (backend-agnostic)
 src/backend_sdl.c             --windowed: SDL2 window + GLX context + SDL input
 src/backend_headless.c        --headless (default): surfaceless EGL + embedded VNC + RFB input
 clients/demo.c                 three independent real Wayland clients
+clients/garage3d/              Garage3D: native Wayland + GLES 3.1 client (the garage in 3D)
+docs/garage3d-architecture.md  Garage3D architecture + Wayland lifecycle documentation
 tests/test_math.c             raycast/picking unit tests
 tests/protocol_probe.c        end-to-end Wayland protocol conformance test (incl. dma-buf)
 tools/viewer/                 noVNC web viewer for the headless VNC server (see prepare-viewer.sh)
@@ -184,5 +224,7 @@ tools/viewer/                 noVNC web viewer for the headless VNC server (see 
 - No layer-shell (so panels/launchers built for wlroots-style shells won't run).
 - dma-buf import only works on `--headless` (EGL); not on `--windowed` (GLX) —
   by design, see "GPU / dma-buf" above.
-- Single input seat, no touch, no tablet.
+- Single input seat, no touch, no tablet *in the compositor* (the Garage3D
+  client implements `wl_touch` gestures, but ChromeDrive does not yet
+  advertise/forward touch to clients — see “Garage3D” above).
 - 8-monitor cap is fixed at compile time (`CD_MAX_MONITORS`).
