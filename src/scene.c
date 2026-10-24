@@ -1,4 +1,5 @@
 #include "chrome.h"
+#include "vehicle_seat.h"
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>
@@ -227,41 +228,53 @@ static void dashboard(Server *s){
  float nr,ng,nb;neon(s,&nr,&ng,&nb);
  /* Deep padded dashboard: bevelled profile, rather than a flat HUD backdrop. */
  color(.115,.075,.175);glEnable(GL_TEXTURE_2D);glBindTexture(GL_TEXTURE_2D,s->carbon_tex);
- glBegin(GL_QUAD_STRIP);float profile[][2]={{-1.0f,.18f},{-.72f,.34f},{-.36f,.31f},{.2f,.14f},{.88f,-.24f},{1.5f,-.55f},{1.7f,-1.2f}};
- for(int i=0;i<7;i++){float ny=.9f,nz=.4f;if(i>3){ny=.55;nz=.8;}glNormal3f(0,ny,nz);glTexCoord2f(0,i*.38f);glVertex3f(-3.05,profile[i][1],profile[i][0]);glTexCoord2f(5,i*.38f);glVertex3f(3.05,profile[i][1],profile[i][0]);}glEnd();glDisable(GL_TEXTURE_2D);
+ glBegin(GL_QUAD_STRIP);float profile[][2]={{-1.0f,.18f},{-.72f,.34f},{-.36f,.31f},{.2f,.14f},{.88f,-.24f},{1.5f,-.45f},{1.7f,-.72f}};
+ for(int i=0;i<7;i++){float ny=.9f,nz=.4f;if(i>3){ny=.55;nz=.8;}glNormal3f(0,ny,nz);glTexCoord2f(0,i*.38f);glVertex3f(-2.60,profile[i][1],profile[i][0]);glTexCoord2f(5,i*.38f);glVertex3f(2.60,profile[i][1],profile[i][0]);}glEnd();glDisable(GL_TEXTURE_2D);
  /* Rich violet edge insert and chrome piping. */
- color(.28,.058,.44);box(0,-.11,.37,5.7,.19,.21);
- color(.43,.48,.57);cylinder(v3(-2.95,.18,-.49),v3(2.95,.18,-.49),.018,12);
- glow_line(v3(-2.92,.195,-.465),v3(2.92,.195,-.465),.008,nr,ng,nb);
- glow_line(v3(-2.88,-.23,.56),v3(2.88,-.23,.56),.009,nr,ng,nb);
+ color(.28,.058,.44);box(0,-.11,.37,5.0,.19,.21);
+ color(.43,.48,.57);cylinder(v3(-2.50,.18,-.49),v3(2.50,.18,-.49),.018,12);
+ glow_line(v3(-2.47,.195,-.465),v3(2.47,.195,-.465),.008,nr,ng,nb);
+ glow_line(v3(-2.43,-.23,.56),v3(2.43,-.23,.56),.009,nr,ng,nb);
  /* Purple hand-stitched seams, following the hood. */
- glDisable(GL_LIGHTING);color(.56,.31,.69);glLineWidth(1.3f);glBegin(GL_LINES);for(float x=-2.9;x<2.9;x+=.07f){glVertex3f(x,.317,-.22);glVertex3f(x+.035,.317,-.22);}glEnd();glEnable(GL_LIGHTING);
+ glDisable(GL_LIGHTING);color(.56,.31,.69);glLineWidth(1.3f);glBegin(GL_LINES);for(float x=-2.45;x<2.45;x+=.07f){glVertex3f(x,.317,-.22);glVertex3f(x+.035,.317,-.22);}glEnd();glEnable(GL_LIGHTING);
  /* Air vents in a machined surround. */
  for(int side=-1;side<=1;side+=2){glPushMatrix();glTranslatef(side*2.15,.19,-.46);glRotatef(-22,1,0,0);color(.24,.27,.33);rbox(0,0,0,.62,.23,.05,.045);color(.022,.027,.037);rbox(0,0,.031,.55,.16,.014,.023);for(int i=-3;i<=3;i++){color(.19,.22,.28);box(i*.068,0,.055,.012,.14,.025);}glPopMatrix();}
  /* Instrument binnacle. */
- Plane gauge={.center={-.94,.43,.28},.width=1.46,.height=.59,.pitch=-12};plane_begin(gauge);color(.025,.03,.043);rbox(0,0,-.05,1.62,.76,.14,.18);color(.32,.34,.44);rbox(0,0,.005,1.51,.63,.035,.10);texture(s->gauge_tex,-.73,-.295,1.46,.59,.03);glPopMatrix();
+ Plane gauge=monitor_plane(CD_CLUSTER_SLOT);plane_begin(gauge);color(.025,.03,.043);rbox(0,0,-.05,1.62,.76,.14,.18);color(.32,.34,.44);rbox(0,0,.005,1.51,.63,.035,.10);
+ /* Empty dark substrate only. The visible gauges are the real Wayland
+  * cluster client's committed surface, drawn by draw_monitor below. */
+ glDisable(GL_LIGHTING);color(.010,.016,.026);quad(-gauge.width/2,-gauge.height/2,gauge.width,gauge.height,.023);glEnable(GL_LIGHTING);glPopMatrix();
  /* Passenger-side brushed plate, cut into the dash. */
  Plane plate={.center={2.04,-.015,.13},.width=.82,.height=.30,.yaw=-8,.pitch=-24};plane_begin(plate);color(.26,.29,.38);rbox(0,0,0,.91,.37,.028,.025);texture(s->plate_tex,-.41,-.15,.82,.30,.02);glPopMatrix();
  /* Sloped touch-and-switch center console; each key has its own pick plane. */
  Plane console={.center={.78,.33,.48},.width=1.56,.height=.90,.yaw=-5,.pitch=-28};plane_begin(console);
  color(.37,.39,.49);rbox(0,0,-.028,1.64,.99,.12,.09);color(.035,.040,.059);rbox(0,0,.033,1.57,.92,.027,.065);texture(s->console_tex,-.78,-.45,1.56,.9,.05);
  glow_line(v3(-.70,-.425,.063),v3(.70,-.425,.063),.004,nr,ng,nb);glPopMatrix();
- /* A-pillars and the upper windshield frame establish a seated camera. */
- for(int side=-1;side<=1;side+=2){color(.11,.068,.17);cylinder(v3(side*3.55,.19,-1.0),v3(side*3.38,2.4,-.32),.085,18);color(.36,.36,.46);cylinder(v3(side*3.49,.23,-.96),v3(side*3.32,2.38,-.28),.023,12);glow_line(v3(side*3.51,.23,-.92),v3(side*3.33,2.38,-.25),.008,nr,ng,nb);}
- color(.022,.022,.035);cylinder(v3(-3.4,2.39,-.35),v3(3.4,2.39,-.35),.13,18);
- /* Rear-view mirror, tiny garage reflection. */
- color(.2,.23,.3);cylinder(v3(.30,2.39,-.4),v3(.30,2.2,-.53),.022,12);
- glPushMatrix();glTranslatef(.30,2.15,-.52);glRotatef(-5,1,0,0);color(.40,.44,.52);rbox(0,0,0,.85,.26,.07,.06);color(.015,.028,.04);rbox(0,0,.043,.78,.20,.025,.04);texture(s->garage_tex,-.37,-.08,.74,.16,.06);glPopMatrix();
+ /* Canopy structure is rendered from vehicle_canopy_point() in both camera
+  * modes; no separate tall driver-only roof or straight header is needed. */
+ /* Rear-view mirror and bracket anchored to that exact windshield header. */
+ Vec3 header=vehicle_canopy_point(.45f,1.0f,1,NULL);
+ color(.30,.34,.42);cylinder(v3(0,header.y-.025f,header.z),v3(0,header.y-.15f,header.z+.09f),.035,16);
+ color(.24,.28,.36);cylinder(v3(0,header.y-.15f,header.z+.09f),v3(0,header.y-.21f,header.z+.12f),.024,14);
+ glPushMatrix();glTranslatef(0,header.y-.23f,header.z+.12f);glRotatef(-5,1,0,0);color(.40,.44,.52);rbox(0,0,0,.85,.26,.07,.06);color(.015,.028,.04);rbox(0,0,.043,.78,.20,.025,.04);texture(s->garage_tex,-.37,-.08,.74,.16,.06);glPopMatrix();
  /* Quilted doors and visible subwoofers. */
- for(int side=-1;side<=1;side+=2){glPushMatrix();glTranslatef(side*2.88,-.39,.64);glRotatef(side*-40,0,1,0);color(.13,.058,.21);rbox(0,-.15,0,.68,1.04,.15,.14);glDisable(GL_LIGHTING);color(.36,.19,.46);glBegin(GL_LINES);for(float x=-.8;x<.8;x+=.12){glVertex3f(-.30,x,.081);glVertex3f(.3,x+.45,.081);glVertex3f(-.30,x+.45,.082);glVertex3f(.30,x,.082);}glEnd();glEnable(GL_LIGHTING);
- glTranslatef(0,-.30,.15);color(.45,.48,.56);torus(.21,.024,48,10);color(.018,.023,.037);cylinder(v3(0,0,-.06),v3(0,0,.005),.19,48);color(.075,.085,.115);torus(.15,.024,48,10);color(.14,.15,.21);cylinder(v3(0,0,.008),v3(0,0,.045),.055,32);glPopMatrix();}
+ for(int side=-1;side<=1;side+=2){glPushMatrix();glTranslatef(side*2.00,-.39,.64);glRotatef(side*-40,0,1,0);color(.13,.058,.21);rbox(0,.35,0,.56,1.10,.15,.12);glDisable(GL_LIGHTING);color(.36,.19,.46);glBegin(GL_LINES);for(float x=-.05;x<.75;x+=.12){glVertex3f(-.24,x,.081);glVertex3f(.24,x+.45,.081);glVertex3f(-.24,x+.45,.082);glVertex3f(.24,x,.082);}glEnd();glEnable(GL_LIGHTING);
+ /* The interior pull and armrest belong to this same door model in every view. */
+ color(.46f,.50f,.59f);cylinder(v3(-.22,.57,.14),v3(.22,.57,.14),.022,16);for(int end=-1;end<=1;end+=2)cylinder(v3(end*.22,.57,.08),v3(end*.22,.57,.14),.018,12);color(.18f,.10f,.25f);rbox(0,.29,.12,.56,.10,.12,.04);
+ glTranslatef(0,.03,.15);color(.45,.48,.56);torus(.21,.024,48,10);color(.018,.023,.037);cylinder(v3(0,0,-.06),v3(0,0,.005),.19,48);color(.075,.085,.115);torus(.15,.024,48,10);color(.14,.15,.21);cylinder(v3(0,0,.008),v3(0,0,.045),.055,32);glPopMatrix();}
  /* Polished shifter on the transmission tunnel. */
- color(.045,.04,.072);rbox(.66,-.84,1.02,.70,.48,.29,.10);color(.28,.32,.40);cylinder(v3(.66,-.88,.96),v3(.66,-.49,.96),.025,20);glPushMatrix();glTranslatef(.66,-.47,.96);color(.65,.64,.74);torus(.054,.049,28,16);glPopMatrix();
+ color(.045,.04,.072);rbox(.66,-.62,1.02,.70,.36,.29,.10);color(.28,.32,.40);cylinder(v3(.66,-.65,.96),v3(.66,-.30,.96),.025,20);glPushMatrix();glTranslatef(.66,-.28,.96);color(.65,.64,.74);torus(.054,.049,28,16);glPopMatrix();
 }
+static Plane steering_plane(void){return (Plane){.center={-.84f,.28f,1.10f},.width=1.12f,.height=1.12f,.pitch=-18};}
 static void steering_wheel(Server *s){
- float nr,ng,nb;neon(s,&nr,&ng,&nb);glPushMatrix();glTranslatef(-.84,.28,1.10);glRotatef(-18,1,0,0);glScalef(.74,.74,.74);
+ float nr,ng,nb;neon(s,&nr,&ng,&nb);glPushMatrix();glTranslatef(-.84,.28,1.10);glRotatef(-18,1,0,0);
+ /* Spin in the wheel's own XY plane, then tilt the complete assembly. Applying
+  * Z before the tilt would wobble the rim instead of rotating the control. */
+ float wheel_angle=s->steering_mode==VEHICLE_STEER_DRIVE?s->vehicle.wheel_angle:s->wheel_client_angle;
+ glRotatef(wheel_angle,0,0,1);glScalef(.74,.74,.74);
  /* Thick violet leather rim, bright machined inner and outer rings. */
  color(.065,.033,.098);torus(.595,.078,96,16);color(.37,.35,.46);torus(.67,.009,96,10);color(.51,.54,.63);torus(.515,.012,96,10);color(.28,.067,.41);torus(.595,.063,96,12);
+ if(s->wheel_hover||s->wheel_drag){glDisable(GL_LIGHTING);color(nr,ng,nb);torus(.675,.010,96,8);glEnable(GL_LIGHTING);}
  /* Grip pads at nine and three o'clock, wrapped in dark leather. */
  for(int side=-1;side<=1;side+=2){color(.033,.033,.051);rbox(side*.58,0,.028,.145,.26,.096,.055);glDisable(GL_LIGHTING);color(.31,.20,.38);glBegin(GL_LINES);for(int i=-4;i<=4;i++){glVertex3f(side*.58-.04,i*.023,.082);glVertex3f(side*.58+.04,i*.023,.082);}glEnd();glEnable(GL_LIGHTING);}
  /* Three swept chrome spokes and hollow screw details. */
@@ -390,43 +403,62 @@ static void draw_arrange_handles(Server *s,Plane p,float k){
  arrange_handle_point(p,k,CD_HANDLE_SCALE,&x,&y);glPushMatrix();glTranslatef(x,y,z);glRotatef(45,0,0,1);color(.015,.02,.035);box(0,0,0,size*1.22f,size*1.22f,size*.28f);color(.94,.30,.92);box(0,0,size*.09f,size,size,size*.32f);glPopMatrix();
 }
 static void draw_monitor(Server *s,int i){
- Monitor *m=&s->monitors[i];if(!m->surface)return;Plane p=m->plane;float w=p.width,h=p.height;bool active=s->keyboard_focus==m->surface;
- float k=monitor_iso_scale(p,i); /* isotropic detail scale; w/h may differ after an edge resize */
- bool arranging=s->arrange_mode&&s->arrange_slot==i;
+ Monitor *m=&s->monitors[i];if(!m->surface)return;
+ Plane p=m->plane;float w=p.width,h=p.height,k=monitor_iso_scale(p,i);
+ bool active=s->keyboard_focus==m->surface,cluster=i==CD_CLUSTER_SLOT;
+ bool arranging=!cluster&&s->arrange_mode&&s->arrange_slot==i;
  plane_begin(p);
- color(.08,.095,.13);cylinder(v3(0,-h/2-.03f*k,-.065f*k),v3(0,-h/2-.24f*k,-.065f*k),.045f*k,16);color(.16,.18,.23);box(0,-h/2-.22f*k,-.085f*k,.48f*k,.06f*k,.25f*k);
- color(.34,.39,.46);rbox(0,.075f*k,-.056f*k,w+.12f*k,h+.25f*k,.10f*k,.065f*k);
- color(.018,.027,.038);rbox(0,.075f*k,-.003f*k,w+.086f*k,h+.219f*k,.038f*k,.055f*k);
- glDisable(GL_LIGHTING);color(.010,.016,.026);quad(-w/2,-h/2,w,h,.019f*k);glEnable(GL_LIGHTING);
- float nr,ng,nb;neon(s,&nr,&ng,&nb);
- if(arranging)glow_line(v3(-w/2,-h/2-.022f*k,.025f*k),v3(w/2,-h/2-.022f*k,.025f*k),.005f*k,1,.62,.16);
- else if(active)glow_line(v3(-w/2,-h/2-.022f*k,.025f*k),v3(w/2,-h/2-.022f*k,.025f*k),.004f*k,.35,.92,.74);
- else glow_line(v3(-w/2,-h/2-.022f*k,.025f*k),v3(w/2,-h/2-.022f*k,.025f*k),.003f*k,nr*.65,ng*.7,nb*.7);
- ui_monitor_label(s,i);texture(m->label,-w/2,h/2+.011f*k,w,.137f*k,.024f*k);
- {float bx,by,bw,bh;handles_button_rect(p,k,&bx,&by,&bw,&bh);if(s->handles_tex)texture(s->handles_tex,bx,by,bw,bh,.032f*k);if(arranging&&s->arrange_handles){float z=.040f*k,r=.004f*k;glow_line(v3(bx,by,z),v3(bx+bw,by,z),r,1,.62,.16);glow_line(v3(bx+bw,by,z),v3(bx+bw,by+bh,z),r,1,.62,.16);glow_line(v3(bx+bw,by+bh,z),v3(bx,by+bh,z),r,1,.62,.16);glow_line(v3(bx,by+bh,z),v3(bx,by,z),r,1,.62,.16);}}
- glEnable(GL_STENCIL_TEST);glClear(GL_STENCIL_BUFFER_BIT);glStencilMask(0xff);glStencilFunc(GL_ALWAYS,1,0xff);glStencilOp(GL_KEEP,GL_KEEP,GL_REPLACE);glColorMask(GL_FALSE,GL_FALSE,GL_FALSE,GL_FALSE);glDepthMask(GL_FALSE);quad(-w/2,-h/2,w,h,.021f*k);glColorMask(GL_TRUE,GL_TRUE,GL_TRUE,GL_TRUE);glDepthMask(GL_TRUE);glStencilFunc(GL_EQUAL,1,0xff);glStencilOp(GL_KEEP,GL_KEEP,GL_KEEP);glStencilMask(0);
- float scale=fminf(w/m->surface->width,h/m->surface->height);DrawSurface d={.scale=scale,.w=m->surface->width*scale,.h=m->surface->height*scale,.z0=.024f*k,.zstep=.0007f*k};server_each_surface(m->surface,draw_app_surface,&d);
+ if(!cluster){
+  /* Hardware belongs to the named car part, not a generic floor stand. */
+  MonitorMount mount=monitor_mount(i);color(.24,.28,.35);
+  if(mount==MOUNT_DASH_SLIDE){
+   for(int side=-1;side<=1;side+=2){cylinder(v3(side*w*.32,-h/2,-.075),v3(side*w*.32,-h/2-.58,-.075),.028,12);color(.40,.43,.50);box(side*w*.32,-h/2-.58,-.075,.15,.045,.16);color(.24,.28,.35);}
+  }else if(mount==MOUNT_DOOR_SLIDE){
+   float side=i==3?-1:1;cylinder(v3(side*w*.43,0,-.08),v3(side*(w*.5+.20),0,-.08),.045,14);box(side*(w*.5+.20),0,-.08,.12,.34,.18);
+  }else if(mount==MOUNT_ROOF_FLIP){
+   cylinder(v3(-w*.34,h/2+.08,-.07),v3(w*.34,h/2+.08,-.07),.045,16);cylinder(v3(0,h/2+.08,-.07),v3(0,h/2+.20,-.07),.035,12);
+  }
+  color(.055,.075,.105);rbox(0,.075,-.056,w+.12,h+.25,.10,.065);
+  color(.018,.027,.038);rbox(0,.075,-.003,w+.086,h+.219,.038,.055);
+  glDisable(GL_LIGHTING);color(.010,.016,.026);quad(-w/2,-h/2,w,h,.019);glEnable(GL_LIGHTING);
+  float nr,ng,nb;neon(s,&nr,&ng,&nb);
+  if(arranging)glow_line(v3(-w/2,-h/2-.022,.025),v3(w/2,-h/2-.022,.025),.005,1,.62,.16);
+  else if(active)glow_line(v3(-w/2,-h/2-.022,.025),v3(w/2,-h/2-.022,.025),.004,.35,.92,.74);
+  else glow_line(v3(-w/2,-h/2-.022,.025),v3(w/2,-h/2-.022,.025),.003,nr*.65,ng*.7,nb*.7);
+  ui_monitor_label(s,i);texture(m->label,-w/2,h/2+.011,w,.137,.024);
+  {float bx,by,bw,bh;handles_button_rect(p,k,&bx,&by,&bw,&bh);if(s->handles_tex)texture(s->handles_tex,bx,by,bw,bh,.032*k);if(arranging&&s->arrange_handles){float z=.040*k,r=.004*k;glow_line(v3(bx,by,z),v3(bx+bw,by,z),r,1,.62,.16);glow_line(v3(bx+bw,by,z),v3(bx+bw,by+bh,z),r,1,.62,.16);glow_line(v3(bx+bw,by+bh,z),v3(bx,by+bh,z),r,1,.62,.16);glow_line(v3(bx,by+bh,z),v3(bx,by,z),r,1,.62,.16);}}
+ }
+ glEnable(GL_STENCIL_TEST);glClear(GL_STENCIL_BUFFER_BIT);glStencilMask(0xff);glStencilFunc(GL_ALWAYS,1,0xff);glStencilOp(GL_KEEP,GL_KEEP,GL_REPLACE);glColorMask(GL_FALSE,GL_FALSE,GL_FALSE,GL_FALSE);glDepthMask(GL_FALSE);glDisable(GL_DEPTH_TEST);quad(-w/2,-h/2,w,h,.021*k);glEnable(GL_DEPTH_TEST);glColorMask(GL_TRUE,GL_TRUE,GL_TRUE,GL_TRUE);glDepthMask(GL_TRUE);glStencilFunc(GL_EQUAL,1,0xff);glStencilOp(GL_KEEP,GL_KEEP,GL_KEEP);glStencilMask(0);
+ float scale=fminf(w/m->surface->width,h/m->surface->height);DrawSurface d={.scale=scale,.w=m->surface->width*scale,.h=m->surface->height*scale,.z0=.024*k,.zstep=.0007*k};server_each_surface(m->surface,draw_app_surface,&d);
  glStencilMask(0xff);glDisable(GL_STENCIL_TEST);
  if(arranging){
   /* Amber frame + local RGB axes (right/up/normal) make the current
    * Arrange target and its orientation legible while it is transformed. */
-  float z=.038f*k,r=.005f*k;
+  float z=.038*k,r=.005*k;
   glow_line(v3(-w/2,-h/2,z),v3(w/2,-h/2,z),r,1,.62,.16);
   glow_line(v3(w/2,-h/2,z),v3(w/2,h/2,z),r,1,.62,.16);
   glow_line(v3(w/2,h/2,z),v3(-w/2,h/2,z),r,1,.62,.16);
   glow_line(v3(-w/2,h/2,z),v3(-w/2,-h/2,z),r,1,.62,.16);
-  glow_line(v3(0,0,z),v3(.30f*k,0,z),r,1,.22,.22);
-  glow_line(v3(0,0,z),v3(0,.30f*k,z),r,.25,1,.35);
-  glow_line(v3(0,0,z),v3(0,0,.34f*k),r,.30,.55,1);
+  glow_line(v3(0,0,z),v3(.30*k,0,z),r,1,.22,.22);
+  glow_line(v3(0,0,z),v3(0,.30*k,z),r,.25,1,.35);
+  glow_line(v3(0,0,z),v3(0,0,.34*k),r,.30,.55,1);
   if(s->arrange_handles)draw_arrange_handles(s,p,k);
  }
  glPopMatrix();
 }
+static void draw_windshield_hud(Server *s){
+ if(!s->hud_visible||!s->windshield_tex)return;
+ /* A transparent projection on the actual glass plane, not framebuffer
+  * chrome. Its centre is intentionally quiet so the windshield app remains
+  * readable; speed, pack and drive state sit around the edges. */
+ Plane p={.center={0,1.0f,-1.08f},.width=2.55f,.height=.62f,.pitch=-8};
+ glDepthMask(GL_FALSE);plane_begin(p);texture(s->windshield_tex,-p.width/2,-p.height/2,p.width,p.height,0);glPopMatrix();glDepthMask(GL_TRUE);
+}
 void scene_init(Server *s){
  char path[4200];snprintf(path,sizeof(path),"%s/assets/garage.webp",s->root);s->garage_tex=ui_load_webp(path);
- glEnable(GL_DEPTH_TEST);glDepthFunc(GL_LEQUAL);glEnable(GL_MULTISAMPLE);glShadeModel(GL_SMOOTH);glClearColor(.013,.015,.031,1);s->pitch=s->target_pitch=-6;
+ glEnable(GL_DEPTH_TEST);glDepthFunc(GL_LEQUAL);glEnable(GL_MULTISAMPLE);glShadeModel(GL_SMOOTH);glClearColor(.013,.015,.031,1);s->pitch=s->target_pitch=-6;s->eye=vehicle_seat_eye(s->camera_seat);
  Plane panel={.center={.78,.33,.48},.width=1.56,.height=.9,.yaw=-5,.pitch=-28};Vec3 right=rotate_y(v3(1,0,0),panel.yaw),up=rotate_y(rotate_x(v3(0,1,0),panel.pitch),panel.yaw),normal=vcross(right,up);
- const char *names[]={"TERMINAL","FILES","AUDIO","METERS","NEON","COCKPIT"};const char *subs[]={"01 / SHELL","02 / EXPLORE","03 / SESSION","04 / LIVE","05 / COLOR","06 / HOME"};
+ const char *names[]={"TERMINAL","FILES","AUDIO","METERS","NEON","COCKPIT"};const char *subs[]={"01 / SHELL","02 / EXPLORE","03 / SESSION","04 / EV","05 / COLOR","06 / HOME"};
  /* Built-in menu defaults; [app.*] config (applied in main.c after ui_init)
   * may relabel/re-icon/disable any of these live. */
  for(int i=0;i<6;i++){float x=(i%3-1)*.48f,y=i<3?.095f:-.22f;s->buttons[i].plane=(Plane){.center=vadd(panel.center,vadd(vadd(vmul(right,x),vmul(up,y)),vmul(normal,.084f))),.width=.426,.height=.248,.yaw=panel.yaw,.pitch=panel.pitch};snprintf(s->buttons[i].name,sizeof(s->buttons[i].name),"%s",names[i]);snprintf(s->buttons[i].sub,sizeof(s->buttons[i].sub),"%s",subs[i]);s->buttons[i].action=i==4?CD_BUTTON_NEON:i==5?CD_BUTTON_COCKPIT:CD_BUTTON_APP;s->buttons[i].icon=i;s->buttons[i].enabled=true;s->buttons[i].texture=0;}
@@ -438,26 +470,94 @@ void scene_init(Server *s){
   * at z=.37 is behind this sloped surface from the driver's seat.) */
  s->cog=(Plane){.center={-.30f,-.066f,.610f},.width=.24f,.height=.24f,.yaw=0,.pitch=-61};
 }
+typedef struct {Vec3 eye,forward,right,up;} SceneCamera;
+static SceneCamera scene_camera(Server *s){
+ SceneCamera c;
+ if(s->camera_mode==VEHICLE_CAMERA_DRIVER){
+  c.eye=vehicle_local_to_world(&s->vehicle,s->eye);
+  Vec3 forward=rotate_y(rotate_x(v3(0,0,-1),s->pitch),s->yaw);
+  Vec3 right=rotate_y(v3(1,0,0),s->yaw),up=vcross(right,forward);
+  c.forward=vehicle_local_direction(&s->vehicle,forward);
+  c.right=vehicle_local_direction(&s->vehicle,right);
+  c.up=vehicle_local_direction(&s->vehicle,up);
+ }else{
+  /* Exterior cameras are expressed in car-local coordinates too, so they
+   * follow the same rigid transform as the cockpit instead of drifting when
+   * the vehicle moves. EXTERIOR uses a low front-quarter showcase angle;
+   * SYSTEMS uses a side view to expose the EV skateboard. Middle-drag yaw/pitch
+   * orbits smoothly around the car in both exterior inspection modes. */
+  Vec3 base_eye=s->camera_mode==VEHICLE_CAMERA_CHASE?v3(8.2f,2.3f,-10.4f):v3(9.6f,2.9f,1.2f);
+  Vec3 local_eye=rotate_y(base_eye,s->yaw);
+  local_eye.y=clampf(base_eye.y+(s->pitch+6.0f)*0.12f,0.4f,6.5f);
+  Vec3 local_target=s->camera_mode==VEHICLE_CAMERA_CHASE?v3(0,-.08f,-.20f):v3(0,-.15f,0);
+  c.eye=vehicle_local_to_world(&s->vehicle,local_eye);
+  Vec3 target=vehicle_local_to_world(&s->vehicle,local_target);
+  c.forward=vnorm(vsub(target,c.eye));c.right=vnorm(vcross(c.forward,v3(0,1,0)));c.up=vcross(c.right,c.forward);
+ }
+ return c;
+}
+static Vec3 scene_camera_ray(Server *s,SceneCamera c,float x,float y){
+ float t=tanf(s->fov*RAD*.5f);
+ Vec3 ray=vadd(c.forward,vadd(vmul(c.right,(2*x/s->width-1)*((float)s->width/s->height)*t),vmul(c.up,(1-2*y/s->height)*t)));
+ return vnorm(ray);
+}
+static void scene_camera_view(SceneCamera c){
+ /* gluLookAt equivalent, kept local to avoid a GLU dependency. The matrix is
+  * column-major: right/up/-forward are the camera's world-space basis rows. */
+ GLfloat m[16]={c.right.x,c.up.x,-c.forward.x,0,c.right.y,c.up.y,-c.forward.y,0,c.right.z,c.up.z,-c.forward.z,0,0,0,0,1};
+ glMultMatrixf(m);glTranslatef(-c.eye.x,-c.eye.y,-c.eye.z);
+}
+static void vehicle_model_transform(Server *s){
+ Vehicle *v=&s->vehicle;glTranslatef(v->position.x,v->position.y,v->position.z);
+ glRotatef(v->yaw,0,1,0);glRotatef(v->pitch,1,0,0);glRotatef(v->roll,0,0,1);
+}
+void scene_update_mounts(Server *s){
+ for(int i=0;i<CD_MAX_MONITORS;i++){
+  Monitor *m=&s->monitors[i];if(!m->surface)continue;
+  if(m->reveal<m->target_reveal){float duration=monitor_mount(i)==MOUNT_ROOF_FLIP?.90f:.72f;m->reveal=fminf(m->target_reveal,m->reveal+(float)s->dt/duration);}
+  /* This exact plane is also consumed by scene_pick below: a client never
+   * renders at one position while its pointer coordinates use another.
+   * Arrange/frame transforms are session overrides; mount animation must not
+   * stomp them on the next frame. Reset or remapping clears the override. */
+  if(!m->custom_transform)m->plane=monitor_plane_at(i,m->reveal);
+ }
+}
 void scene_render(Server *s){
  glViewport(0,0,s->width,s->height);glClear(GL_COLOR_BUFFER_BIT|GL_DEPTH_BUFFER_BIT|GL_STENCIL_BUFFER_BIT);glEnable(GL_DEPTH_TEST);
  glMatrixMode(GL_PROJECTION);glLoadIdentity();double t=tan(s->fov*RAD/2)*.05;glFrustum(-t*s->width/s->height,t*s->width/s->height,-t,t,.05,150);
- glMatrixMode(GL_MODELVIEW);glLoadIdentity();glRotatef(-s->pitch,1,0,0);glRotatef(-s->yaw,0,1,0);glTranslatef(-s->eye.x,-s->eye.y,-s->eye.z);
- lighting();environment(s);lighting();dashboard(s);draw_buttons(s);draw_cog(s);for(int i=0;i<CD_MAX_MONITORS;i++)draw_monitor(s,i);steering_wheel(s);
+ glMatrixMode(GL_MODELVIEW);glLoadIdentity();SceneCamera camera=scene_camera(s);scene_camera_view(camera);
+ lighting();environment(s);
+ glPushMatrix();vehicle_model_transform(s);lighting();
+ bool driver=s->camera_mode==VEHICLE_CAMERA_DRIVER;
+ /* One physical cockpit in all views. Drawing it before the hull lets opaque
+  * bodywork occlude it naturally; cutaway and the late shared glass pass then
+  * reveal exactly the same seats, panels, controls and Wayland surfaces. */
+ vehicle_seats_render();dashboard(s);draw_buttons(s);draw_cog(s);
+ for(int i=0;i<CD_MAX_MONITORS;i++)draw_monitor(s,i);
+ steering_wheel(s);
+ vehicle_render(s,s->camera_mode==VEHICLE_CAMERA_SYSTEMS);
+ if(driver)draw_windshield_hud(s);
+ vehicle_render_glass(s);glPopMatrix();
 }
 Hit scene_pick(Server *s,float x,float y,bool grab){
- Hit best={.kind=HIT_NONE,.distance=1e9f};Vec3 ray=camera_ray(x,y,s->width,s->height,s->fov,s->yaw,s->pitch);float u,v,d;
+ Hit best={.kind=HIT_NONE,.distance=1e9f};
+ /* Exterior inspection views deliberately have no invisible cockpit hit
+  * targets. Driver picking transforms the world ray back into car-local space,
+  * allowing all existing Plane/UV mathematics to remain unchanged and exact. */
+ if(s->camera_mode!=VEHICLE_CAMERA_DRIVER)return best;
+ SceneCamera camera=scene_camera(s);Vec3 ray=vehicle_world_direction(&s->vehicle,scene_camera_ray(s,camera,x,y));float u,v,d;
  if(grab&&s->pointer_grab){Surface *root=surface_root(s->pointer_grab);if(root&&root->slot>=0){Plane p=s->monitors[root->slot].plane;if(plane_hit(p,s->eye,ray,&u,&v,&d,false)){float scale=fminf(p.width/root->width,p.height/root->height);float sx=(u-.5f)*p.width/scale+root->width/2.f,sy=(v-.5f)*p.height/scale+root->height/2.f;Surface *child=s->pointer_grab;while(child!=root&&child){sx-=child->x;sy-=child->y;child=child->parent;}return (Hit){.kind=HIT_APP,.surface=s->pointer_grab,.slot=root->slot,.x=sx,.y=sy,.distance=d};}}return best;}
  for(int i=0;i<CD_MAX_MONITORS;i++){Monitor *m=&s->monitors[i];if(!m->surface)continue;Plane p=m->plane;if(!plane_hit(p,s->eye,ray,&u,&v,&d,false)||d>=best.distance)continue;
   float lx=(u-.5f)*p.width,ly=(.5f-v)*p.height,k=monitor_iso_scale(p,i);
-  if(handles_button_at(p,k,lx,ly)){best=(Hit){.kind=HIT_HANDLES_BUTTON,.surface=m->surface,.slot=i,.x=lx,.y=ly,.distance=d};continue;}
-  if(s->arrange_mode&&s->arrange_handles&&s->arrange_slot==i){
+  if(i!=CD_CLUSTER_SLOT&&handles_button_at(p,k,lx,ly)){best=(Hit){.kind=HIT_HANDLES_BUTTON,.surface=m->surface,.slot=i,.x=lx,.y=ly,.distance=d};continue;}
+  if(i!=CD_CLUSTER_SLOT&&s->arrange_mode&&s->arrange_handles&&s->arrange_slot==i){
    float zlx=0,zly=0,zd=0;bool z_hit=arrange_z_handle_hit(p,k,s->eye,ray,&zlx,&zly,&zd);
    int handle=arrange_handle_at(p,k,lx,ly,z_hit,zlx,zly);
    if(handle!=CD_HANDLE_NONE){best=(Hit){.kind=HIT_ARRANGE_HANDLE,.surface=m->surface,.slot=i,.handle=handle,.x=lx,.y=ly,.distance=handle==CD_HANDLE_AXIS_Z?zd:d};continue;}
   }
-  if(u>.92&&u<1.01&&v<0&&v>-.12){best=(Hit){.kind=HIT_CLOSE,.surface=m->surface,.slot=i,.distance=d};continue;}
+  if(i!=CD_CLUSTER_SLOT&&u>.92&&u<1.01&&v<0&&v>-.12){best=(Hit){.kind=HIT_CLOSE,.surface=m->surface,.slot=i,.distance=d};continue;}
   if(u<0||u>1||v<0||v>1){
-   bool frame=lx>=-(p.width*.5f+.07f*k)&&lx<=p.width*.5f+.07f*k&&ly>=-(p.height*.5f+.06f*k)&&ly<=p.height*.5f+.21f*k;
+   bool frame=i!=CD_CLUSTER_SLOT&&lx>=-(p.width*.5f+.07f*k)&&lx<=p.width*.5f+.07f*k&&ly>=-(p.height*.5f+.06f*k)&&ly<=p.height*.5f+.21f*k;
    if(frame)best=(Hit){.kind=HIT_FRAME,.surface=m->surface,.slot=i,.x=lx,.y=ly,.distance=d};
    continue;
   }
@@ -468,40 +568,85 @@ Hit scene_pick(Server *s,float x,float y,bool grab){
  /* Cog: same pick plane as drawn, then a radial test so only the gear
   * itself (teeth at .115 m of the .12 m half-plane) is clickable. */
  if(plane_hit(s->cog,s->eye,ray,&u,&v,&d,false)&&d<best.distance){float du=u-.5f,dv=v-.5f;if(du*du+dv*dv<=.25f)best=(Hit){.kind=HIT_COG,.distance=d};}
+ Plane wheel=steering_plane();
+ if(plane_hit(wheel,s->eye,ray,&u,&v,&d,false)&&d<best.distance){
+  float dx=(u-.5f)*wheel.width,dy=(v-.5f)*wheel.height;
+  if(dx*dx+dy*dy<=.50f*.50f)best=(Hit){.kind=HIT_WHEEL,.x=u,.y=v,.distance=d};
+ }
  return best;
-}
-void scene_focus_monitor(Server *s,int slot,bool zoom){
- if(slot<0||slot>=CD_MAX_MONITORS)return;Plane p=s->monitors[slot].plane;
- Vec3 rel=vsub(p.center,s->eye);float horizontal=sqrtf(rel.x*rel.x+rel.z*rel.z);float dist=sqrtf(vdot(rel,rel));
- float desired=atan2f(-rel.x,-rel.z)/RAD;
- while(desired-s->yaw>180)desired-=360;while(desired-s->yaw<-180)desired+=360;
- s->target_yaw=desired;
- s->target_pitch=atan2f(rel.y,fmaxf(horizontal,.05f))/RAD;
- float fit_fov=fmaxf(2.f*atanf((p.height*.85f)/fmaxf(dist,.1f)),2.f*atanf((p.width*.85f)/(fmaxf(dist,.1f)*fmaxf((float)s->width/(float)s->height,.1f))))/RAD;
- s->target_fov=zoom?clampf(fit_fov,16.f,55.f):65;
- s->focus_view=zoom;
 }
 void scene_monitor_reset(Server *s,int slot){
  if(slot<0||slot>=CD_MAX_MONITORS)return;
- s->monitors[slot].plane=monitor_plane(slot);
+ Monitor *m=&s->monitors[slot];m->custom_transform=false;m->reveal=m->target_reveal=1;m->plane=monitor_plane(slot);
 }
 void scene_monitor_translate(Server *s,int slot,float right,float up,float toward_eye){
- if(slot<0||slot>=CD_MAX_MONITORS)return;
- s->monitors[slot].plane=plane_translate(s->monitors[slot].plane,s->eye,right,up,toward_eye);
+ if(slot<0||slot>=CD_MAX_MONITORS||slot==CD_CLUSTER_SLOT)return;
+ s->monitors[slot].custom_transform=true;s->monitors[slot].plane=plane_translate(s->monitors[slot].plane,s->eye,right,up,toward_eye);
 }
 void scene_monitor_rotate(Server *s,int slot,float yaw,float pitch,float roll){
- if(slot<0||slot>=CD_MAX_MONITORS)return;
- s->monitors[slot].plane=plane_rotate(s->monitors[slot].plane,yaw,pitch,roll);
+ if(slot<0||slot>=CD_MAX_MONITORS||slot==CD_CLUSTER_SLOT)return;
+ s->monitors[slot].custom_transform=true;s->monitors[slot].plane=plane_rotate(s->monitors[slot].plane,yaw,pitch,roll);
 }
 void scene_monitor_scale(Server *s,int slot,float factor){
- if(slot<0||slot>=CD_MAX_MONITORS)return;
- s->monitors[slot].plane=plane_uniform_scale(s->monitors[slot].plane,monitor_plane(slot),factor);
+ if(slot<0||slot>=CD_MAX_MONITORS||slot==CD_CLUSTER_SLOT)return;
+ s->monitors[slot].custom_transform=true;s->monitors[slot].plane=plane_uniform_scale(s->monitors[slot].plane,monitor_plane(slot),factor);
 }
 void scene_monitor_set_plane(Server *s,int slot,Plane plane){
- if(slot<0||slot>=CD_MAX_MONITORS)return;
- s->monitors[slot].plane=plane;
+ if(slot<0||slot>=CD_MAX_MONITORS||slot==CD_CLUSTER_SLOT)return;
+ s->monitors[slot].custom_transform=true;s->monitors[slot].plane=plane;
 }
-void scene_reset_camera(Server *s){s->target_yaw=roundf(s->yaw/360)*360;s->target_pitch=-6;s->target_fov=65;s->focus_view=false;}
+void scene_wheel_cancel(Server *s){s->wheel_drag=false;s->wheel_steer=0;s->wheel_axis_accum=0;}
+bool scene_wheel_button(Server *s,Hit hit,int x,int y,bool down,uint32_t time){
+ if(down){
+  if(s->wheel_drag||hit.kind!=HIT_WHEEL)return s->wheel_drag;
+  s->wheel_drag=true;s->wheel_last_x=x;s->wheel_last_y=y;s->wheel_axis_accum=0;s->wheel_steer=0;
+  /* A wheel grab is compositor-owned. Send the matching pointer leave before
+   * intercepting motion; otherwise the previously hovered client would see a
+   * pointer that appears frozen inside its surface. */
+  server_pointer_motion(s,(Hit){0},time);
+  if(s->steering_mode==VEHICLE_STEER_CLIENT&&s->keyboard_focus){
+   /* wl_pointer.axis is legal only on a surface with pointer focus. Move that
+    * focus to the active app's centre before emitting wheel/scroll events;
+    * keyboard focus alone is not sufficient in the Wayland protocol. */
+   Surface *p=s->keyboard_focus;
+   Hit center={.kind=HIT_APP,.surface=p,.slot=p->slot,.x=p->width*.5f,.y=p->height*.5f,.distance=0};
+   server_pointer_motion(s,center,time);
+  }
+  return true;
+ }
+ if(s->wheel_drag){scene_wheel_cancel(s);return true;}
+ return false;
+}
+void scene_wheel_motion(Server *s,int x,int y,uint32_t time){
+ if(!s->wheel_drag)return;
+ float dx=x-s->wheel_last_x;s->wheel_last_x=x;s->wheel_last_y=y;
+ if(s->steering_mode==VEHICLE_STEER_DRIVE){
+  s->wheel_steer=clampf(s->wheel_steer+dx*.006f,-1,1);
+ }else{
+  s->wheel_client_angle=clampf(s->wheel_client_angle-dx*.65f,-135,135);
+  /* Coalesce high-frequency pointer samples into detents. This preserves the
+   * familiar wheel-click semantics for toolkits while still accepting smooth
+   * trackpad-style axis values through server_pointer_axis(). */
+  s->wheel_axis_accum+=dx;
+  if(fabsf(s->wheel_axis_accum)>=28){
+   float detents=truncf(s->wheel_axis_accum/28);s->wheel_axis_accum-=detents*28;
+   server_pointer_axis(s,-detents,0,time);
+  }
+ }
+}
+void scene_focus_monitor(Server *s,int slot,bool zoom){
+ s->camera_mode=VEHICLE_CAMERA_DRIVER;
+ if(slot<0||slot>=CD_MAX_MONITORS)return;
+ /* Focus the actual animated/arranged plane, not the bay's deployed default. */
+ Plane p=s->monitors[slot].plane;Vec3 rel=vsub(p.center,s->eye);
+ float horizontal=sqrtf(rel.x*rel.x+rel.z*rel.z),dist=sqrtf(vdot(rel,rel));
+ float desired=atan2f(-rel.x,-rel.z)/RAD;
+ while(desired-s->yaw>180)desired-=360;while(desired-s->yaw<-180)desired+=360;
+ s->target_yaw=desired;s->target_pitch=atan2f(rel.y,fmaxf(horizontal,.05f))/RAD;
+ float fit_fov=fmaxf(2.f*atanf((p.height*.85f)/fmaxf(dist,.1f)),2.f*atanf((p.width*.85f)/(fmaxf(dist,.1f)*fmaxf((float)s->width/(float)s->height,.1f))))/RAD;
+ s->target_fov=zoom?clampf(fit_fov,16.f,55.f):65;s->focus_view=zoom;
+}
+void scene_reset_camera(Server *s){s->camera_mode=VEHICLE_CAMERA_DRIVER;s->eye=vehicle_seat_eye(s->camera_seat);s->target_yaw=roundf(s->yaw/360)*360;s->target_pitch=-6;s->target_fov=65;s->focus_view=false;}
 void scene_save_screenshot(Server *s,const char *path){
  int w=s->width,h=s->height;uint8_t *pixels=malloc((size_t)w*h*4);if(!pixels)return;glReadPixels(0,0,w,h,GL_BGRA,GL_UNSIGNED_BYTE,pixels);
  uint8_t *flipped=malloc((size_t)w*h*4);
@@ -515,5 +660,5 @@ void scene_save_screenshot(Server *s,const char *path){
  free(flipped);free(pixels);
 }
 void scene_finish(Server *s){
- GLuint textures[]={s->garage_tex,s->carbon_tex,s->gauge_tex,s->console_tex,s->hub_tex,s->hud_tex,s->help_tex,s->plate_tex,s->handles_tex};glDeleteTextures(sizeof(textures)/sizeof(textures[0]),textures);for(int i=0;i<6;i++)glDeleteTextures(1,&s->buttons[i].texture);for(int i=0;i<CD_MAX_MONITORS;i++)glDeleteTextures(1,&s->monitors[i].label);
+ GLuint textures[]={s->garage_tex,s->carbon_tex,s->console_tex,s->hub_tex,s->hud_tex,s->windshield_tex,s->help_tex,s->plate_tex,s->handles_tex};glDeleteTextures(sizeof(textures)/sizeof(textures[0]),textures);for(int i=0;i<6;i++)glDeleteTextures(1,&s->buttons[i].texture);for(int i=0;i<CD_MAX_MONITORS;i++)glDeleteTextures(1,&s->monitors[i].label);
 }

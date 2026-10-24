@@ -1,17 +1,124 @@
 <!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>ChromeDrive — Native compositor</title><style>
-*{box-sizing:border-box}html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#070b12;color:#e8edf6;font-family:system-ui,-apple-system,sans-serif}body{display:flex;flex-direction:column}header{height:62px;flex:none;display:flex;align-items:center;justify-content:space-between;gap:12px;padding:0 22px;border-bottom:1px solid #202734;background:#0b1019}.brand{display:flex;align-items:center;gap:13px}.mark{width:30px;height:30px;display:grid;place-items:center;border:1px solid #ae86ea;border-radius:8px;color:#c49cf8;font-size:19px}.name{font-size:13px;font-weight:750;letter-spacing:.09em}.meta{font:10px ui-monospace,monospace;color:#7d8c9f;margin-top:3px;letter-spacing:.03em}.status{color:#71dcbc;display:flex;align-items:center;gap:6px;font:10px ui-monospace,monospace}.status:before{content:'';width:5px;height:5px;border-radius:50%;background:currentColor}.actions{display:flex;align-items:center;gap:5px}button{font:11px system-ui,sans-serif;cursor:pointer;color:#a8b6c8;background:#121a26;border:1px solid #263143;padding:8px 11px;border-radius:6px;transition:.15s}button:hover{color:#f0e9ff;border-color:#9e78d3;background:#29213d}button:focus-visible{outline:2px solid #a885e1;outline-offset:2px}.key{color:#648080;font-size:9px;margin-left:6px}#screen{flex:1;min-height:0;position:relative;overflow:hidden;display:flex;align-items:center;justify-content:center}#screen>div{width:100%;height:100%}.loading{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);text-align:center;color:#98a8bd;font-size:14px;line-height:1.8}.loading small{color:#62758a}footer{height:33px;flex:none;display:flex;align-items:center;justify-content:space-between;gap:12px;padding:0 20px;border-top:1px solid #1b2533;color:#7f8fa4;font:10px ui-monospace,monospace;background:#0b1019}footer b{font-weight:500;color:#a9b9ce}.mobile{display:none}@media(max-width:850px){header{height:56px;padding:0 12px}.actions button{padding:7px 8px}.key,.meta,.status{display:none}footer{font-size:9px;padding:0 10px}.extra{display:none}}@media(max-width:550px){.name{font-size:11px}.actions button{font-size:10px;padding:6px}.extra-button{display:none}.mobile{display:inline}}
-</style></head><body><header><div class="brand"><div class="mark">›</div><div><div class="name">CHROMEDRIVE</div><div class="meta">LIVE NATIVE WAYLAND COMPOSITOR</div></div></div><div class="status" id="status">CONNECTING</div><nav class="actions" aria-label="Native compositor controls"><button data-key="65471" title="Restore the first-person driver view">Driver view<span class="key">F2</span></button><button data-key="65472" title="Magnify the selected app screen">Focus<span class="key">F3</span></button><button data-key="65473" title="Change cockpit underglow">Neon<span class="key">F4</span></button><button data-key="65475" class="extra-button" title="Turn to the next app monitor">Next app<span class="key">F6</span></button><button data-key="65470" title="Open the native controls guide">Help<span class="key">F1</span></button></nav></header><main id="screen" aria-label="Live remote view of the native OpenGL compositor"><div class="loading" id="loading">Connecting to the driver's seat…<br><small>Streaming the actual Linux process, not a web mockup.</small></div></main><footer><span><b>Middle-drag</b> to look · <b>Click an app</b> to type · <b>Shift + dashboard button</b> for a new instance</span><span class="extra">OpenGL + libwayland-server · CPU-rendered sandbox preview</span></footer>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>ChromeDrive — Native hover-desktop</title>
+<style>
+:root{color-scheme:dark;--bg:#070a11;--panel:#0c121d;--line:#243043;--text:#e9edf6;--muted:#8291a7;--violet:#b38af4;--mint:#63e2ba}
+*{box-sizing:border-box}html,body{margin:0;width:100%;height:100%;overflow:hidden;background:var(--bg);color:var(--text);font-family:Inter,ui-sans-serif,system-ui,-apple-system,sans-serif}body{display:flex;flex-direction:column}button{font:inherit}
+header{min-height:64px;flex:none;display:flex;align-items:center;gap:18px;padding:9px 20px;border-bottom:1px solid #202a3a;background:#0a1019}.brand{display:flex;align-items:center;gap:12px;flex:none}.mark{width:34px;height:34px;display:grid;place-items:center;border:1px solid #9c72dc;border-radius:10px;color:#c6a4fa;font-size:20px;box-shadow:inset 0 0 18px #6f3e9b22}.name{font-size:13px;font-weight:800;letter-spacing:.11em}.meta{font:9px ui-monospace,SFMono-Regular,monospace;color:var(--muted);margin-top:4px;letter-spacing:.04em}.status{margin-left:auto;display:flex;align-items:center;gap:7px;color:var(--mint);font:10px ui-monospace,monospace;white-space:nowrap}.status:before{content:'';width:6px;height:6px;border-radius:50%;background:currentColor;box-shadow:0 0 10px currentColor}.actions{display:flex;align-items:center;gap:5px;flex-wrap:wrap;justify-content:flex-end}button{border:1px solid #29364a;border-radius:7px;color:#aebbd0;background:#121b29;padding:8px 10px;cursor:pointer;font-size:11px;transition:border-color .15s,background .15s,color .15s}button:hover:not(:disabled){color:#f3edff;border-color:#9b75d1;background:#251d38}button:focus-visible{outline:2px solid var(--violet);outline-offset:2px}button:disabled{opacity:.38;cursor:not-allowed}.key{font:9px ui-monospace,monospace;color:#70849b;margin-left:6px}.icon-button{font-size:15px;padding:6px 10px}
+#screen{flex:1;min-height:0;position:relative;overflow:hidden;display:flex;align-items:center;justify-content:center;background:radial-gradient(ellipse at center,#111122 0,#070a11 72%)}#screen>div{width:100%;height:100%}.loading{position:absolute;inset:0;display:grid;place-content:center;text-align:center;color:#a6b4c8;font-size:14px;line-height:1.9;z-index:2;pointer-events:none}.loading small{color:#64768e}.loading button{pointer-events:auto;margin:14px auto 0;width:max-content}.loading.error{color:#edb1b1}
+.drive-dock{flex:none;display:flex;align-items:center;justify-content:center;gap:18px;padding:9px 18px;border-top:1px solid #202b3b;background:#0b111b}.drive-state{min-width:180px}.drive-state strong{display:block;color:var(--mint);font:11px ui-monospace,monospace;letter-spacing:.05em}.drive-state small{display:block;margin-top:3px;color:#6f8097;font-size:9px}.drive-pad{display:flex;align-items:center;gap:6px}.drive-pad .hold{min-width:52px;user-select:none;-webkit-user-select:none;touch-action:none}.drive-pad .hold.active{color:#fff;border-color:var(--mint);background:#173b35;box-shadow:0 0 15px #4ad4ae22}.drive-pad .brake{margin-left:8px;border-color:#593840}.drive-pad .hint{color:#74869e;font:9px ui-monospace,monospace;margin-right:4px}.drive-pad .cluster{display:flex;gap:4px}
+footer{min-height:30px;flex:none;display:flex;align-items:center;justify-content:space-between;gap:12px;padding:6px 20px;border-top:1px solid #192333;color:#74869b;font:9px ui-monospace,monospace;background:#080e16}footer b{color:#a8b7ca;font-weight:500}
+@media(max-width:1050px){header{gap:10px;padding:8px 12px}.status,.meta{display:none}.drive-state{min-width:140px}.drive-dock{gap:10px}.key{display:none}}
+@media(max-width:760px){.name{font-size:11px}.actions button{font-size:10px;padding:7px}.actions .optional{display:none}.drive-dock{align-items:flex-start;padding:8px 10px}.drive-state{display:none}.drive-pad{width:100%;justify-content:center;flex-wrap:wrap}.drive-pad .hint{display:none}footer .extra{display:none}}
+@media(max-height:650px){header{min-height:50px}.drive-dock{padding:5px 12px}footer{display:none}}
+</style>
+</head>
+<body>
+<header>
+ <div class="brand"><div class="mark">›</div><div><div class="name">CHROMEDRIVE</div><div class="meta">NATIVE WAYLAND · ELECTRIC HOVER DESKTOP</div></div></div>
+ <div class="status" id="status">CONNECTING</div>
+ <nav class="actions" aria-label="Native compositor controls">
+  <button data-key="65471" title="Return to the first-person driver camera">Driver<span class="key">F2</span></button>
+  <button data-key="65472" title="Focus the active Wayland monitor">Focus<span class="key">F3</span></button>
+  <button data-key="65474" title="Cycle driver, exterior concept, and EV systems cutaway">View<span class="key">F5</span></button>
+  <button data-key="65476" id="mode-button" title="Toggle steering-wheel and keyboard ownership">Hover drive<span class="key">F7</span></button>
+  <button data-key="65477" class="optional" title="Recover the car to its garage start pose">Recover<span class="key">F8</span></button>
+  <button data-key="65470" class="optional" title="Open the native driver's manual">Help<span class="key">F1</span></button>
+  <button id="fullscreen" class="icon-button" title="Toggle browser fullscreen" aria-label="Toggle fullscreen">⛶</button>
+ </nav>
+</header>
+<main id="screen" aria-label="Live remote view of the native OpenGL Wayland compositor">
+ <div class="loading" id="loading">Connecting to the driver's seat…<br><small>Streaming the actual C compositor over RFB, not a web mockup.</small></div>
+</main>
+<section class="drive-dock" aria-label="Hover car controls">
+ <div class="drive-state"><strong id="input-state">CLIENT INPUT</strong><small>F7 changes ownership · native HUD is authoritative</small></div>
+ <div class="drive-pad">
+  <span class="hint">HOLD TO DRIVE</span>
+  <button class="hold" data-hold="119" disabled>W<br><small>throttle</small></button>
+  <div class="cluster"><button class="hold" data-hold="97" disabled>A</button><button class="hold" data-hold="115" disabled>S<br><small>reverse</small></button><button class="hold" data-hold="100" disabled>D</button></div>
+  <button class="hold brake" data-hold="32" disabled>SPACE<br><small>regen brake</small></button>
+ </div>
+</section>
+<footer><span><b>Drag the 3D wheel</b> to steer in drive mode or scroll the focused app in client mode · <b>Middle-drag</b> to look</span><span class="extra">WEB → WEBSOCKET/RFB → EGL/GL → libwayland-server</span></footer>
 <script type="module">
 import RFB from './core/rfb.js';
-const status=document.getElementById('status'), loading=document.getElementById('loading');
+
+const status=document.getElementById('status');
+const loading=document.getElementById('loading');
+const screen=document.getElementById('screen');
+const modeButton=document.getElementById('mode-button');
+const inputState=document.getElementById('input-state');
+const holdButtons=[...document.querySelectorAll('[data-hold]')];
 const protocol=location.protocol==='https:'?'wss':'ws';
-const rfb=new RFB(document.getElementById('screen'),`${protocol}://${location.host}/websockify`);
-rfb.scaleViewport=true;rfb.resizeSession=false;rfb.background='#070b12';rfb.showDotCursor=true;rfb.focusOnClick=true;rfb.qualityLevel=8;rfb.compressionLevel=2;
-rfb.addEventListener('connect',()=>{status.textContent='NATIVE SESSION';loading.remove();rfb.focus();});
-rfb.addEventListener('disconnect',e=>{status.textContent='DISCONNECTED';status.style.color='#ed9e9e';const note=document.createElement('div');note.className='loading';note.textContent='The native session disconnected. Reload to reconnect.';document.getElementById('screen').append(note);});
+const rfb=new RFB(screen,`${protocol}://${location.host}/websockify`);
+rfb.scaleViewport=true;
+rfb.resizeSession=false; // The native FBO/VNC framebuffer has a deliberate fixed size.
+rfb.background='#070a11';
+rfb.showDotCursor=true;
+rfb.focusOnClick=true;
+rfb.qualityLevel=8;
+rfb.compressionLevel=2;
+
+let connected=false;
+let webDriveMode=false;
+const held=new Map();
+
+function updateDriveUI(){
+ inputState.textContent=webDriveMode?'HOVER DRIVE':'CLIENT INPUT';
+ inputState.style.color=webDriveMode?'#c5a2fa':'#63e2ba';
+ modeButton.firstChild.textContent=webDriveMode?'Client input':'Hover drive';
+ holdButtons.forEach(button=>button.disabled=!connected||!webDriveMode);
+}
+function tap(key){
+ if(!connected)return;
+ rfb.sendKey(key,null,true);rfb.sendKey(key,null,false);rfb.focus();
+}
+function release(key){
+ if(!held.has(key))return;
+ const button=held.get(key);held.delete(key);button?.classList.remove('active');
+ // Always send the release, even while disconnecting: a disappearing pointer
+ // must not leave a key logically pressed in the native input router.
+ rfb.sendKey(key,null,false);
+}
+function releaseAll(){[...held.keys()].forEach(release);}
+function press(key,button){
+ if(!connected||!webDriveMode||held.has(key))return;
+ held.set(key,button);button.classList.add('active');rfb.sendKey(key,null,true);rfb.focus();
+}
+
+rfb.addEventListener('connect',()=>{
+ connected=true;status.textContent='NATIVE SESSION';status.style.color='#63e2ba';loading.remove();updateDriveUI();rfb.focus();
+});
+rfb.addEventListener('disconnect',()=>{
+ connected=false;releaseAll();updateDriveUI();status.textContent='DISCONNECTED';status.style.color='#ed9e9e';
+ const note=document.createElement('div');note.className='loading error';note.textContent='The native session disconnected. ';
+ const retry=document.createElement('button');retry.textContent='Reconnect';retry.addEventListener('click',()=>location.reload());note.append(document.createElement('br'),retry);screen.append(note);
+});
 rfb.addEventListener('credentialsrequired',()=>{status.textContent='CREDENTIALS REQUIRED';});
-document.querySelectorAll('[data-key]').forEach(button=>button.addEventListener('click',()=>{const k=Number(button.dataset.key);rfb.sendKey(k,null,true);rfb.sendKey(k,null,false);rfb.focus();}));
-document.getElementById('screen').addEventListener('contextmenu',e=>e.preventDefault());
-window.chromedriveRemote=rfb;
-</script></body></html>
+
+document.querySelectorAll('[data-key]').forEach(button=>button.addEventListener('click',()=>{
+ const key=Number(button.dataset.key);
+ if(key===65476){releaseAll();tap(key);webDriveMode=!webDriveMode;updateDriveUI();}else tap(key);
+}));
+holdButtons.forEach(button=>{
+ button.addEventListener('pointerdown',event=>{
+  event.preventDefault();button.setPointerCapture(event.pointerId);press(Number(button.dataset.hold),button);
+ });
+ const end=()=>release(Number(button.dataset.hold));
+ button.addEventListener('pointerup',end);button.addEventListener('pointercancel',end);button.addEventListener('lostpointercapture',end);
+ button.addEventListener('contextmenu',event=>event.preventDefault());
+});
+window.addEventListener('blur',releaseAll);
+document.addEventListener('visibilitychange',()=>{if(document.hidden)releaseAll();});
+document.getElementById('fullscreen').addEventListener('click',async()=>{
+ try{if(document.fullscreenElement)await document.exitFullscreen();else await document.documentElement.requestFullscreen();}catch{}
+});
+screen.addEventListener('contextmenu',event=>event.preventDefault());
+updateDriveUI();
+window.chromedriveRemote=rfb; // Deliberate small debug/automation surface, as before.
+</script>
+</body>
+</html>

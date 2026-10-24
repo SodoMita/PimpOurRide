@@ -7,6 +7,19 @@ driver's seat, first-person. Dashboard buttons — picked with real 3D raycasts,
 not HTML — launch genuine Wayland applications, and **each app gets its own
 spatial monitor** mounted around the windshield.
 
+The cockpit now belongs to a **spline-built electric hover car**. Its modeled
+82 kWh skateboard pack, dual drive units, power electronics, charging hardware,
+and thermal loop can be inspected in an exterior systems cutaway. Fixed-step
+120 Hz dynamics make the whole car/cockpit/monitor rig drive through the 3D
+garage—without pretending to simulate wheels. F7 switches the physical steering
+wheel and driving keys between Wayland-client input and hover-car control; F8
+cycles driver, smooth exterior-concept, and EV-systems cameras, while F9
+switches between properly aligned driver and passenger seats. Applications
+use fixed, slide-up, slide-out, or flip-down mounts built into the windshield,
+dashboard, doors, roof, and rear deck. A separate Wayland instrument client
+lives behind the steering wheel, with a transparent live HUD on the windshield.
+See [`docs/vehicle-and-remote.md`](docs/vehicle-and-remote.md).
+
 This is a real compositor: it implements `wl_compositor`, `wl_subcompositor`,
 `xdg-shell` (toplevels + popups), `wl_seat` (pointer + xkbcommon keyboard),
 `wl_data_device_manager` (in-session clipboard), `zxdg_decoration_manager_v1`,
@@ -30,21 +43,23 @@ It runs two ways:
 
 - **Real**: the Wayland protocol implementation, OpenGL scene, 3D raycast
   picking for buttons/screens, input routing to actual client processes, the
-  terminal (`foot`) and the three bundled demo apps (Files, Audio UI, Meters —
-  all genuine `wl_shm` clients speaking real Wayland, source in
-  `clients/demo.c`), the headless EGL+VNC pipeline, and the
+  terminal (`foot`) and the bundled demo modes (Files, Audio UI, host Meters,
+  and the live EV instrument cluster — all genuine `wl_shm` clients speaking
+  real Wayland, source in `clients/demo.c`), the headless EGL+VNC pipeline, and the
   `zwp_linux_dmabuf_v1` GPU-import code path (real EGLImage calls — see
   caveat below). The garage beyond the windshield is real 3D geometry now,
   not the flat `assets/garage.webp` backdrop quad it used to be — see
   “Garage3D” below.
 - **Limitations in this build**: no layer-shell, Xwayland, or DRM/KMS backend
   — it never owns real display hardware directly, it's always either nested
-  (`--windowed`) or headless-with-VNC-output (`--headless`); 8 virtual
-  monitors max; buffers capped at 16 MiB/64 MiB total per surface for safety;
+  (`--windowed`) or headless-with-VNC-output (`--headless`); eight general app
+  mounts plus one dedicated instrument-cluster output; buffers capped at
+  16 MiB/64 MiB total per surface for safety;
   single input seat, no touch/tablet.
 - The "Audio" app is explicitly a UI/interaction demo — it does not play audio.
-  "Meters" reads real `/proc/stat` and `/proc/meminfo` for CPU/memory, it is
-  not simulated vehicle telemetry.
+  The fixed instrument cluster is a real Wayland client showing shared EV
+  telemetry. The separately launched `telemetry` demo mode reads real
+  `/proc/stat` and `/proc/meminfo` for host CPU/memory instead.
 
 ## GPU / dma-buf
 
@@ -173,6 +188,24 @@ details: [`docs/configuration.md`](docs/configuration.md).
 ./bin/chromedrive-config --selftest               # headless widget/file test (make test)
 ```
 
+### Electric hover car and dual-mode steering
+
+The body panels, roof, high-voltage cables, and coolant lines use interpolated
+Catmull-Rom splines. The systems view exposes the battery modules, front/rear
+permanent-magnet motors, reduction housings, inverters, onboard charger,
+DC/DC converter, contactor box, low-voltage battery, cooling loop, and four
+hover pods. A single heave spring/damper replaces wheel simulation by design.
+
+In **client mode** (the default), dragging the 3D steering wheel sends
+horizontal `wl_pointer.axis` input to the focused app and W/A/S/D remain app
+keys. In **drive mode**, W/up accelerates, S/down brakes then reverses,
+A/D/left/right steer, Space brakes, and dragging the wheel steers directly.
+Client mode applies a parking brake. The web viewer includes hold-to-drive
+buttons with stuck-key protection.
+
+Implementation, protocol/EGL/frame-callback notes, physics limits, and the
+complete control table: [`docs/vehicle-and-remote.md`](docs/vehicle-and-remote.md).
+
 ### Watching the headless session (VNC / browser preview)
 
 `--headless` starts an RFB server on `--vnc-port` (default 5900) listening on
@@ -182,13 +215,23 @@ all interfaces. Point any VNC client at it directly:
 vncviewer HOST:5900
 ```
 
-…or bridge it to a browser with the bundled noVNC viewer:
+…or use the one-command native backend + noVNC fullstack session:
+
+```sh
+./tools/run-web.sh
+# then open http://HOST:8080/
+# WEB_PORT / VNC_PORT / SIZE and CHROMEDRIVE_DEMO=0 are supported.
+```
+
+To run the pieces manually, start `chromedrive --headless` first, then:
 
 ```sh
 ./tools/prepare-viewer.sh     # stages noVNC's static assets into tools/viewer once
 websockify --web=tools/viewer 0.0.0.0:8080 127.0.0.1:5900
-# then open http://HOST:8080/
 ```
+
+The development endpoints add no authentication/TLS; use an authenticated TLS
+reverse proxy and firewall before exposing them to an untrusted network.
 
 ### Controls
 
@@ -205,11 +248,17 @@ websockify --web=tools/viewer 0.0.0.0:8080 127.0.0.1:5900
 | Click the dashboard cog | Open Settings (`chromedrive-config`) |
 | Shift + dashboard button | Force a new instance |
 | F1 | Help overlay |
-| F2 | Reset to the driver's seat view |
+| F2 | Reset to the selected seat view |
 | F3 | Toggle a tight focus zoom on the active screen |
 | F4 | Cycle underglow color (violet / ice blue / acid lime) |
 | F5 | Arrange the selected screen (move / rotate / roll / scale / resize) |
 | F6 | Cycle to the next connected screen |
+| F7 | Toggle client input / hover-drive ownership |
+| F8 | Cycle driver / exterior concept / EV systems cutaway |
+| F9 | Switch between driver and passenger seats |
+| F10 | Recover the car pose (battery and odometer are preserved) |
+| W/A/S/D or arrows, Space | Drive mode: throttle/steer/reverse and regenerative brake |
+| Left-drag steering wheel | Client mode: scroll focused app; drive mode: steer |
 | F11 | `--windowed` only: toggle fullscreen |
 | F12 | Save a screenshot to `screenshots/` |
 | Ctrl+Alt+Enter | Open a new terminal (even if slot 1 was reassigned) |
@@ -300,25 +349,35 @@ Launch commands for the dashboard buttons can be overridden with the
 ## Layout
 
 ```
-include/chrome.h, math3d.h, cdconfig.h  shared types, ray/plane math, config store API
-src/math3d.c                 camera rays, plane intersection, monitor layout/arrange transforms
+include/chrome.h, math3d.h, vehicle.h, telemetry.h, cdconfig.h  shared compositor APIs/types
+src/math3d.c                 camera rays, plane intersection, car-part mounts + Arrange transforms
+src/vehicle.c                fixed-step hover EV dynamics, splines, exact rig transforms
+src/vehicle_scene.c          electric systems, spline cables, hover pods + render orchestration
+src/vehicle_seat.c           sculpted stitched/perforated seating shared by every camera view
+src/telemetry.c              shared live EV state for the native instrument client
+src/keymap.c                 exact RFB/X11 keysym to Linux evdev translation
 src/wayland.c                 the actual compositor protocol implementation
 src/dmabuf.c                  zwp_linux_dmabuf_v1: real EGLImage GPU buffer import
-src/scene.c                   OpenGL cockpit, monitors, buttons, picking, 3D garage backdrop
-src/ui.c                      cairo-rendered textures: gauges, HUD, labels
+src/scene.c                   OpenGL cockpit, monitors, Handles, picking, camera rig, 3D garage
+src/ui.c                      cairo textures: windshield HUD, chrome, labels
 src/main.c                    CLI parsing, event loop, process spawn (backend-agnostic)
 src/backend_sdl.c             --windowed: SDL2 window + GLX context + SDL input
 src/backend_headless.c        --headless (default): surfaceless EGL + embedded VNC + RFB input
-clients/demo.c                 three independent real Wayland clients
+clients/demo.c                 native Wayland Files/Audio/host-Meters/EV-cluster modes
 clients/config.c               chromedrive-config: launch-menu editor + settings GUI
 clients/garage3d/              Garage3D: native Wayland + GLES 3.1 client (the garage in 3D)
 src/cdconfig.c                 shared INI config store (compositor + GUI; Garage3D has its own loader)
 docs/garage3d-architecture.md  Garage3D architecture + Wayland lifecycle documentation
 docs/configuration.md          config files, launch-menu editing, hot-reload semantics
-tests/test_math.c             raycast/picking and arrange-transform unit tests
+docs/vehicle-and-remote.md    EV physics/model, browser stack, Wayland/EGL/frame lifecycle
+tests/test_math.c             raycast/picking, mounts and Arrange-transform unit tests
 tests/test_config.c           INI store round-trip tests
+tests/test_vehicle.c          spline, EV dynamics, transform and fixed-step tests
+tests/test_telemetry.c        shared cluster telemetry and seqlock tests
+tests/test_keymap.c           RFB typing/WASD/function-key mapping regressions
 tests/protocol_probe.c        end-to-end Wayland protocol conformance test (incl. dma-buf)
-tools/viewer/                 noVNC web viewer for the headless VNC server (see prepare-viewer.sh)
+tools/run-web.sh              one-command native backend + browser bridge
+tools/viewer/                 static noVNC remote desktop + safe hold-to-drive controls
 ```
 
 ## Known limitations / next steps
@@ -331,4 +390,5 @@ tools/viewer/                 noVNC web viewer for the headless VNC server (see 
 - Single input seat, no touch, no tablet *in the compositor* (the Garage3D
   client implements `wl_touch` gestures, but ChromeDrive does not yet
   advertise/forward touch to clients — see “Garage3D” above).
-- 8-monitor cap is fixed at compile time (`CD_MAX_MONITORS`).
+- Eight app mounts plus one cluster output are fixed at compile time
+  (`CD_APP_BAYS`, `CD_MAX_MONITORS`).

@@ -23,7 +23,7 @@ void backend_sdl_poll(Server *s){
  SDL_Event e;while(SDL_PollEvent(&e)){
   uint32_t now=SDL_GetTicks();
   if(e.type==SDL_QUIT)s->running=false;
-  else if(e.type==SDL_WINDOWEVENT){if(e.window.event==SDL_WINDOWEVENT_SIZE_CHANGED)SDL_GetWindowSize(s->window,&s->width,&s->height);if(e.window.event==SDL_WINDOWEVENT_FOCUS_LOST){server_release_keys(s,now);server_release_pointer_buttons(s,now);s->middle_look=false;s->arrange_dragging=false;s->arrange_drag_button=0;s->arrange_handle=CD_HANDLE_NONE;s->frame_dragging=false;s->frame_drag_slot=-1;}}
+  else if(e.type==SDL_WINDOWEVENT){if(e.window.event==SDL_WINDOWEVENT_SIZE_CHANGED)SDL_GetWindowSize(s->window,&s->width,&s->height);if(e.window.event==SDL_WINDOWEVENT_FOCUS_LOST){app_release_input(s,now);server_release_pointer_buttons(s,now);s->middle_look=false;s->arrange_dragging=false;s->arrange_drag_button=0;s->arrange_handle=CD_HANDLE_NONE;s->frame_dragging=false;s->frame_drag_slot=-1;}}
   else if(e.type==SDL_KEYDOWN||e.type==SDL_KEYUP){
    if(e.key.repeat)continue; /* client-side xkb repeat handles visual repetition, same as a real compositor */
    uint32_t k=sdl_to_evdev(e.key.keysym.scancode);if(!k)continue;
@@ -31,6 +31,7 @@ void backend_sdl_poll(Server *s){
    if(!app_global_key(s,k,down))server_key(s,k,down,now);
   }
   else if(e.type==SDL_MOUSEMOTION){s->mouse_x=e.motion.x;s->mouse_y=e.motion.y;
+   if(s->wheel_drag){scene_wheel_motion(s,e.motion.x,e.motion.y,now);continue;}
    if(s->middle_look){s->target_yaw-=e.motion.xrel*.16f;s->target_pitch=clampf(s->target_pitch-e.motion.yrel*.13f,-35,32);s->focus_view=false;s->arrange_last_x=s->mouse_x;s->arrange_last_y=s->mouse_y;s->frame_last_x=s->mouse_x;s->frame_last_y=s->mouse_y;}
    else if(s->frame_dragging)app_frame_pointer_motion(s,s->mouse_x,s->mouse_y);
    else if(s->arrange_mode)app_arrange_pointer_motion(s,s->mouse_x,s->mouse_y);
@@ -39,6 +40,7 @@ void backend_sdl_poll(Server *s){
    bool down=e.type==SDL_MOUSEBUTTONDOWN;s->mouse_x=e.button.x;s->mouse_y=e.button.y;
    if(e.button.button==SDL_BUTTON_MIDDLE){s->middle_look=down;if(down)server_pointer_motion(s,(Hit){0},now);continue;}
    Hit hit=scene_pick(s,s->mouse_x,s->mouse_y,s->pointer_grab!=NULL);
+   if(e.button.button==SDL_BUTTON_LEFT&&scene_wheel_button(s,hit,e.button.x,e.button.y,down,now))continue;
    uint32_t button=e.button.button==SDL_BUTTON_LEFT?BTN_LEFT:e.button.button==SDL_BUTTON_RIGHT?BTN_RIGHT:e.button.button==SDL_BUTTON_X1?BTN_SIDE:BTN_EXTRA;
    if(s->arrange_mode){app_arrange_pointer_button(s,hit,button,down);continue;}
    if(s->frame_dragging||hit.kind==HIT_FRAME||hit.kind==HIT_HANDLES_BUTTON){app_frame_pointer_button(s,hit,button,down);continue;}

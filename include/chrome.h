@@ -16,16 +16,22 @@
 #include <cairo/cairo.h>
 #include <xkbcommon/xkbcommon.h>
 #include "math3d.h"
+#include "vehicle.h"
+#include "telemetry.h"
 /* Cockpit backdrop (src/scene.c environment()), selectable in
  * chromedrive.conf / the config GUI: the real 3D garage (default), the
  * original flat garage.webp poster, or nothing at all. */
 #define CD_BG_3D 0
 #define CD_BG_TEXTURE 1
 #define CD_BG_NONE 2
-#define CD_MAX_MONITORS 8
+#define CD_APP_BAYS 8
+#define CD_CLUSTER_SLOT 8
+#define CD_MAX_MONITORS 9 /* eight app mounts + one fixed instrument cluster */
 #define CD_APP_W 1000
 #define CD_APP_H 625
-#define CD_VERSION "0.2.0"
+#define CD_CLUSTER_W 1000
+#define CD_CLUSTER_H 404
+#define CD_VERSION "0.3.0"
 #define CD_DMABUF_MAX_FORMATS 8
 #define CD_DMABUF_MAX_MODIFIERS 16
 typedef struct Server Server;
@@ -69,7 +75,7 @@ struct Surface {
  bool input_changed;
  char title[256],app_id[256];
 };
-typedef struct { Plane plane;Surface *surface;GLuint label;char label_text[300]; } Monitor;
+typedef struct { Plane plane;Surface *surface;GLuint label;char label_text[300];float reveal,target_reveal;bool custom_transform; } Monitor;
 /* One Launch Control entry. name/sub/icon/enabled are user-configurable
  * (chromedrive.conf [app.*], edited by bin/chromedrive-config) and applied
  * live: DashButton owns copies, ui_refresh_buttons() re-renders textures.
@@ -78,7 +84,7 @@ typedef struct { Plane plane;Surface *surface;GLuint label;char label_text[300];
  * of the three; slots 5/6 merely default to the built-ins. */
 enum { CD_BUTTON_APP=0, CD_BUTTON_NEON=1, CD_BUTTON_COCKPIT=2 };
 typedef struct { Plane plane;char name[48],sub[64];int action,icon;bool enabled;GLuint texture; } DashButton;
-typedef enum {HIT_NONE,HIT_APP,HIT_BUTTON,HIT_CLOSE,HIT_COG,HIT_FRAME,HIT_HANDLES_BUTTON,HIT_ARRANGE_HANDLE} HitKind;
+typedef enum {HIT_NONE,HIT_APP,HIT_BUTTON,HIT_CLOSE,HIT_COG,HIT_WHEEL,HIT_FRAME,HIT_HANDLES_BUTTON,HIT_ARRANGE_HANDLE} HitKind;
 /* Arrange gizmo handles, in a monitor's local plane coordinates. Resize
  * IDs are ordered clockwise from north-west so scene.c/main.c can share
  * the same geometry table without another mapping layer. */
@@ -102,7 +108,7 @@ struct Server {
   * dash between wheel and console (scene.c draw_cog). Clicking it opens
   * bin/chromedrive-config. Picked by ray against cog's plane + radial test,
   * like the buttons. */
- Plane cog;bool cog_hover;float cog_angle;double cog_spin_until;
+ Plane cog;bool cog_hover,wheel_hover;float cog_angle;double cog_spin_until;
  DataSource *selection;
  /* Backend: exactly one of these is used, chosen at startup by --headless (default) or --windowed. */
  bool headless;
@@ -115,9 +121,10 @@ struct Server {
  int width,height,fps_limit,theme,hover_button,active_slot;
  int bg_mode; /* CD_BG_*: which environment() backdrop to draw */
  bool running,middle_look,focus_view,show_help,hud_visible,fullscreen,demo,launch_pending;
- /* F5 Arrange mode: session-only whole-monitor translate/rotate/scale.
+ /* F6 Arrange mode: session-only whole-monitor translate/rotate/scale.
   * The effective transform lives in monitors[slot].plane and is reset when
-  * a new top-level maps into that bay. */
+  * a new top-level maps into that bay. Mount animation yields to this custom
+  * plane instead of overwriting the user's arrangement every frame. */
  bool arrange_mode,arrange_dragging,arrange_handles;int arrange_slot,arrange_drag_button,arrange_last_x,arrange_last_y;
  int arrange_handle,arrange_start_x,arrange_start_y;Plane arrange_start_plane;float arrange_start_local_x,arrange_start_local_y;
  /* KWin-like titlebar/frame drag outside Arrange mode: just translation,
@@ -125,7 +132,18 @@ struct Server {
  bool frame_dragging;int frame_drag_slot,frame_last_x,frame_last_y;
  float yaw,pitch,target_yaw,target_pitch,fov,target_fov;
  Vec3 eye;
- double time,dt,fps,start_time,last_ui_time,notice_until;
+ /* Native electric hover-car rig and input routing. In CLIENT mode drive keys
+  * continue to Wayland clients and the wheel emits pointer-axis input; in
+  * DRIVE mode the same physical controls are consumed by vehicle.c instead. */
+ Vehicle vehicle;
+ VehicleSteeringMode steering_mode;
+ VehicleCameraMode camera_mode;
+ VehicleSeat camera_seat;
+ bool drive_forward,drive_reverse,drive_left,drive_right,drive_brake;
+ bool wheel_drag;
+ float wheel_steer,wheel_client_angle,wheel_axis_accum,wheel_last_x,wheel_last_y;
+ double time,dt,fps,start_time,last_ui_time,last_windshield_time,notice_until;
+ int telemetry_fd;CdTelemetry *telemetry;
  uint64_t frames,commits;
  char socket[128],root[4096],runtime[4096],notice[256];
  char *launch_commands[6];char *exec_commands[16];int exec_count;
@@ -135,7 +153,7 @@ struct Server {
   * focuses the running app; app_autostart[s] joins the --demo set. */
  char app_ids[6][128];bool app_autostart[6];
  pid_t children[128];int child_count;
- GLuint garage_tex,carbon_tex,gauge_tex,console_tex,hub_tex,hud_tex,help_tex,plate_tex,handles_tex;
+ GLuint garage_tex,carbon_tex,console_tex,hub_tex,hud_tex,windshield_tex,help_tex,plate_tex,handles_tex;
  GLuint scene_list;bool rebuild_scene;
  bool screenshot_requested;char screenshot_path[4096];
 };
@@ -157,6 +175,7 @@ void server_each_surface(Surface *root,void (*fn)(Surface*,int,int,void*),void *
 uint32_t sdl_to_evdev(SDL_Scancode code);
 void scene_init(Server *s);
 void scene_render(Server *s);
+void scene_update_mounts(Server *s);
 void scene_finish(Server *s);
 Hit scene_pick(Server *s,float x,float y,bool grab);
 void scene_focus_monitor(Server *s,int slot,bool zoom);
@@ -166,8 +185,14 @@ void scene_monitor_rotate(Server *s,int slot,float yaw,float pitch,float roll);
 void scene_monitor_scale(Server *s,int slot,float factor);
 void scene_monitor_set_plane(Server *s,int slot,Plane plane);
 void scene_reset_camera(Server *s);
+bool scene_wheel_button(Server *s,Hit hit,int x,int y,bool down,uint32_t time);
+void scene_wheel_motion(Server *s,int x,int y,uint32_t time);
+void scene_wheel_cancel(Server *s);
 void scene_save_screenshot(Server *s,const char *path);
 void scene_neon_color(Server *s,float *r,float *g,float *b);
+void vehicle_render(Server *s,bool cutaway);
+void vehicle_render_glass(Server *s);
+void app_release_input(Server *s,uint32_t time);
 GLuint ui_texture(cairo_surface_t *surface,GLuint reuse);
 GLuint ui_load_webp(const char *path);
 void ui_init(Server *s);
@@ -188,6 +213,10 @@ void app_arrange_pointer_motion(Server *s,int x,int y);
 bool app_arrange_pointer_wheel(Server *s,float steps);
 bool app_frame_pointer_button(Server *s,Hit hit,uint32_t button,bool down);
 void app_frame_pointer_motion(Server *s,int x,int y);
+/* telemetry.c: shared live EV state for the real Wayland instrument client. */
+bool telemetry_init(Server *s);
+void telemetry_update(Server *s);
+void telemetry_finish(Server *s);
 /* dmabuf.c: zwp_linux_dmabuf_v1, real EGLImage-backed zero-copy GPU import. */
 void dmabuf_probe(Server *s);
 void dmabuf_register_global(Server *s);

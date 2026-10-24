@@ -6,7 +6,14 @@ static int near(float a,float b){return fabsf(a-b)<.001f;}
 int main(void){
  Vec3 eye=v3(0,1,2.8f);float u,v,d;Plane p=monitor_plane(0);
  assert(plane_hit(p,eye,vnorm(vsub(p.center,eye)),&u,&v,&d,true));assert(near(u,.5)&&near(v,.5));
- for(int i=0;i<8;i++){p=monitor_plane(i);assert(plane_hit(p,eye,vnorm(vsub(p.center,eye)),&u,&v,&d,true));assert(near(u,.5)&&near(v,.5));}
+ for(int i=0;i<9;i++){
+  p=monitor_plane(i);assert(plane_hit(p,eye,vnorm(vsub(p.center,eye)),&u,&v,&d,true));assert(near(u,.5)&&near(v,.5));
+  Plane deployed=monitor_plane_at(i,1),mid=monitor_plane_at(i,.5f);
+  assert(near(deployed.center.x,p.center.x)&&near(deployed.center.y,p.center.y)&&near(deployed.center.z,p.center.z));
+  assert(plane_hit(mid,eye,vnorm(vsub(mid.center,eye)),&u,&v,&d,true));assert(near(u,.5)&&near(v,.5));
+  if(i==0||i>=7){Plane fixed=monitor_plane_at(i,0);assert(near(fixed.center.x,p.center.x)&&near(fixed.center.y,p.center.y)&&near(fixed.center.z,p.center.z));}
+  else{Plane stowed=monitor_plane_at(i,0);assert(fabsf(stowed.center.x-p.center.x)+fabsf(stowed.center.y-p.center.y)+fabsf(stowed.pitch-p.pitch)>.1f);}
+ }
  p=monitor_plane(0);assert(!plane_hit(p,eye,v3(0,0,1),&u,&v,&d,true));assert(!plane_hit(p,eye,v3(1,0,0),&u,&v,&d,true));
  Vec3 r=camera_ray(800,500,1600,1000,55,0,0);assert(near(r.x,0)&&near(r.y,0)&&near(r.z,-1));
  r=camera_ray(800,500,1600,1000,55,90,0);assert(near(r.x,-1)&&near(r.z,0));
@@ -26,27 +33,28 @@ int main(void){
  assert(plane_hit(p,eye,vnorm(vsub(rolled_point,eye)),&u,&v,&d,true));assert(near(u,.75)&&near(v,.25));
  /* Arrange transforms: local translation, eye-depth, wrapped/clamped
   * rotation, and aspect-preserving uniform scale with limits. */
- Plane moved=plane_translate(monitor_plane(0),eye,.5f,.25f,0);
- assert(near(moved.center.x,.5f)&&near(moved.center.y,1.57f)&&near(moved.center.z,-1.6f));
+ Plane base=monitor_plane(0);
+ Plane moved=plane_translate(base,eye,.5f,.25f,0);
+ assert(near(moved.center.x,base.center.x+.5f)&&near(moved.center.y,base.center.y+.25f)&&near(moved.center.z,base.center.z));
  float before=sqrtf(vdot(vsub(moved.center,eye),vsub(moved.center,eye)));
  moved=plane_translate(moved,eye,0,0,.4f);
  float after=sqrtf(vdot(vsub(moved.center,eye),vsub(moved.center,eye)));
  assert(near(before-after,.4f));
  Plane rotated=plane_rotate((Plane){.yaw=179,.pitch=84,.roll=-179},3,4,-3);
  assert(near(rotated.yaw,-178)&&near(rotated.pitch,85)&&near(rotated.roll,178));
- Plane scaled=plane_uniform_scale(monitor_plane(0),monitor_plane(0),10);
- assert(near(scaled.width,2.10f*2.75f)&&near(scaled.height,1.3125f*2.75f));
- scaled=plane_uniform_scale(scaled,monitor_plane(0),.01f);
- assert(near(scaled.width,2.10f*.35f)&&near(scaled.height,1.3125f*.35f));
+ Plane scaled=plane_uniform_scale(base,base,10);
+ assert(near(scaled.width,base.width*2.75f)&&near(scaled.height,base.height*2.75f));
+ scaled=plane_uniform_scale(scaled,base,.01f);
+ assert(near(scaled.width,base.width*.35f)&&near(scaled.height,base.height*.35f));
  /* Handle operations: a right-edge resize leaves the left edge fixed, a
   * top-edge resize leaves the bottom fixed, uniform scale then retains
   * that resized aspect, and the Z handle moves along the plane normal. */
- Plane resized=plane_resize(monitor_plane(0),monitor_plane(0),eye,3.15f,1.3125f,-1,0);
- assert(near(resized.center.x,.525f)&&near(resized.center.x-resized.width/2,-1.05f));
- resized=plane_resize(resized,monitor_plane(0),eye,resized.width,2.625f,0,-1);
- assert(near(resized.center.y,1.97625f)&&near(resized.center.y-resized.height/2,.66375f));
+ Plane resized=plane_resize(base,base,eye,base.width*1.5f,base.height,-1,0);
+ assert(near(resized.center.x,base.center.x+base.width*.25f)&&near(resized.center.x-resized.width/2,base.center.x-base.width/2));
+ resized=plane_resize(resized,base,eye,resized.width,base.height*2.f,0,-1);
+ assert(near(resized.center.y,base.center.y+base.height*.5f)&&near(resized.center.y-resized.height/2,base.center.y-base.height/2));
  float ratio=resized.width/resized.height;
- Plane aspect=plane_uniform_scale(resized,monitor_plane(0),1.1f);
+ Plane aspect=plane_uniform_scale(resized,base,1.1f);
  assert(near(aspect.width/aspect.height,ratio));
  /* Shift+corner resize: a single factor preserves the drag-start aspect
   * exactly, stays within both base limits, and keeps the opposite corner
@@ -71,7 +79,7 @@ int main(void){
  fixed_before=vadd(vsub(start.center,vmul(gr,start.width*.5f)),vmul(gu,start.height*.5f));
  fixed_after=vadd(vsub(limited.center,vmul(gr,limited.width*.5f)),vmul(gu,limited.height*.5f));
  assert(near(fixed_after.x,fixed_before.x)&&near(fixed_after.y,fixed_before.y)&&near(fixed_after.z,fixed_before.z));
- Plane axis=plane_translate_local(monitor_plane(0),eye,0,0,.5f);
- assert(near(axis.center.z,-1.1f));
- puts("PASS: monitor ray picking, all eight screen transforms, camera axes, tilted/rolled planes, arrange/handle transforms, aspect-locked resize, back-face rejection");return 0;
+ Plane axis=plane_translate_local(base,eye,0,0,.5f);
+ assert(near(axis.center.z,base.center.z+.5f));
+ puts("PASS: nine output transforms, fixed/sliding/flip mounts, animated-plane picking, rolled planes, Arrange transforms, anchored aspect resize, back-face rejection");return 0;
 }

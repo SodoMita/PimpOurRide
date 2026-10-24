@@ -1,6 +1,40 @@
 /* Native Wayland server. No X11 window capture and no browser surfaces.
- * Core wl_shm, xdg-shell, seat, per-screen outputs, subsurfaces and selection.
- * Intentionally no DMA-BUF, Xwayland, layer-shell or DRM backend in v0.1. */
+ *
+ * Architectural "Why" Behind Core Protocol Sequences:
+ * 1. Atomic Double-Buffered Surface State (wl_surface.attach / damage / frame / commit):
+ *    In Wayland, client requests such as attach, damage, set_input_region, and
+ *    frame do NOT mutate the live scene immediately. Instead, they populate
+ *    pending_* fields on Surface until wl_surface.commit atomically promotes
+ *    them: uploading SHM pixels (or binding an imported DMA-BUF EGLImage) into
+ *    the surface's OpenGL texture, splicing pending_callbacks into the active
+ *    callbacks list, and releasing the wl_shm buffer immediately after CPU-to-GL
+ *    upload so double-buffered clients can reuse their backbuffer without waiting.
+ *
+ * 2. XDG-Shell Handshake (initial bufferless commit -> configure -> ack_configure):
+ *    Per the xdg-shell specification, a newly created xdg_surface + xdg_toplevel
+ *    must first perform an initial wl_surface.commit WITH NO BUFFER ATTACHED.
+ *    Only in response to that bufferless commit does the compositor send
+ *    xdg_toplevel.configure(width, height, states) followed by
+ *    xdg_surface.configure(serial). The client must reply with
+ *    xdg_surface.ack_configure(serial) before attaching its first pixel buffer;
+ *    enforcing configured_sent && acked_configure prevents unconfigured 1x1 or
+ *    wrongly-sized flashes on the 3D cockpit monitors.
+ *
+ * 3. Spatial Monitor Assignment & Passive Instrument Cluster (CD-01 .. CD-09):
+ *    Every interactive xdg_toplevel receives its own dedicated 3D spatial monitor
+ *    slot (0..CD_APP_MONITORS-1) and a matching wl_surface.enter(wl_output) event.
+ *    The instrument cluster client (app_id "chromedrive.cluster") is routed to
+ *    slot CD_CLUSTER_MONITOR (CD-09, embedded inside the binnacle behind the
+ *    steering wheel) and mapped passively without stealing keyboard/pointer focus
+ *    or shifting the driver's camera view.
+ *
+ * 4. Frame Callback Backpressure (wl_surface.frame -> server_frame_done):
+ *    Frame callbacks queued via wl_surface.frame stay in pending_callbacks until
+ *    wl_surface.commit moves them to callbacks. Crucially, server_frame_done()
+ *    is called ONLY AFTER scene_render() and backend presentation complete,
+ *    firing wl_callback.done(compositor_ms) and destroying the one-shot callback
+ *    resource. This throttles client rendering to the compositor's actual
+ *    presentation rate and prevents background clients from spinning at 100% CPU. */
 #include "chrome.h"
 #include "xdg-shell-server.h"
 #include "xdg-decoration-server.h"
@@ -31,7 +65,8 @@ static void surface_unmap(Surface *p){
   if(s->arrange_slot==p->slot){s->arrange_slot=-1;s->arrange_dragging=false;s->arrange_drag_button=0;s->arrange_handle=CD_HANDLE_NONE;}
   if(s->frame_drag_slot==p->slot){s->frame_dragging=false;s->frame_drag_slot=-1;}
   Resource *r;wl_list_for_each(r,&s->outputs,link)if(r->slot==p->slot&&wl_resource_get_client(r->resource)==wl_resource_get_client(p->resource))wl_surface_send_leave(p->resource,r->resource);
-  s->monitors[p->slot].surface=NULL;
+  s->monitors[p->slot].surface=NULL;s->monitors[p->slot].reveal=0;s->monitors[p->slot].target_reveal=0;
+  s->monitors[p->slot].plane=monitor_plane(p->slot);
  }
  p->mapped=false;p->slot=-1;
 }
@@ -71,6 +106,11 @@ static void surface_attach(struct wl_client *c,struct wl_resource *r,struct wl_r
 }
 static void surface_damage(struct wl_client *c,struct wl_resource *r,int32_t x,int32_t y,int32_t w,int32_t h){}
 static void surface_frame(struct wl_client *c,struct wl_resource *r,uint32_t id){
+ /* wl_surface.frame is double-buffered state. A well-behaved client normally
+  * requests it before the commit that presents its next buffer; sending done
+  * here would acknowledge the previous frame and allow an unbounded render
+  * loop. Keep the callback in pending_callbacks, promote it on wl_surface
+  * .commit, and only complete it after that committed content was presented. */
  Surface *p=wl_resource_get_user_data(r);Callback *cb=calloc(1,sizeof(*cb));if(!cb){wl_client_post_no_memory(c);return;}
  cb->resource=wl_resource_create(c,&wl_callback_interface,1,id);if(!cb->resource){free(cb);wl_client_post_no_memory(c);return;}
  wl_resource_set_implementation(cb->resource,NULL,cb,callback_destroy);wl_list_insert(p->pending_callbacks.prev,&cb->link);
@@ -82,14 +122,23 @@ static void surface_scale(struct wl_client *c,struct wl_resource *r,int32_t scal
 static void send_surface_enter(Surface *p){Resource *o;Server *s=p->server;wl_list_for_each(o,&s->outputs,link)if(o->slot==p->slot&&wl_resource_get_client(o->resource)==wl_resource_get_client(p->resource))wl_surface_send_enter(p->resource,o->resource);}
 static void surface_map(Surface *p){
  Server *s=p->server;if(p->parent){p->mapped=true;return;}if(!p->toplevel)return;
- int preferred=-1;if(strstr(p->app_id,"files"))preferred=1;else if(strstr(p->app_id,"audio"))preferred=2;else if(strstr(p->app_id,"telemetry"))preferred=3;else if(strstr(p->app_id,"foot"))preferred=0;
- int slot=-1;if(preferred>=0&&!s->monitors[preferred].surface)slot=preferred;
- if(slot<0)for(int i=0;i<CD_MAX_MONITORS;i++)if(!s->monitors[i].surface){slot=i;break;}
- if(slot<0){app_notice(s,"All eight display bays are occupied");xdg_toplevel_send_close(p->toplevel);return;}
- scene_monitor_reset(s,slot); /* Arrange transforms are per window/session, not inherited by the next app in this bay. */
- p->slot=slot;p->mapped=true;s->monitors[slot].surface=p;send_surface_enter(p);server_focus(s,p);
- fprintf(stderr,"[wayland] mapped %s [%s] -> CD-%02d (%dx%d)\n",p->title,p->app_id,slot+1,p->width,p->height);
- if(s->time>3.5){scene_focus_monitor(s,slot,false);app_notice(s,"CD-%02d connected / %s",slot+1,p->title);}
+ bool cluster=strstr(p->app_id,"chromedrive.cluster")!=NULL;int slot=-1;
+ if(cluster){if(!s->monitors[CD_CLUSTER_SLOT].surface)slot=CD_CLUSTER_SLOT;}
+ else{
+  int preferred=-1;if(strstr(p->app_id,"files"))preferred=1;else if(strstr(p->app_id,"audio"))preferred=2;else if(strstr(p->app_id,"telemetry"))preferred=3;else if(strstr(p->app_id,"foot"))preferred=0;
+  if(preferred>=0&&!s->monitors[preferred].surface)slot=preferred;
+  if(slot<0)for(int i=0;i<CD_APP_BAYS;i++)if(!s->monitors[i].surface){slot=i;break;}
+ }
+ if(slot<0){app_notice(s,cluster?"The instrument cluster is already occupied":"All eight car-part display mounts are occupied");xdg_toplevel_send_close(p->toplevel);return;}
+ /* Arrange transforms belong to one mapped window, never to the bay itself. */
+ scene_monitor_reset(s,slot);
+ p->slot=slot;p->mapped=true;Monitor *m=&s->monitors[slot];m->surface=p;
+ m->reveal=(slot==CD_CLUSTER_SLOT||monitor_mount(slot)==MOUNT_WINDSHIELD||monitor_mount(slot)==MOUNT_REAR_FIXED)?1:0;
+ m->target_reveal=1;m->plane=monitor_plane_at(slot,m->reveal);
+ send_surface_enter(p);send_configure(p);
+ fprintf(stderr,"[wayland] mapped %s [%s] -> CD-%02d / %s (%dx%d)\n",p->title,p->app_id,slot+1,monitor_mount_name(slot),p->width,p->height);
+ /* A passive instrument must never steal app focus merely by starting up. */
+ if(!cluster){server_focus(s,p);if(s->time>3.5){scene_focus_monitor(s,slot,false);app_notice(s,"CD-%02d / %s / %s",slot+1,monitor_mount_name(slot),p->title);}}
 }
 static bool effective_sync(Surface *p){for(int i=0;p&&p->parent&&i<32;i++,p=p->parent)if(p->subsurface&&p->sub_sync)return true;return false;}
 static void surface_apply(Surface *p){
@@ -119,12 +168,20 @@ static void surface_apply(Surface *p){
  }
  p->width=((p->transform&1)?p->bh:p->bw)/p->scale;p->height=((p->transform&1)?p->bw:p->bh)/p->scale;
  if(p->input_changed){if(p->input_region)cairo_region_destroy(p->input_region);p->input_region=p->pending_input_region;p->pending_input_region=NULL;p->input_changed=false;}
+ /* Atomic pending -> committed transition: a frame callback belongs to the
+  * buffer/state committed by this surface_apply, never to an arbitrary later
+  * commit. This is the server half of the frame-callback pacing pattern. */
  wl_list_insert_list(p->callbacks.prev,&p->pending_callbacks);wl_list_init(&p->pending_callbacks);
  if(!p->mapped&&p->texture&&!p->pending_null)surface_map(p);
  p->pending_ready=false;
  Surface *child;wl_list_for_each(child,&s->surfaces,link)if(child->parent==p){if(child->subsurface){child->x=child->pending_x;child->y=child->pending_y;}if(child->pending_ready&&effective_sync(child))surface_apply(child);}
 }
 static void surface_commit(struct wl_client *c,struct wl_resource *r){
+ /* xdg-shell has a stricter sequence than bare wl_surface: the initial
+  * bufferless commit receives configure(size,states) + xdg_surface.configure
+  * (serial); the client must ack that serial before attaching its first real
+  * buffer. Posting a protocol error here is important—silently accepting an
+  * unconfigured buffer leaves toolkits with contradictory surface geometry. */
  Surface *p=wl_resource_get_user_data(r);p->server->commits++;
  if(p->xdg&&!p->configure_sent){
   if(p->buffer_changed&&!p->pending_null){wl_resource_post_error(p->xdg,XDG_SURFACE_ERROR_UNCONFIGURED_BUFFER,"commit without a buffer before mapping");return;}
@@ -165,7 +222,7 @@ static const struct xdg_positioner_interface positioner_impl={.destroy=resource_
 static void wm_positioner(struct wl_client *c,struct wl_resource *r,uint32_t id){struct wl_resource *out=wl_resource_create(c,&xdg_positioner_interface,wl_resource_get_version(r),id);Positioner *p=calloc(1,sizeof(*p));if(!out||!p){wl_client_post_no_memory(c);free(p);return;}wl_resource_set_implementation(out,&positioner_impl,p,positioner_destroyed);}
 static void send_configure(Surface *p){
  if(!p->xdg)return;Server *s=p->server;
- if(p->toplevel){struct wl_array states;wl_array_init(&states);if(s->keyboard_focus==p){uint32_t *a=wl_array_add(&states,4);if(a)*a=XDG_TOPLEVEL_STATE_ACTIVATED;}xdg_toplevel_send_configure(p->toplevel,CD_APP_W,CD_APP_H,&states);wl_array_release(&states);}
+ if(p->toplevel){struct wl_array states;wl_array_init(&states);if(s->keyboard_focus==p){uint32_t *a=wl_array_add(&states,4);if(a)*a=XDG_TOPLEVEL_STATE_ACTIVATED;}bool cluster=p->slot==CD_CLUSTER_SLOT||strstr(p->app_id,"chromedrive.cluster");xdg_toplevel_send_configure(p->toplevel,cluster?CD_CLUSTER_W:CD_APP_W,cluster?CD_CLUSTER_H:CD_APP_H,&states);wl_array_release(&states);}
  else if(p->popup)xdg_popup_send_configure(p->popup,p->x,p->y,p->popup_w,p->popup_h);
  else return;
  p->configure_serial=wl_display_next_serial(s->display);xdg_surface_send_configure(p->xdg,p->configure_serial);p->configure_sent=true;
@@ -173,7 +230,7 @@ static void send_configure(Surface *p){
 static void top_destroyed(struct wl_resource *r){Surface *p=wl_resource_get_user_data(r);if(p){surface_unmap(p);p->toplevel=NULL;}}
 static void top_parent(struct wl_client *c,struct wl_resource *r,struct wl_resource *parent){}
 static void top_title(struct wl_client *c,struct wl_resource *r,const char *title){Surface *p=wl_resource_get_user_data(r);if(p)snprintf(p->title,sizeof(p->title),"%s",title);}
-static void top_app_id(struct wl_client *c,struct wl_resource *r,const char *id){Surface *p=wl_resource_get_user_data(r);if(p)snprintf(p->app_id,sizeof(p->app_id),"%s",id);}
+static void top_app_id(struct wl_client *c,struct wl_resource *r,const char *id){Surface *p=wl_resource_get_user_data(r);if(p){snprintf(p->app_id,sizeof(p->app_id),"%s",id);if(strstr(p->app_id,"chromedrive.cluster"))send_configure(p);}}
 static void top_menu(struct wl_client *c,struct wl_resource *r,struct wl_resource *seat,uint32_t serial,int32_t x,int32_t y){}
 static void top_move(struct wl_client *c,struct wl_resource *r,struct wl_resource *seat,uint32_t serial){}
 static void top_resize(struct wl_client *c,struct wl_resource *r,struct wl_resource *seat,uint32_t serial,uint32_t edges){}
@@ -232,14 +289,15 @@ static void decoration_get(struct wl_client *c,struct wl_resource *r,uint32_t id
 static const struct zxdg_decoration_manager_v1_interface decoration_mgr_impl={.destroy=resource_destroy_request,.get_toplevel_decoration=decoration_get};
 static void bind_decoration(struct wl_client *c,void *data,uint32_t v,uint32_t id){struct wl_resource *r=wl_resource_create(c,&zxdg_decoration_manager_v1_interface,1,id);wl_resource_set_implementation(r,&decoration_mgr_impl,data,NULL);}
 
-/* One real wl_output global for each of the eight virtual display bays. */
+/* Eight app mounts plus the dedicated real wl_output for the EV cluster. */
 static const struct wl_output_interface output_impl={.release=resource_destroy_request};
 static void bind_output(struct wl_client *c,void *data,uint32_t v,uint32_t id){
  __typeof__(((Server*)0)->output_info[0]) *info=data;Server *s=info->server;Resource *r=resource_new(c,&wl_output_interface,v<4?v:4,id,&s->outputs);if(!r)return;r->slot=info->index;
- wl_resource_set_implementation(r->resource,&output_impl,r,free_resource);wl_output_send_geometry(r->resource,r->slot*CD_APP_W,0,320,200,WL_OUTPUT_SUBPIXEL_UNKNOWN,"ChromeDrive","Spatial display",WL_OUTPUT_TRANSFORM_NORMAL);
- wl_output_send_mode(r->resource,WL_OUTPUT_MODE_CURRENT|WL_OUTPUT_MODE_PREFERRED,CD_APP_W,CD_APP_H,60000);
+ wl_resource_set_implementation(r->resource,&output_impl,r,free_resource);bool cluster=r->slot==CD_CLUSTER_SLOT;
+ wl_output_send_geometry(r->resource,r->slot*CD_APP_W,0,cluster?250:320,cluster?101:200,WL_OUTPUT_SUBPIXEL_UNKNOWN,"ChromeDrive",cluster?"Instrument cluster":"Car-part display",WL_OUTPUT_TRANSFORM_NORMAL);
+ wl_output_send_mode(r->resource,WL_OUTPUT_MODE_CURRENT|WL_OUTPUT_MODE_PREFERRED,cluster?CD_CLUSTER_W:CD_APP_W,cluster?CD_CLUSTER_H:CD_APP_H,60000);
  int ver=wl_resource_get_version(r->resource);if(ver>=2)wl_output_send_scale(r->resource,1);
- if(ver>=4){char name[32],desc[80];snprintf(name,sizeof(name),"CD-%02d",r->slot+1);snprintf(desc,sizeof(desc),"ChromeDrive virtual monitor %02d",r->slot+1);wl_output_send_name(r->resource,name);wl_output_send_description(r->resource,desc);}
+ if(ver>=4){char name[32],desc[80];snprintf(name,sizeof(name),"CD-%02d",r->slot+1);snprintf(desc,sizeof(desc),"ChromeDrive %02d / %s",r->slot+1,monitor_mount_name(r->slot));wl_output_send_name(r->resource,name);wl_output_send_description(r->resource,desc);}
  if(ver>=2)wl_output_send_done(r->resource);
  Surface *p;wl_list_for_each(p,&s->surfaces,link)if(p->mapped&&p->slot==r->slot&&wl_resource_get_client(p->resource)==c)wl_surface_send_enter(p->resource,r->resource);
 }
@@ -358,7 +416,14 @@ static void each_surface_recursive(Surface *p,int x,int y,int depth,void (*fn)(S
 void server_each_surface(Surface *root,void (*fn)(Surface*,int,int,void*),void *data){if(root)each_surface_recursive(root,0,0,0,fn,data);}
 static Surface *surface_at_rec(Surface *root,float x,float y,float *sx,float *sy,int depth){if(depth>32)return NULL;Surface *child;wl_list_for_each_reverse(child,&root->server->surfaces,link)if(child->parent==root&&child->mapped){Surface *hit=surface_at_rec(child,x-child->x,y-child->y,sx,sy,depth+1);if(hit)return hit;}if(root->mapped&&x>=0&&y>=0&&x<root->width&&y<root->height&&(!root->input_region||cairo_region_contains_point(root->input_region,(int)x,(int)y))){*sx=x;*sy=y;return root;}return NULL;}
 Surface *surface_at(Surface *root,float x,float y,float *sx,float *sy){return root?surface_at_rec(root,x,y,sx,sy,0):NULL;}
-void server_frame_done(Server *s,uint32_t time){Surface *p;wl_list_for_each(p,&s->surfaces,link){Callback *cb,*tmp;wl_list_for_each_safe(cb,tmp,&p->callbacks,link){wl_callback_send_done(cb->resource,time);wl_resource_destroy(cb->resource);}}}
+void server_frame_done(Server *s,uint32_t time){
+ /* main calls this after scene_render + backend present/readback, then flushes
+  * client sockets. done carries the compositor clock (not a Unix timestamp)
+  * and the callback resource is one-shot, so destroy it immediately after the
+  * event. Clients can now request exactly one callback for their next frame;
+  * this is backpressure, not a timer that tries to guess their render rate. */
+ Surface *p;wl_list_for_each(p,&s->surfaces,link){Callback *cb,*tmp;wl_list_for_each_safe(cb,tmp,&p->callbacks,link){wl_callback_send_done(cb->resource,time);wl_resource_destroy(cb->resource);}}
+}
 bool server_init(Server *s,const char *socket_name){
  wl_list_init(&s->surfaces);wl_list_init(&s->pointers);wl_list_init(&s->keyboards);wl_list_init(&s->outputs);wl_list_init(&s->data_devices);
  s->display=wl_display_create();if(!s->display)return false;s->loop=wl_display_get_event_loop(s->display);
@@ -367,7 +432,11 @@ bool server_init(Server *s,const char *socket_name){
  wl_global_create(s->display,&xdg_wm_base_interface,3,s,bind_wm);wl_global_create(s->display,&zxdg_decoration_manager_v1_interface,1,s,bind_decoration);
  wl_global_create(s->display,&wl_seat_interface,7,s,bind_seat);wl_global_create(s->display,&wl_data_device_manager_interface,3,s,bind_data);
  dmabuf_register_global(s); /* no-op (skipped) unless dmabuf_probe() already found a usable EGL dma-buf import path */
- for(int i=0;i<CD_MAX_MONITORS;i++){s->output_info[i].server=s;s->output_info[i].index=i;s->output_globals[i]=wl_global_create(s->display,&wl_output_interface,4,&s->output_info[i],bind_output);s->monitors[i].plane=monitor_plane(i);}
+ for(int i=0;i<CD_MAX_MONITORS;i++){
+  s->output_info[i].server=s;s->output_info[i].index=i;s->output_globals[i]=wl_global_create(s->display,&wl_output_interface,4,&s->output_info[i],bind_output);
+  MonitorMount mount=monitor_mount(i);bool sliding=mount==MOUNT_DASH_SLIDE||mount==MOUNT_DOOR_SLIDE||mount==MOUNT_ROOF_FLIP;
+  s->monitors[i].plane=monitor_plane(i);s->monitors[i].reveal=s->monitors[i].target_reveal=sliding?0:1;
+ }
  s->xkb_context=xkb_context_new(XKB_CONTEXT_NO_FLAGS);struct xkb_rule_names names={.layout=getenv("XKB_DEFAULT_LAYOUT"),.variant=getenv("XKB_DEFAULT_VARIANT"),.options=getenv("XKB_DEFAULT_OPTIONS")};
  s->keymap=xkb_keymap_new_from_names(s->xkb_context,&names,XKB_KEYMAP_COMPILE_NO_FLAGS);if(!s->keymap)return false;s->xkb_state=xkb_state_new(s->keymap);
  char *keymap=xkb_keymap_get_as_string(s->keymap,XKB_KEYMAP_FORMAT_TEXT_V1);if(!keymap)return false;s->keymap_size=strlen(keymap)+1;s->keymap_fd=memfd_create("chromedrive-keymap",MFD_CLOEXEC);if(s->keymap_fd<0||write(s->keymap_fd,keymap,s->keymap_size)!=(ssize_t)s->keymap_size){free(keymap);return false;}free(keymap);

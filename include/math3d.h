@@ -22,6 +22,10 @@ Plane plane_rotate(Plane p,float yaw,float pitch,float roll);
 Plane plane_uniform_scale(Plane p,Plane base,float factor);
 Plane plane_resize(Plane p,Plane base,Vec3 eye,float width,float height,int fixed_x,int fixed_y);
 Plane plane_resize_aspect(Plane p,Plane base,Vec3 eye,float width,float height,int fixed_x,int fixed_y);
-Plane monitor_plane(int index);
+typedef enum {MOUNT_WINDSHIELD,MOUNT_DASH_SLIDE,MOUNT_DOOR_SLIDE,MOUNT_ROOF_FLIP,MOUNT_REAR_FIXED,MOUNT_CLUSTER} MonitorMount;
+Plane monitor_plane(int index); /* fully deployed transform */
+Plane monitor_plane_at(int index,float reveal); /* shared by drawing and picking */
+MonitorMount monitor_mount(int index);
+const char *monitor_mount_name(int index);
 float clampf(float v,float lo,float hi);
 #endif
