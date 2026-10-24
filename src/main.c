@@ -41,6 +41,7 @@ static bool config_filter(const char *value,bool mipmaps,GLuint *out){
  return false;
 }
 static void apply_render_config(Server *s,const CdConfig *cfg){
+ s->render_to_texture=cd_config_get_bool(cfg,"display","render_to_texture",s->render_to_texture);
  const char *v=cd_config_get_string(cfg,"display","render_scale",NULL);
  if(v){
   char *end=NULL;errno=0;double n=strtod(v,&end);
@@ -506,7 +507,7 @@ bool app_global_key(Server *s,uint32_t evdev,bool down){
 }
 static void usage(const char *name){printf("ChromeDrive " CD_VERSION " — native, first-person Wayland cockpit\n\nUsage: %s [options]\n  --demo                Start a real terminal + Files + Audio clients\n  --socket NAME         Wayland socket (default: automatic)\n  --exec COMMAND        Launch an extra Wayland client (repeatable)\n  --size WIDTHxHEIGHT   Framebuffer/host window size (default 1600x1000)\n  --fps N               Frame cap, 1..120 (default 60)\n  --headless            Run with no X server: surfaceless EGL + built-in VNC server (default)\n  --windowed            Dev/debug mode: open a real SDL2/GLX window on an X server instead\n  --vnc-port N          VNC port for --headless mode (default 5900)\n  --fullscreen          --windowed only: start fullscreen, F11 to leave\n  --exit-after SECONDS   Useful for automated checks\n  --screenshot PATH     Capture a WebP after 3 seconds\n  --config PATH         Config file (default: ~/.config/chromedrive/chromedrive.conf)\n  --no-config           Ignore the config file entirely\n  --help                Show this help\n\nF1 help | F2 cockpit | F3 focus | F4 neon | F5 arrange window | F6 next display\nMiddle-drag/VNC-drag to look | Drag a titlebar to move | HANDLES button shows move/rotate/resize gizmo | Ctrl+Alt+Enter new terminal\n",name);}
 int main(int argc,char **argv){
- Server s={.width=1600,.height=1000,.fps_limit=60,.running=true,.hud_visible=true,.hover_button=-1,.keymap_fd=-1,.arrange_slot=-1,.frame_drag_slot=-1,.fov=65,.target_fov=65,.eye={0,1.0f,2.8f},.headless=true,.vnc_port=5900,.render_scale=1,.render_mag_filter=GL_LINEAR,.render_min_filter=GL_LINEAR};
+ Server s={.width=1600,.height=1000,.fps_limit=60,.running=true,.hud_visible=true,.hover_button=-1,.keymap_fd=-1,.arrange_slot=-1,.frame_drag_slot=-1,.fov=65,.target_fov=65,.eye={0,1.0f,2.8f},.headless=true,.vnc_port=5900,.render_to_texture=true,.render_scale=1,.render_mag_filter=GL_LINEAR,.render_min_filter=GL_LINEAR};
  const char *socket_name=NULL;double exit_after=0;bool auto_screenshot=false;
  /* Config pre-scan: --config/--no-config must be known before the file is
   * read, and the file must be read before the real option pass below so

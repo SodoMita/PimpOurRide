@@ -179,8 +179,8 @@ last until the next file edit, then the file wins for the keys it sets.
 
 ### What's live vs restart
 
-- **Compositor, live:** `display.fps`, `display.fov`, `display.render_scale`,
-  `display.render_upscale`, `display.render_downscale`, `cockpit.*`
+- **Compositor, live:** `display.fps`, `display.fov`, `display.render_to_texture`,
+  `display.render_scale`, `display.render_upscale`, `display.render_downscale`, `cockpit.*`
   (neon/hud/background), all `[app.*]` menu keys.
   **Restart:** `display.width/height/fullscreen`, `session.*`.
 - **Spatial window transforms:** titlebar/frame dragging and F5 Arrange
@@ -196,11 +196,14 @@ last until the next file edit, then the file wins for the keys it sets.
 
 ### Render scaling
 
-The compositor draws through an intermediate render-to-texture pass: the
+The compositor can draw through an intermediate render-to-texture pass: the
 cockpit and HUD are rendered at `output size x render_scale` (rounded,
 minimum 1x1), then a fullscreen quad samples that texture into the real
-output. At the default `render_scale = 1` the offscreen target matches the
-output size. `render_upscale` maps to `GL_TEXTURE_MAG_FILTER`; `render_downscale`
+output. That pass runs **only when `render_to_texture` is enabled and the
+effective scaled size differs from the output**; at the default
+`render_scale = 1`, or with `render_to_texture = false`, rendering stays on
+the direct-to-output path and the sampling keys have no effect.
+`render_upscale` maps to `GL_TEXTURE_MAG_FILTER`; `render_downscale`
 maps to `GL_TEXTURE_MIN_FILTER`, so you can pick a different sampler for
 magnifying and minifying. Values below 1 render fewer pixels (useful for slow
 software GPUs); values above 1 supersample. Mipmap downscale tokens generate
@@ -227,6 +230,7 @@ width = 1600          # 640..7680            (restart)
 height = 1000         # 400..4320            (restart)
 fps = 60              # 1..120 frame cap
 fov = 65              # 40..100 driver FOV
+render_to_texture = true # gate for the scaled offscreen pass (live)
 render_scale = 1      # 0.001..100, 1 = 100%; typed field in GUI (live)
 render_upscale = linear   # nearest | linear (live)
 render_downscale = linear # nearest | linear | *_mipmap_nearest | *_mipmap_linear (live)

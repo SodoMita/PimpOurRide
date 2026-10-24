@@ -430,8 +430,10 @@ void scene_init(Server *s){
 /* ---------------------------------------------------- render-to-texture */
 /* The offscreen pass exists so display.render_scale can render below or
  * above the output size with independent magnification/minification
- * sampling. It is intentionally not multisampled, and it falls back to the
- * historical direct-to-output path whenever allocation/FBO setup fails. */
+ * sampling. It only runs when enabled and the effective scaled size differs
+ * from the output (so scale 1 keeps the historical direct path and its MSAA
+ * in windowed mode). It is intentionally not multisampled, and it falls back
+ * to direct-to-output whenever allocation/FBO setup fails. */
 static bool rtt_mipmapped(GLuint f){
  return f==GL_NEAREST_MIPMAP_NEAREST||f==GL_LINEAR_MIPMAP_NEAREST||
         f==GL_NEAREST_MIPMAP_LINEAR||f==GL_LINEAR_MIPMAP_LINEAR;
@@ -461,12 +463,14 @@ static void rtt_release(Server *s){
  s->render_width=s->render_height=0;
 }
 bool scene_rtt_begin(Server *s){
+ if(!s->render_to_texture){s->render_width=s->render_height=0;return false;}
  int max=rtt_max_dim();double fw=(double)s->width*s->render_scale,fh=(double)s->height*s->render_scale;
  double limit=fmax(1.0,(double)max),factor=1.0;
  if(fw>limit)factor=fmin(factor,limit/fw);
  if(fh>limit)factor=fmin(factor,limit/fh);
  int w=(int)floor(fw*factor+.5),h=(int)floor(fh*factor+.5);
  if(w<1)w=1;if(h<1)h=1;if(w>max)w=max;if(h>max)h=max;
+ if(w==s->width&&h==s->height){s->render_width=s->render_height=0;return false;}
  GLuint mag=s->render_mag_filter,min=s->render_min_filter;
  if(w==s->rtt_width&&h==s->rtt_height&&mag==s->rtt_mag_filter&&min==s->rtt_min_filter){
   if(!s->rtt_fbo){s->render_width=s->render_height=0;return false;}

@@ -161,9 +161,12 @@ render scale, upscale/downscale sampling, underglow, 3D-vs-texture backdrop,
 and the VNC port as an exact typed number—not a slider). `render_scale` is a
 typed number (`0.001`–`100`, `1` = 100%) rather than a slider, and the two
 sampling keys take `nearest`/`linear` (upscale) or those plus the four
-`*_mipmap_*` combinations (downscale). The compositor renders the scene into
-a scaled offscreen target, then samples it into the output; requests larger
-than the GL texture/renderbuffer limits are proportionally clamped.
+`*_mipmap_*` combinations (downscale). When `render_to_texture` is on and the
+effective scaled size differs from the output, the compositor renders the
+scene into a scaled offscreen target, then samples it into the output; at
+scale `1` (or with the toggle off) it renders directly, with no offscreen
+pass. Requests larger than the GL texture/renderbuffer limits are
+proportionally clamped.
 
 It edits `~/.config/chromedrive/chromedrive.conf` and
 `~/.config/garage3d/garage3d.conf` (plain INI, hand-editable). Both programs

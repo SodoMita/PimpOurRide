@@ -132,6 +132,7 @@ static const Def CD_DEFS[] = {
     { "Display", "display", "height", "Framebuffer height", K_INT, 400, 2160, 10, "%.0f", "1000", {0}, 0, false, true },
     { "Display", "display", "fps", "Frame cap (fps)", K_INT, 10, 120, 1, "%.0f", "60", {0}, 0, false, false },
     { "Display", "display", "fov", "Driver field of view", K_FLOAT, 40, 100, 0.5, "%.1f", "65", {0}, 0, false, false },
+    { "Display", "display", "render_to_texture", "Render to texture", K_BOOL, 0, 0, 0, NULL, "true", {0}, 0, false, false },
     { "Display", "display", "render_scale", "Render scale (1 = 100%)", K_FLOAT_INPUT, 0.001, 100, 0, "%.6g", "1", {0}, 0, false, false },
     { "Display", "display", "render_upscale", "Render upscale sampling", K_ENUM, 0, 1, 1, NULL, "linear", { "nearest", "linear" }, 2, true, false },
     { "Display", "display", "render_downscale", "Render downscale sampling", K_ENUM, 0, 5, 1, NULL, "linear", { "nearest", "linear", "nearest_mipmap_nearest", "linear_mipmap_nearest", "nearest_mipmap_linear", "linear_mipmap_linear" }, 6, true, false },
@@ -2171,6 +2172,7 @@ static int selftest(const char *config_dir_arg) {
     int pi = -1;
     for (int i = 0; i < N_CD_DEFS; i++) if (!strcmp(CD_DEFS[i].key, "vnc_port")) pi = i;
     CHECK(pi >= 0 && CD_DEFS[pi].kind == K_INT_INPUT, "vnc_port is not an input def");
+    g.scroll[TAB_CD] = 80; /* keep both Display render rows and Session VNC row in view */
     img = render_tab_image(&g, TAB_CD); cairo_surface_destroy(img);
     CHECK(find_box(&g, H_NUM_FIELD, FILE_CD, pi) != NULL, "no VNC port input hitbox");
     CHECK(find_box(&g, H_SLIDER, FILE_CD, pi) == NULL, "VNC port still has a slider hitbox");
@@ -2207,6 +2209,7 @@ static int selftest(const char *config_dir_arg) {
           "out-of-range render_scale overwrote the saved value");
     gui_key(&g, XKB_KEY_Escape, NULL, 0);
     CHECK(g.num_idx < 0, "Escape did not cancel render_scale edit");
+    g.scroll[TAB_CD] = 0;
     flush_saves(&g, true);
 
     /* Render all three tabs; each must be visibly non-blank. */

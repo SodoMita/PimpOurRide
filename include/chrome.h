@@ -109,10 +109,13 @@ struct Server {
  SDL_Window *window;SDL_GLContext gl;                 /* windowed/dev backend (X11 via SDL2, GLX) */
  EGLDisplay egl_display;EGLContext egl_context;        /* headless backend (surfaceless EGL, no X) */
  GLuint target_fbo,fbo_color_rb,fbo_depth_rb;          /* headless render target; 0 (default) when windowed */
- /* Render-to-texture offscreen pass. The compositor multiplies the output
-  * size by render_scale, samples the result into target_fbo with separate
-  * mag/min filters, and falls back to direct-to-output if allocation fails.
-  * render_width/height are 0 when that fallback is active. */
+ /* Render-to-texture offscreen pass. Only used when render_to_texture is
+  * enabled and the effective scaled size differs from the output; then the
+  * compositor multiplies the output size by render_scale, samples the result
+  * into target_fbo with separate mag/min filters, and falls back to
+  * direct-to-output if allocation fails. render_width/height are 0 when the
+  * direct path is active. */
+ bool render_to_texture;
  double render_scale;
  GLuint render_mag_filter,render_min_filter;           /* requested from [display] */
  GLuint rtt_fbo,rtt_color_tex,rtt_depth_rb;
