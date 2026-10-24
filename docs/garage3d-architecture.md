@@ -449,7 +449,32 @@ proxy version actually has that request.
   `server_touch_*` through `scene_pick`'s monitor planes, and feed it from
   `SDL_FINGERDOWN/MOTION/UP` in `backend_sdl.c` (VNC/RFB has no multitouch).
 
-### 4.5 Shutdown order
+### 4.5 Configuration and hot-reload
+
+All tunables are `GarageSettings` (`src/config.h`): window size/scale/
+fullscreen, camera (FOV, sensitivities, attract), scene (neon base colours
+and HDR gain, light dimmer, fog, rain, mist, reflections, city density,
+faulty-tube flicker) and physics (gravity, lamp amplitude, fan speed, balls).
+`src/config.c` is a small typed loader for the project INI format
+(`~/.config/garage3d/garage3d.conf`); precedence is defaults < file < CLI
+(`--config`/`--no-config` aside), implemented as a pre-scan that seeds the
+CLI option struct *before* argument parsing. The scene owns a copy of the
+effective settings, so animation/renderer/camera read them without extra
+plumbing parameters.
+
+The render loop polls the file's mtime at 2 Hz (an extra branch beside the
+edge-triggered input handling in §4.2 — no inotify thread needed for a
+single small file the GUI writes atomically). On change,
+`scene_apply_settings()` re-tints every neon node (nodes carry a
+`color_role` tag from build time), recolours the cluster lights and updates
+fog/FOV/mist/ball visibility; edge-triggered consequences are diffed in
+`main` first (rain population via `anim_set_rain_count`, physics pause,
+pendulum energy rescale, `wlclient_set_fullscreen` /
+`wlclient_set_scale_override`) so a reload can't clobber a Space-pause.
+The writer side is the project settings GUI (`bin/chromedrive-config`);
+the full schema for both config files is `docs/configuration.md`.
+
+### 4.6 Shutdown order
 
 `xdg_toplevel.close`, `Esc`/`Ctrl+Q`, or SIGINT/SIGTERM all funnel into a
 clean exit. `main` calls `renderer_shutdown` **first** (GL objects must die

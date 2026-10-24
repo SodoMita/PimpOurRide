@@ -11,7 +11,7 @@ SOURCES = src/main.c src/wayland.c src/scene.c src/ui.c src/math3d.c src/dmabuf.
 PROTOCOLS = $(GEN)/xdg-shell-protocol.c $(GEN)/xdg-decoration-protocol.c $(GEN)/linux-dmabuf-protocol.c
 HEADERS = $(GEN)/xdg-shell-server.h $(GEN)/xdg-decoration-server.h $(GEN)/linux-dmabuf-server.h
 .PHONY: all clean test sanitize garage3d garage3d-test garage3d-clean
-all: $(BIN)/chromedrive $(BIN)/chromedrive-demo
+all: $(BIN)/chromedrive $(BIN)/chromedrive-demo $(BIN)/chromedrive-config
 $(GEN) $(BIN):
 	mkdir -p $@
 $(GEN)/xdg-shell-server.h: | $(GEN)
@@ -34,6 +34,12 @@ $(BIN)/chromedrive: $(SOURCES) include/chrome.h include/math3d.h include/cdconfi
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(SOURCES) $(PROTOCOLS) -o $@ $(LDLIBS)
 $(BIN)/chromedrive-demo: clients/demo.c $(GEN)/xdg-shell-client.h $(GEN)/xdg-shell-protocol.c | $(BIN)
 	$(CC) -I$(GEN) $(CFLAGS) $(shell pkg-config --cflags wayland-client cairo xkbcommon) clients/demo.c $(GEN)/xdg-shell-protocol.c -o $@ $(shell pkg-config --libs wayland-client cairo xkbcommon) -lm
+# Settings GUI (launch-menu editor + all config): wl_shm/cairo client like
+# the demo, linking the same INI store the compositor reads. No new deps
+# beyond what the compositor already needs (libwebp included), so it is
+# part of `all`.
+$(BIN)/chromedrive-config: clients/config.c src/cdconfig.c include/cdconfig.h $(GEN)/xdg-shell-client.h $(GEN)/xdg-shell-protocol.c | $(BIN)
+	$(CC) -Iinclude -I$(GEN) $(CFLAGS) $(shell pkg-config --cflags wayland-client cairo xkbcommon libwebp) clients/config.c src/cdconfig.c $(GEN)/xdg-shell-protocol.c -o $@ $(shell pkg-config --libs wayland-client cairo xkbcommon libwebp) -lm
 $(BIN)/test-math: tests/test_math.c src/math3d.c include/math3d.h | $(BIN)
 	$(CC) -Iinclude $(CFLAGS) tests/test_math.c src/math3d.c -o $@ -lm
 $(BIN)/protocol-probe: tests/protocol_probe.c $(GEN)/xdg-shell-client.h $(GEN)/xdg-shell-protocol.c $(GEN)/linux-dmabuf-protocol.c $(GEN)/linux-dmabuf-client.h | $(BIN)
@@ -49,9 +55,10 @@ garage3d-clean:
 	$(MAKE) -C clients/garage3d clean
 $(BIN)/test-config: tests/test_config.c src/cdconfig.c include/cdconfig.h | $(BIN)
 	$(CC) -Iinclude $(CFLAGS) tests/test_config.c src/cdconfig.c -o $@ -lm
-test: $(BIN)/test-math $(BIN)/test-config
+test: $(BIN)/test-math $(BIN)/test-config $(BIN)/chromedrive-config
 	./$(BIN)/test-math
 	./$(BIN)/test-config
+	./$(BIN)/chromedrive-config --selftest
 sanitize:
 	$(MAKE) clean
 	$(MAKE) CFLAGS='-O1 -g -std=c11 -Wall -Wextra -Wno-unused-parameter -Wno-misleading-indentation -fsanitize=address,undefined -fno-omit-frame-pointer'

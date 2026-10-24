@@ -42,10 +42,22 @@ WAYLAND_DISPLAY=<chromedrive-socket> ./bin/garage3d   # inside ChromeDrive
 | `WASD`+`QE`, `+`/`-` | Move, field of view |
 | `Space`, `F`, `Esc` | Pause physics, fullscreen, quit |
 
+## Settings
+
+Every tunable (neon colours, fog, rain, gravity, lamp swing, camera speeds,
+window size/scale/fullscreen, …) lives in
+`~/.config/garage3d/garage3d.conf` — edit it by hand or with the project GUI
+(root `make` → `bin/chromedrive-config`, Garage3D tab). The file is
+**hot-reloaded** while running: drag a slider in the GUI and the scene
+follows. Precedence: built-in defaults < file < CLI flags (`--config PATH`,
+`--no-config` to override/disable). Full schema:
+[`docs/configuration.md`](../../docs/configuration.md).
+
 Layout: `src/wayland_client.c` (protocol + EGL + input, incl. `wl_touch`),
 `src/renderer.c` (GLES programs/VAOs, draw order), `src/scene.c` (graph,
 camera, lights), `src/animation.c` (procedural tracks + 120 Hz fixed-step
-pendulum/ball/rain physics), `src/gmath.c`, `src/mesh.c`, `shaders/*`
-(10 GLSL files loaded from disk; see `--shader-dir` / `$GARAGE3D_SHADER_DIR`).
-Only `wayland_client.c` includes Wayland headers; the scene/animation/math
-modules are pure C and unit-tested in `tests/`.
+pendulum/ball/rain physics), `src/config.c` (typed settings loader),
+`src/gmath.c`, `src/mesh.c`, `shaders/*` (10 GLSL files loaded from disk;
+see `--shader-dir` / `$GARAGE3D_SHADER_DIR`). Only `wayland_client.c`
+includes Wayland headers; the scene/animation/math modules are pure C and
+unit-tested in `tests/`.

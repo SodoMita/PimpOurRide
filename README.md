@@ -80,7 +80,7 @@ sudo apt-get install -y libsdl2-dev libwayland-dev wayland-protocols \
   libgl-dev libegl-dev libgles-dev libgles2-mesa-dev mesa-common-dev libxkbcommon-dev libwebp-dev \
   libcairo2-dev libdrm-dev libvncserver-dev foot
 make -j"$(nproc)"
-make test        # math/raycast unit tests
+make test        # math/raycast + config-store tests + GUI selftest
 make garage3d    # optional: the standalone GLES 3.1 garage client (below)
 make garage3d-test
 ```
@@ -137,6 +137,33 @@ Note the touch asymmetry: the *client* implements `wl_touch` fully, but the
 ChromeDrive *compositor* does not yet advertise or forward touch (its seat is
 pointer+keyboard), so gestures work on touch-capable host compositors, not
 yet through ChromeDrive itself.
+
+### Configuration: the launch-menu editor & settings GUI
+
+![Launch Menu editor](docs/config-launch-menu.webp)
+
+`bin/chromedrive-config` is a native settings app (wl_shm + cairo, like the
+demo clients) for both programs, built by plain `make`. Its first tab is a
+KDE-menu-editor-style **Launch Menu editor**: rename any of the six Launch
+Control entries, change their icons/descriptions, point the four app slots
+at arbitrary commands (e.g. `dolphin`, or Garage3D), set the `app_id` used
+to focus a running instance instead of relaunching, toggle entries on/off,
+and choose the `--demo` autostart set. The other tabs cover every Garage3D
+tunable (neon colours, fog, rain, physics…) and every compositor setting
+(size/FPS/FOV, underglow, 3D-vs-texture backdrop, VNC port…).
+
+It edits `~/.config/chromedrive/chromedrive.conf` and
+`~/.config/garage3d/garage3d.conf` (plain INI, hand-editable). Both programs
+**hot-reload**: drag a slider or rename a button and the running cockpit /
+3D scene follows within ~half a second. Full schema, `%root%` command
+templates, precedence (`defaults < file < env < CLI`) and live-vs-restart
+details: [`docs/configuration.md`](docs/configuration.md).
+
+```sh
+./bin/chromedrive-config                          # any Wayland session
+./bin/chromedrive --exec "'$PWD/bin/chromedrive-config'"   # inside the cockpit
+./bin/chromedrive-config --selftest               # headless widget/file test (make test)
+```
 
 ### Watching the headless session (VNC / browser preview)
 
@@ -200,7 +227,7 @@ Launch commands for the dashboard buttons can be overridden with the
 ## Layout
 
 ```
-include/chrome.h, math3d.h   shared types + ray/plane math API
+include/chrome.h, math3d.h, cdconfig.h  shared types, ray/plane math, config store API
 src/math3d.c                 camera rays, plane intersection, monitor layout
 src/wayland.c                 the actual compositor protocol implementation
 src/dmabuf.c                  zwp_linux_dmabuf_v1: real EGLImage GPU buffer import
@@ -210,9 +237,13 @@ src/main.c                    CLI parsing, event loop, process spawn (backend-ag
 src/backend_sdl.c             --windowed: SDL2 window + GLX context + SDL input
 src/backend_headless.c        --headless (default): surfaceless EGL + embedded VNC + RFB input
 clients/demo.c                 three independent real Wayland clients
+clients/config.c               chromedrive-config: launch-menu editor + settings GUI
 clients/garage3d/              Garage3D: native Wayland + GLES 3.1 client (the garage in 3D)
+src/cdconfig.c                 shared INI config store (compositor + GUI; Garage3D has its own loader)
 docs/garage3d-architecture.md  Garage3D architecture + Wayland lifecycle documentation
+docs/configuration.md          config files, launch-menu editing, hot-reload semantics
 tests/test_math.c             raycast/picking unit tests
+tests/test_config.c           INI store round-trip tests
 tests/protocol_probe.c        end-to-end Wayland protocol conformance test (incl. dma-buf)
 tools/viewer/                 noVNC web viewer for the headless VNC server (see prepare-viewer.sh)
 ```
