@@ -3,6 +3,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <stdio.h>
+#include <webp/decode.h>
 #define PI 3.14159265358979323846
 static void rgb(cairo_t *c,float r,float g,float b){cairo_set_source_rgb(c,r,g,b);}
 static void rgba(cairo_t *c,float r,float g,float b,float a){cairo_set_source_rgba(c,r,g,b,a);}
@@ -15,7 +17,24 @@ GLuint ui_texture(cairo_surface_t *im,GLuint reuse){
  cairo_surface_flush(im);GLuint tex=reuse;if(!tex)glGenTextures(1,&tex);glBindTexture(GL_TEXTURE_2D,tex);glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MIN_FILTER,GL_LINEAR);glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MAG_FILTER,GL_LINEAR);glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_WRAP_S,GL_CLAMP_TO_EDGE);glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_WRAP_T,GL_CLAMP_TO_EDGE);
  glPixelStorei(GL_UNPACK_ALIGNMENT,4);glTexImage2D(GL_TEXTURE_2D,0,GL_RGBA,cairo_image_surface_get_width(im),cairo_image_surface_get_height(im),0,GL_BGRA,GL_UNSIGNED_BYTE,cairo_image_surface_get_data(im));return tex;
 }
-GLuint ui_load_png(const char *path){cairo_surface_t *im=cairo_image_surface_create_from_png(path);if(cairo_surface_status(im)!=CAIRO_STATUS_SUCCESS){fprintf(stderr,"Texture: %s: %s\n",path,cairo_status_to_string(cairo_surface_status(im)));cairo_surface_destroy(im);im=cairo_image_surface_create(CAIRO_FORMAT_ARGB32,64,64);}GLuint out=ui_texture(im,0);cairo_surface_destroy(im);return out;}
+GLuint ui_load_webp(const char *path){
+ uint8_t *filebuf=NULL;long filesz=0;FILE *f=fopen(path,"rb");
+ if(f){fseek(f,0,SEEK_END);filesz=ftell(f);fseek(f,0,SEEK_SET);if(filesz>0){filebuf=malloc((size_t)filesz);if(filebuf&&fread(filebuf,1,(size_t)filesz,f)!=(size_t)filesz){free(filebuf);filebuf=NULL;}}fclose(f);}
+ int w=0,h=0;uint8_t *decoded=filebuf?WebPDecodeBGRA(filebuf,(size_t)filesz,&w,&h):NULL;
+ free(filebuf);
+ cairo_surface_t *im;
+ if(!decoded){
+  fprintf(stderr,"Texture: %s: webp decode failed\n",path);
+  im=cairo_image_surface_create(CAIRO_FORMAT_ARGB32,64,64);
+ } else {
+  im=cairo_image_surface_create(CAIRO_FORMAT_ARGB32,w,h);
+  uint8_t *dst=cairo_image_surface_get_data(im);int stride=cairo_image_surface_get_stride(im);
+  for(int y=0;y<h;y++)memcpy(dst+(size_t)y*stride,decoded+(size_t)y*w*4,(size_t)w*4);
+  cairo_surface_mark_dirty(im);
+  WebPFree(decoded);
+ }
+ GLuint out=ui_texture(im,0);cairo_surface_destroy(im);return out;
+}
 static void icon(cairo_t *c,int i,double x,double y){
  cairo_save(c);cairo_translate(c,x,y);cairo_set_line_width(c,3);cairo_set_line_cap(c,CAIRO_LINE_CAP_ROUND);rgb(c,.48,.89,.78);
  if(i==0){cairo_move_to(c,0,0);cairo_line_to(c,13,11);cairo_line_to(c,0,22);cairo_stroke(c);line(c,18,22,34,22);}

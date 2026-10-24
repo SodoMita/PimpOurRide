@@ -2,10 +2,13 @@
 /bin/
 /.generated/
 
-# Runtime-generated screenshots (never commit uncompressed/raw PNG captures —
+# Runtime-generated screenshots (never commit raw frame captures —
 # docs/hero.webp is the curated, compressed exception, added deliberately)
-/screenshots/*.png
-/screenshots/*.jpg
+/screenshots/*.webp
+
+# PNG is banned project-wide (see AGENTS.md) — belt-and-suspenders in case
+# one ever gets created locally, it must never be staged.
+*.png
 !/screenshots/.gitkeep
 
 # noVNC static assets staged by tools/prepare-viewer.sh (symlinks to the

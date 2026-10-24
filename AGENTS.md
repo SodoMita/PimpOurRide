@@ -5,31 +5,44 @@ is a small, dependency-conscious **native C Wayland compositor**. Most ways to
 "improve" it from habit (web-project habits especially) actually degrade it.
 Read this before you commit, not after.
 
-## 1. Screenshots / images — never commit raw captures
+## 1. Images — PNG is banned, no exceptions. Use WebP.
 
-- **Never `git add` a raw PNG screenshot or frame capture.** `F12` / test
-  scripts write full uncompressed RGBA PNGs (commonly 500 KB–1 MB+ each) to
-  `screenshots/`. That directory is `.gitignore`d on purpose
-  (`/screenshots/*.png`, `/screenshots/*.jpg`) — keep it that way.
-- If a screenshot genuinely needs to live in the repo (e.g. a README hero
-  image), **convert it to lossy WebP first** and put it under `docs/`:
+**There must be zero `.png` files anywhere in this repository or in anything
+the compositor loads/writes at runtime — ever.** This isn't scoped to
+screenshots or to "things committed to git"; it's a project-wide rule
+covering generated test captures, committed docs assets, and runtime texture
+files alike. This was enforced in code, not just convention:
+
+- `src/ui.c`'s `ui_load_webp()` decodes textures with **libwebp**
+  (`WebPDecodeBGRA`), not Cairo's PNG reader. There is no PNG-decoding code
+  path left in the renderer.
+- `src/scene.c`'s `scene_save_screenshot()` encodes captures with
+  **libwebp** (`WebPEncodeBGRA`, quality 90), not
+  `cairo_surface_write_to_png`. `F12` and `--screenshot PATH` both write
+  `.webp` files.
+- `assets/garage.webp` is the runtime cockpit background texture (was
+  `assets/garage.png`, converted and removed). `docs/hero.webp` is the README
+  hero image. Both are WebP. **Do not add a `.png` loader, a `.png` asset, or
+  reintroduce `cairo_image_surface_create_from_png` /
+  `cairo_surface_write_to_png` anywhere.** If you touch image I/O, it goes
+  through libwebp (`-lwebp` / `pkg-config libwebp`, already wired into the
+  Makefile's `PKGS`).
+- Never `git add` a raw/full-size capture either, even as WebP. `F12` / test
+  scripts write frame captures to `screenshots/`, which is `.gitignore`d on
+  purpose (`/screenshots/*.webp`) — keep it that way. Don't delete
+  `screenshots/.gitkeep`: `scene_save_screenshot` does a plain `fopen` with no
+  `mkdir -p`, so the directory must exist on a fresh clone or captures will
+  silently fail.
+- If an image genuinely needs to live in the repo (e.g. a new README figure),
+  it must already be lossy WebP before it's staged:
   ```
-  python3 -c "from PIL import Image; Image.open('shot.png').convert('RGB').save('docs/hero.webp','WEBP',quality=82,method=6)"
+  python3 -c "from PIL import Image; Image.open('shot.png').convert('RGB').save('docs/name.webp','WEBP',quality=82,method=6)"
   ```
-  `docs/hero.webp` is the one deliberate exception — it replaced an 821 KB PNG
-  at ~98 KB. Match that pattern; don't add a second multi-hundred-KB image
-  next to it without compressing it the same way.
-- Never commit test/debug artifacts (`cursor-test.png`, `headless-test.png`,
-  `*-zoom.png`, etc.). Those are throwaway verification output, not project
-  content — delete them locally or let `.gitignore` do it.
-- Don't delete `screenshots/.gitkeep`. `src/main.c`'s F12 handler
-  (`scene_save_screenshot`) does a plain `fopen`/cairo write with no
-  `mkdir -p` — if the directory doesn't exist on a fresh clone, screenshotting
-  silently fails.
-- `assets/garage.png` is **not** a screenshot — it's a runtime texture loaded
-  by `scene.c` via `ui_load_png`. It must stay PNG (the loader only reads
-  PNG) and must stay tracked. Don't "clean it up" by converting or removing
-  it.
+  (Use that script to *produce* the WebP locally — the intermediate `.png`
+  it reads from must never itself be committed or left lying around.)
+- Never commit test/debug artifacts regardless of format
+  (`cursor-test.webp`, `headless-test.webp`, `*-zoom.webp`, etc.). Those are
+  throwaway verification output, not project content.
 
 ## 2. JavaScript / TypeScript — do not add a frontend stack
 
@@ -101,6 +114,7 @@ in an unrelated change:
 1. `make clean && make all` — must build **with zero warnings**.
 2. `make test` — `protocol-probe` and `test-math` must both pass.
 3. `git status --short` — confirm nothing from `bin/`, `.generated/`,
-   `screenshots/*.png`, `node_modules/`, or any secret is staged.
+   `screenshots/*.webp`, any `.png` file at all, `node_modules/`, or any
+   secret is staged.
 4. Keep commits scoped: don't mix an unrelated dependency bump, a vendored
    library, or a generated-file dump into a feature commit.

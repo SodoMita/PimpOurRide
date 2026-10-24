@@ -2,6 +2,8 @@
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdio.h>
+#include <webp/encode.h>
 #define PI 3.14159265358979323846f
 #define RAD (PI/180.f)
 static void color(float r,float g,float b){glColor3f(r,g,b);}
@@ -124,7 +126,7 @@ static void draw_monitor(Server *s,int i){
  glStencilMask(0xff);glDisable(GL_STENCIL_TEST);glPopMatrix();
 }
 void scene_init(Server *s){
- char path[4200];snprintf(path,sizeof(path),"%s/assets/garage.png",s->root);s->garage_tex=ui_load_png(path);
+ char path[4200];snprintf(path,sizeof(path),"%s/assets/garage.webp",s->root);s->garage_tex=ui_load_webp(path);
  glEnable(GL_DEPTH_TEST);glDepthFunc(GL_LEQUAL);glEnable(GL_MULTISAMPLE);glShadeModel(GL_SMOOTH);glClearColor(.013,.015,.031,1);s->pitch=s->target_pitch=-6;
  Plane panel={.center={.78,.33,.48},.width=1.56,.height=.9,.yaw=-5,.pitch=-28};Vec3 right=rotate_y(v3(1,0,0),panel.yaw),up=rotate_y(rotate_x(v3(0,1,0),panel.pitch),panel.yaw),normal=vcross(right,up);
  const char *names[]={"TERMINAL","FILES","AUDIO","METERS","NEON","COCKPIT"};const char *subs[]={"01 / SHELL","02 / EXPLORE","03 / SESSION","04 / LIVE","05 / COLOR","06 / HOME"};
@@ -153,7 +155,15 @@ void scene_focus_monitor(Server *s,int slot,bool zoom){
 void scene_reset_camera(Server *s){s->target_yaw=roundf(s->yaw/360)*360;s->target_pitch=-6;s->target_fov=65;s->focus_view=false;}
 void scene_save_screenshot(Server *s,const char *path){
  int w=s->width,h=s->height;uint8_t *pixels=malloc((size_t)w*h*4);if(!pixels)return;glReadPixels(0,0,w,h,GL_BGRA,GL_UNSIGNED_BYTE,pixels);
- cairo_surface_t *im=cairo_image_surface_create(CAIRO_FORMAT_ARGB32,w,h);uint8_t *dst=cairo_image_surface_get_data(im);int stride=cairo_image_surface_get_stride(im);for(int y=0;y<h;y++){memcpy(dst+y*stride,pixels+(size_t)(h-1-y)*w*4,w*4);for(int x=0;x<w;x++)dst[y*stride+x*4+3]=255;}cairo_surface_mark_dirty(im);cairo_status_t status=cairo_surface_write_to_png(im,path);fprintf(stderr,"[capture] %s: %s\n",path,cairo_status_to_string(status));cairo_surface_destroy(im);free(pixels);
+ uint8_t *flipped=malloc((size_t)w*h*4);
+ if(!flipped){free(pixels);return;}
+ for(int y=0;y<h;y++){memcpy(flipped+(size_t)y*w*4,pixels+(size_t)(h-1-y)*w*4,(size_t)w*4);for(int x=0;x<w;x++)flipped[(size_t)y*w*4+x*4+3]=255;}
+ uint8_t *webp=NULL;size_t webp_size=WebPEncodeBGRA(flipped,w,h,w*4,90.0f,&webp);
+ bool ok=false;
+ if(webp_size){FILE *f=fopen(path,"wb");if(f){ok=fwrite(webp,1,webp_size,f)==webp_size;fclose(f);}}
+ fprintf(stderr,"[capture] %s: %s\n",path,ok?"success":"failed");
+ if(webp)WebPFree(webp);
+ free(flipped);free(pixels);
 }
 void scene_finish(Server *s){
  GLuint textures[]={s->garage_tex,s->carbon_tex,s->gauge_tex,s->console_tex,s->hub_tex,s->hud_tex,s->help_tex,s->plate_tex};glDeleteTextures(sizeof(textures)/sizeof(textures[0]),textures);for(int i=0;i<6;i++)glDeleteTextures(1,&s->buttons[i].texture);for(int i=0;i<CD_MAX_MONITORS;i++)glDeleteTextures(1,&s->monitors[i].label);

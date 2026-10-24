@@ -1,5 +1,5 @@
 CC ?= cc
-PKGS = wayland-server sdl2 egl gl cairo xkbcommon libvncserver
+PKGS = wayland-server sdl2 egl gl cairo xkbcommon libvncserver libwebp
 CPPFLAGS += -Iinclude -I.generated $(shell pkg-config --cflags $(PKGS))
 CFLAGS ?= -O2 -g
 CFLAGS += -std=c11 -Wall -Wextra -Wno-unused-parameter -Wno-misleading-indentation

@@ -124,7 +124,7 @@ void scene_reset_camera(Server *s);
 void scene_save_screenshot(Server *s,const char *path);
 void scene_neon_color(Server *s,float *r,float *g,float *b);
 GLuint ui_texture(cairo_surface_t *surface,GLuint reuse);
-GLuint ui_load_png(const char *path);
+GLuint ui_load_webp(const char *path);
 void ui_init(Server *s);
 void ui_update(Server *s);
 void ui_monitor_label(Server *s,int slot);
