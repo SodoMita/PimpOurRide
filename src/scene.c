@@ -252,8 +252,9 @@ static void dashboard(Server *s){
  /* A-pillars and the upper windshield frame establish a seated camera. */
  for(int side=-1;side<=1;side+=2){color(.11,.068,.17);cylinder(v3(side*3.55,.19,-1.0),v3(side*3.38,2.4,-.32),.085,18);color(.36,.36,.46);cylinder(v3(side*3.49,.23,-.96),v3(side*3.32,2.38,-.28),.023,12);glow_line(v3(side*3.51,.23,-.92),v3(side*3.33,2.38,-.25),.008,nr,ng,nb);}
  color(.022,.022,.035);cylinder(v3(-3.4,2.39,-.35),v3(3.4,2.39,-.35),.13,18);
- /* Rear-view mirror, tiny garage reflection. */
- color(.2,.23,.3);cylinder(v3(.30,2.39,-.4),v3(.30,2.2,-.53),.022,12);
+ /* Rear-view mirror, tiny garage reflection, solidly bracketed to the header bar. */
+ color(.30,.34,.42);cylinder(v3(.30,2.39,-.35),v3(.30,2.30,-.41),.052,16);
+ color(.24,.28,.36);cylinder(v3(.30,2.39,-.35),v3(.30,2.16,-.52),.030,14);
  glPushMatrix();glTranslatef(.30,2.15,-.52);glRotatef(-5,1,0,0);color(.40,.44,.52);rbox(0,0,0,.85,.26,.07,.06);color(.015,.028,.04);rbox(0,0,.043,.78,.20,.025,.04);texture(s->garage_tex,-.37,-.08,.74,.16,.06);glPopMatrix();
  /* Quilted doors and visible subwoofers. */
  for(int side=-1;side<=1;side+=2){glPushMatrix();glTranslatef(side*2.88,-.39,.64);glRotatef(side*-40,0,1,0);color(.13,.058,.21);rbox(0,-.15,0,.68,1.04,.15,.14);glDisable(GL_LIGHTING);color(.36,.19,.46);glBegin(GL_LINES);for(float x=-.8;x<.8;x+=.12){glVertex3f(-.30,x,.081);glVertex3f(.3,x+.45,.081);glVertex3f(-.30,x+.45,.082);glVertex3f(.30,x,.082);}glEnd();glEnable(GL_LIGHTING);
@@ -375,9 +376,12 @@ static SceneCamera scene_camera(Server *s){
   /* Exterior cameras are expressed in car-local coordinates too, so they
    * follow the same rigid transform as the cockpit instead of drifting when
    * the vehicle moves. EXTERIOR uses a low front-quarter showcase angle;
-   * SYSTEMS uses a side view to expose the EV skateboard. */
-  Vec3 local_eye=s->camera_mode==VEHICLE_CAMERA_CHASE?v3(8.4f,3.0f,-10.8f):v3(9.8f,3.4f,1.2f);
-  Vec3 local_target=s->camera_mode==VEHICLE_CAMERA_CHASE?v3(0,-.20f,-.40f):v3(0,-.15f,0);
+   * SYSTEMS uses a side view to expose the EV skateboard. Middle-drag yaw/pitch
+   * orbits smoothly around the car in both exterior inspection modes. */
+  Vec3 base_eye=s->camera_mode==VEHICLE_CAMERA_CHASE?v3(8.2f,2.3f,-10.4f):v3(9.6f,2.9f,1.2f);
+  Vec3 local_eye=rotate_y(base_eye,s->yaw);
+  local_eye.y=clampf(base_eye.y+(s->pitch+6.0f)*0.12f,0.4f,6.5f);
+  Vec3 local_target=s->camera_mode==VEHICLE_CAMERA_CHASE?v3(0,-.08f,-.20f):v3(0,-.15f,0);
   c.eye=vehicle_local_to_world(&s->vehicle,local_eye);
   Vec3 target=vehicle_local_to_world(&s->vehicle,local_target);
   c.forward=vnorm(vsub(target,c.eye));c.right=vnorm(vcross(c.forward,v3(0,1,0)));c.up=vcross(c.right,c.forward);

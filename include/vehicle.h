@@ -56,6 +56,22 @@ typedef struct {
  double accumulator;   /* fixed-step remainder carried between rendered frames */
 } Vehicle;
 
+/* Parametric bicubic Catmull-Rom hull & fastback canopy evaluation.
+ * Keeping the surface math in vehicle.c (pure C/math, no GL dependency) allows
+ * both the OpenGL renderer (vehicle_scene.c) and native unit tests
+ * (test_vehicle.c) to query the exact same hull/canopy surface, verify
+ * watertight closure, and assert that all exterior trims and internal EV
+ * cutaway components stay strictly within the hull envelope. */
+typedef struct {
+ float z;        /* longitudinal station in car-local space (-Z = front) */
+ float width;    /* half-width at the main shoulder crease */
+ float lower;    /* underbody floor height */
+ float shoulder; /* main character crease height */
+ float top;      /* upper deck / beltline height */
+ float arch;     /* fender crown height over front/rear hover thruster bays */
+ float scoop;    /* side aero channel indentation along the doors */
+} VehicleHullSection;
+
 void vehicle_init(Vehicle *v);
 void vehicle_reset_pose(Vehicle *v);
 void vehicle_step(Vehicle *v, VehicleInput input, float dt);
@@ -66,6 +82,14 @@ void vehicle_update(Vehicle *v, VehicleInput input, double frame_dt);
  * C1 continuity, and needs no external mesh/asset runtime. */
 float vehicle_catmull_rom(float p0, float p1, float p2, float p3, float t);
 Vec3 vehicle_catmull_rom_vec3(const Vec3 p[4], float t);
+
+/* Parametric hull (u: 0 nose .. 1 tail, v: 0 undertray centre .. 1 deck centre)
+ * and fastback canopy (u: 0 cowl .. 1 rear deck, v: 0 beltline .. 1 roof crown)
+ * evaluators plus envelope containment check for internal EV packaging. */
+VehicleHullSection vehicle_hull_section(float u);
+Vec3 vehicle_hull_point(float u, float v, int side, Vec3 *normal);
+Vec3 vehicle_canopy_point(float u, float v, int side, Vec3 *normal);
+bool vehicle_point_inside_envelope(Vec3 p, float margin);
 
 /* Exact inverse transforms keep rendering and 3D ray picking in agreement.
  * GL applies the rig as T * Ry * Rx * Rz; these helpers use the same order. */

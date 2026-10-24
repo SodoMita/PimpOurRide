@@ -1,10 +1,31 @@
-/* Spline-built electric hover-car renderer.
+/* Bicubic Catmull-Rom electric hover-car renderer.
  *
- * This is deliberately a compositor-side GL renderer, not a second scene or a
- * JavaScript model. The same current EGL/GLX context draws the car, cockpit,
- * and Wayland textures, so there is no context sharing or cross-thread GL use.
- * Physics and Catmull-Rom evaluation live in vehicle.c; this file only turns
- * that state and the design sections into triangles in car-local space.
+ * This is deliberately a compositor-side OpenGL renderer, not a second scene
+ * or a browser-side WebGL model. The same current EGL/GLX context draws the
+ * hovercar, cockpit, and Wayland client textures on the main thread, avoiding
+ * cross-thread context sharing or duplicate scene graphs.
+ *
+ * Critical geometric design decisions:
+ *  1. Unified parametric surface evaluation (vehicle_hull_point and
+ *     vehicle_canopy_point in vehicle.c): both the lower grand-tourer hull and
+ *     the fastback greenhouse are evaluated from continuous Catmull-Rom
+ *     splines with analytical finite-difference normals. The canopy base is
+ *     anchored directly to the hull's upper beltline deck (v = 0.84) with zero
+ *     endpoint height at the cowl and rear decklid, making Overhangs or air
+ *     gaps mathematically impossible.
+ *  2. Surface-locked exterior trims: headlamps, DRL light blades, front hex
+ *     grille, 4-ring emblem, side wing camera-mirrors, flush door handles,
+ *     rocker underglow tubes, rear OLED lightbar, and roof LiDAR sensor pod
+ *     are all evaluated directly on vehicle_hull_point / vehicle_canopy_point
+ *     and offset along the outward surface normal. Nothing uses detached
+ *     hardcoded coordinates that could float outside the body.
+ *  3. Flush hover-thruster nacelles (no wheels, no stovepipe legs): four
+ *     electromagnetic vectoring levitation nacelles are recessed upward into
+ *     the flared front/rear undertray bays flush with s.lower, emitting a
+ *     ground-effect plasma cushion without protruding legs or axles.
+ *  4. Strictly bounded EV cutaway packaging: internal powertrain, battery,
+ *     thermal, and cabin components are rendered only in VEHICLE_CAMERA_SYSTEMS
+ *     and are dimensioned strictly within vehicle_point_inside_envelope().
  */
 #include "chrome.h"
 
@@ -15,462 +36,1122 @@
 
 static void ev_color(float r, float g, float b) { glColor3f(r, g, b); }
 
+typedef enum {
+ EV_MAT_BODY_PAINT = 0,
+ EV_MAT_DARK_GLASS = 1,
+ EV_MAT_SATIN_METAL = 2,
+ EV_MAT_MATTE_CARBON = 3
+} EvMaterial;
+
+static void ev_set_material(EvMaterial mat) {
+ switch (mat) {
+ case EV_MAT_BODY_PAINT: {
+  GLfloat spec[] = {0.82f, 0.86f, 0.98f, 1.0f};
+  glMaterialfv(GL_FRONT_AND_BACK, GL_SPECULAR, spec);
+  glMaterialf(GL_FRONT_AND_BACK, GL_SHININESS, 78.0f);
+  break;
+ }
+ case EV_MAT_DARK_GLASS: {
+  GLfloat spec[] = {0.92f, 0.96f, 1.00f, 1.0f};
+  glMaterialfv(GL_FRONT_AND_BACK, GL_SPECULAR, spec);
+  glMaterialf(GL_FRONT_AND_BACK, GL_SHININESS, 108.0f);
+  break;
+ }
+ case EV_MAT_SATIN_METAL: {
+  GLfloat spec[] = {0.58f, 0.62f, 0.72f, 1.0f};
+  glMaterialfv(GL_FRONT_AND_BACK, GL_SPECULAR, spec);
+  glMaterialf(GL_FRONT_AND_BACK, GL_SHININESS, 46.0f);
+  break;
+ }
+ case EV_MAT_MATTE_CARBON: {
+  GLfloat spec[] = {0.14f, 0.16f, 0.20f, 1.0f};
+  glMaterialfv(GL_FRONT_AND_BACK, GL_SPECULAR, spec);
+  glMaterialf(GL_FRONT_AND_BACK, GL_SHININESS, 16.0f);
+  break;
+ }
+ }
+}
+
+static void ev_restore_scene_material(void) {
+ GLfloat shine[] = {0.50f, 0.52f, 0.62f, 1.0f};
+ glMaterialfv(GL_FRONT_AND_BACK, GL_SPECULAR, shine);
+ glMaterialf(GL_FRONT_AND_BACK, GL_SHININESS, 65.0f);
+}
+
 static void ev_box(float x, float y, float z, float w, float h, float d) {
- float a=x-w/2,b=x+w/2,c=y-h/2,e=y+h/2,f=z-d/2,g=z+d/2;
+ float a = x - w * 0.5f, b = x + w * 0.5f;
+ float c = y - h * 0.5f, e = y + h * 0.5f;
+ float f = z - d * 0.5f, g = z + d * 0.5f;
  glBegin(GL_QUADS);
- glNormal3f(0,0,1);glVertex3f(a,c,g);glVertex3f(b,c,g);glVertex3f(b,e,g);glVertex3f(a,e,g);
- glNormal3f(0,0,-1);glVertex3f(b,c,f);glVertex3f(a,c,f);glVertex3f(a,e,f);glVertex3f(b,e,f);
- glNormal3f(0,1,0);glVertex3f(a,e,g);glVertex3f(b,e,g);glVertex3f(b,e,f);glVertex3f(a,e,f);
- glNormal3f(0,-1,0);glVertex3f(a,c,f);glVertex3f(b,c,f);glVertex3f(b,c,g);glVertex3f(a,c,g);
- glNormal3f(1,0,0);glVertex3f(b,c,g);glVertex3f(b,c,f);glVertex3f(b,e,f);glVertex3f(b,e,g);
- glNormal3f(-1,0,0);glVertex3f(a,c,f);glVertex3f(a,c,g);glVertex3f(a,e,g);glVertex3f(a,e,f);
+ glNormal3f( 0,  0,  1); glVertex3f(a, c, g); glVertex3f(b, c, g); glVertex3f(b, e, g); glVertex3f(a, e, g);
+ glNormal3f( 0,  0, -1); glVertex3f(b, c, f); glVertex3f(a, c, f); glVertex3f(a, e, f); glVertex3f(b, e, f);
+ glNormal3f( 0,  1,  0); glVertex3f(a, e, g); glVertex3f(b, e, g); glVertex3f(b, e, f); glVertex3f(a, e, f);
+ glNormal3f( 0, -1,  0); glVertex3f(a, c, f); glVertex3f(b, c, f); glVertex3f(b, c, g); glVertex3f(a, c, g);
+ glNormal3f( 1,  0,  0); glVertex3f(b, c, g); glVertex3f(b, c, f); glVertex3f(b, e, f); glVertex3f(b, e, g);
+ glNormal3f(-1,  0,  0); glVertex3f(a, c, f); glVertex3f(a, c, g); glVertex3f(a, e, g); glVertex3f(a, e, f);
  glEnd();
 }
 
 static void ev_cylinder(Vec3 a, Vec3 b, float radius, int slices) {
- Vec3 dir=vnorm(vsub(b,a));
- Vec3 u=vnorm(vcross(dir,fabsf(dir.y)>.9f?v3(1,0,0):v3(0,1,0))),v=vcross(dir,u);
+ Vec3 diff = vsub(b, a);
+ if (vdot(diff, diff) < 1e-8f) return;
+ Vec3 dir = vnorm(diff);
+ Vec3 ref = fabsf(dir.y) > 0.9f ? v3(1, 0, 0) : v3(0, 1, 0);
+ Vec3 u = vnorm(vcross(dir, ref));
+ Vec3 v = vcross(dir, u);
  glBegin(GL_QUAD_STRIP);
- for(int i=0;i<=slices;i++){
-  float t=i*2*EV_PI/slices;
-  Vec3 n=vadd(vmul(u,cosf(t)),vmul(v,sinf(t))),pa=vadd(a,vmul(n,radius)),pb=vadd(b,vmul(n,radius));
-  glNormal3f(n.x,n.y,n.z);glVertex3f(pa.x,pa.y,pa.z);glVertex3f(pb.x,pb.y,pb.z);
+ for (int i = 0; i <= slices; i++) {
+  float t = (float)i * 2.0f * EV_PI / (float)slices;
+  Vec3 n = vadd(vmul(u, cosf(t)), vmul(v, sinf(t)));
+  Vec3 pa = vadd(a, vmul(n, radius));
+  Vec3 pb = vadd(b, vmul(n, radius));
+  glNormal3f(n.x, n.y, n.z);
+  glVertex3f(pa.x, pa.y, pa.z);
+  glVertex3f(pb.x, pb.y, pb.z);
  }
  glEnd();
- glBegin(GL_TRIANGLE_FAN);glNormal3f(dir.x,dir.y,dir.z);glVertex3f(b.x,b.y,b.z);
- for(int i=0;i<=slices;i++){
-  float t=i*2*EV_PI/slices;Vec3 p=vadd(b,vmul(vadd(vmul(u,cosf(t)),vmul(v,sinf(t))),radius));
-  glVertex3f(p.x,p.y,p.z);
+ for (int end = 0; end < 2; end++) {
+  Vec3 cap = end ? b : a;
+  Vec3 n = end ? dir : vmul(dir, -1.0f);
+  glBegin(GL_TRIANGLE_FAN);
+  glNormal3f(n.x, n.y, n.z);
+  glVertex3f(cap.x, cap.y, cap.z);
+  for (int i = 0; i <= slices; i++) {
+   float t = (float)(end ? i : (slices - i)) * 2.0f * EV_PI / (float)slices;
+   Vec3 rim = vadd(cap, vmul(vadd(vmul(u, cosf(t)), vmul(v, sinf(t))), radius));
+   glVertex3f(rim.x, rim.y, rim.z);
+  }
+  glEnd();
  }
- glEnd();
 }
 
 static void ev_torus(float major, float minor, int rings, int sides) {
- for(int i=0;i<rings;i++){
+ for (int i = 0; i < rings; i++) {
   glBegin(GL_QUAD_STRIP);
-  for(int j=0;j<=sides;j++)for(int k=0;k<2;k++){
-   float a=(i+k)*2*EV_PI/rings,b=j*2*EV_PI/sides;
-   glNormal3f(cosf(a)*cosf(b),sinf(a)*cosf(b),sinf(b));
-   glVertex3f((major+minor*cosf(b))*cosf(a),(major+minor*cosf(b))*sinf(a),minor*sinf(b));
+  for (int j = 0; j <= sides; j++) {
+   for (int k = 0; k < 2; k++) {
+    float a = (float)(i + k) * 2.0f * EV_PI / (float)rings;
+    float b = (float)j * 2.0f * EV_PI / (float)sides;
+    glNormal3f(cosf(a) * cosf(b), sinf(a) * cosf(b), sinf(b));
+    glVertex3f((major + minor * cosf(b)) * cosf(a),
+               (major + minor * cosf(b)) * sinf(a),
+               minor * sinf(b));
+   }
   }
   glEnd();
  }
 }
 
 static void ev_glow_line(Vec3 a, Vec3 b, float radius, float r, float g, float bl) {
- glDisable(GL_LIGHTING);ev_color(r,g,bl);ev_cylinder(a,b,radius,10);
- glEnable(GL_BLEND);glBlendFunc(GL_SRC_ALPHA,GL_ONE);glDepthMask(GL_FALSE);
- for(int k=3;k>=1;k--){glColor4f(r,g,bl,.035f);ev_cylinder(a,b,radius*(1+k*1.6f),10);}
- glDepthMask(GL_TRUE);glDisable(GL_BLEND);glEnable(GL_LIGHTING);
-}
-
-/* Eight design stations describe a complete lower body. Catmull-Rom locally
- * interpolates width and heights between them; changing one station reshapes
- * only the neighboring panels. That is much easier to art-direct than a pile
- * of unrelated boxes and, unlike a baked mesh, needs no model-loading code. */
-typedef struct { float z,width,lower,shoulder,top; } BodySection;
-static const BodySection body_sections[] = {
- /* Low, tapered nose and tail: the plan-view width is splined as carefully as
-  * the vertical profile, avoiding the upright "brick with a cabin" silhouette. */
- {-5.90f,2.10f,-.70f,-.40f,-.30f},
- {-5.35f,2.40f,-.77f,-.12f, .04f},
- {-4.35f,2.86f,-.81f, .10f, .27f},
- {-2.80f,3.03f,-.82f, .25f, .43f},
- {-1.25f,3.06f,-.81f, .36f, .53f},
- { 1.45f,3.02f,-.80f, .35f, .53f},
- { 3.65f,2.96f,-.78f, .30f, .52f},
- { 4.95f,2.55f,-.73f, .02f, .25f},
- { 5.80f,1.40f,-.64f,-.34f,-.22f}
-};
-#define BODY_COUNT ((int)(sizeof(body_sections)/sizeof(body_sections[0])))
-
-static int clamp_index(int i, int count) { return i<0?0:i>=count?count-1:i; }
-
-static BodySection body_at(float u) {
- float g=clampf(u,0,1)*(BODY_COUNT-1);
- int i=(int)floorf(g);if(i>=BODY_COUNT-1)i=BODY_COUNT-2;
- float t=g-i;
- const BodySection *a=&body_sections[clamp_index(i-1,BODY_COUNT)];
- const BodySection *b=&body_sections[clamp_index(i,BODY_COUNT)];
- const BodySection *c=&body_sections[clamp_index(i+1,BODY_COUNT)];
- const BodySection *d=&body_sections[clamp_index(i+2,BODY_COUNT)];
- BodySection out;
- out.z=vehicle_catmull_rom(a->z,b->z,c->z,d->z,t);
- out.width=fmaxf(1.5f,vehicle_catmull_rom(a->width,b->width,c->width,d->width,t));
- out.lower=vehicle_catmull_rom(a->lower,b->lower,c->lower,d->lower,t);
- out.shoulder=vehicle_catmull_rom(a->shoulder,b->shoulder,c->shoulder,d->shoulder,t);
- out.top=vehicle_catmull_rom(a->top,b->top,c->top,d->top,t);
- return out;
-}
-
-static Vec3 body_ring(BodySection s, int side, int level) {
- /* Seven cross-section rings give the shoulder a smooth, continuously crowned
-  * surface. The old four-ring version produced a flat off-road-style slab. */
- static const float width[7]={.68f,.86f,.97f,1.00f,.985f,.91f,.80f};
- float mid=(s.lower+s.shoulder)*.5f,upper=(s.shoulder+s.top)*.5f;
- static const float width_y[7]={-1.00f,-.94f,0,0,0,0,0};
- float y=width_y[level];
- if(level==2)y=s.lower;else if(level==3)y=mid;else if(level==4)y=s.shoulder;else if(level==5)y=upper;else if(level==6)y=s.top;
- return v3(side*s.width*width[level],y,s.z);
-}
-
-static void body_sides(void) {
- static const float normal_y[7]={-.50f,-.22f,.02f,.15f,.30f,.48f,.66f};
- for(int side=-1;side<=1;side+=2)for(int level=0;level<6;level++){
-  glBegin(GL_QUAD_STRIP);
-  for(int i=0;i<=80;i++){
-   BodySection s=body_at(i/80.0f);Vec3 a=body_ring(s,side,level),b=body_ring(s,side,level+1);
-   float ny=(normal_y[level]+normal_y[level+1])*.5f,nx=sqrtf(fmaxf(.05f,1-ny*ny));
-   glNormal3f(side*nx,ny,0);glVertex3f(a.x,a.y,a.z);glVertex3f(b.x,b.y,b.z);
-  }
-  glEnd();
+ glDisable(GL_LIGHTING);
+ ev_color(r, g, bl);
+ ev_cylinder(a, b, radius, 10);
+ glEnable(GL_BLEND);
+ glBlendFunc(GL_SRC_ALPHA, GL_ONE);
+ glDepthMask(GL_FALSE);
+ for (int k = 3; k >= 1; k--) {
+  glColor4f(r, g, bl, 0.038f);
+  ev_cylinder(a, b, radius * (1.0f + (float)k * 1.55f), 10);
  }
+ glDepthMask(GL_TRUE);
+ glDisable(GL_BLEND);
+ glEnable(GL_LIGHTING);
 }
 
-static void body_top(float from, float to) {
- for(int strip=0;strip<16;strip++){
-  float x0=-1.0f+strip*.125f,x1=x0+.125f;
-  glBegin(GL_QUAD_STRIP);
-  for(int i=0;i<=64;i++){
-   BodySection s=body_at(from+(to-from)*i/64.0f);
-   float y0=s.top+.13f*(1-x0*x0),y1=s.top+.13f*(1-x1*x1);
-   glNormal3f(x0*.34f,1,0);glVertex3f(s.width*.80f*x0,y0,s.z);
-   glNormal3f(x1*.34f,1,0);glVertex3f(s.width*.80f*x1,y1,s.z);
-  }
-  glEnd();
- }
-}
-
-static void body_cap(bool front) {
- /* Build the fascia from the *same* ring vertices as the side hull. Sharing
-  * those edges is what removes gaps and the appearance of a bolted-on bumper. */
- BodySection s=body_at(front?0:1);float sign=front?-1:1;
- for(int side=-1;side<=1;side+=2)for(int level=0;level<6;level++){
-  Vec3 outer0=body_ring(s,side,level),outer1=body_ring(s,side,level+1);
-  Vec3 centre0=v3(0,outer0.y,s.z+sign*.26f),centre1=v3(0,outer1.y,s.z+sign*.26f);
-  if(level==5)centre1.y+=.13f; /* meet the crowned hood/deck centreline */
-  glBegin(GL_QUAD_STRIP);
-  for(int i=0;i<=16;i++){
-   float t=i/16.0f,bow=sign*.26f*(1-t*t);
-   Vec3 a=vadd(centre0,vmul(vsub(outer0,centre0),t));
-   Vec3 b=vadd(centre1,vmul(vsub(outer1,centre1),t));
-   a.z=s.z+bow;b.z=s.z+bow;
-   glNormal3f(side*t*.25f,.10f,sign);glVertex3f(a.x,a.y,a.z);glVertex3f(b.x,b.y,b.z);
-  }
-  glEnd();
- }
-}
-
-static void body_outline(float nr, float ng, float nb) {
- /* Systems view retains the spline silhouette as a wire cage while removing
-  * opaque panels that would otherwise hide the battery and power electronics. */
- glDisable(GL_LIGHTING);glLineWidth(1.4f);
- static const int levels[]={1,3,4,6};
- for(int side=-1;side<=1;side+=2)for(int li=0;li<4;li++){
-  int level=levels[li];glColor3f(level==6?nr:.22f,level==6?ng:.29f,level==6?nb:.40f);
-  glBegin(GL_LINE_STRIP);
-  for(int i=0;i<=64;i++){Vec3 p=body_ring(body_at(i/64.0f),side,level);glVertex3f(p.x,p.y,p.z);}
-  glEnd();
- }
- glEnable(GL_LIGHTING);glLineWidth(1);
-}
-
-typedef struct { float z,width,height; } RoofSection;
-static const RoofSection roof_sections[] = {
- /* A long fastback arc, not a separate upright cabin planted on the hull. */
- {-1.50f,2.52f,.50f},{-.15f,2.30f,2.10f},{1.85f,2.22f,2.45f},
- {3.75f,2.30f,1.92f},{5.20f,2.52f,.40f}
-};
-#define ROOF_COUNT ((int)(sizeof(roof_sections)/sizeof(roof_sections[0])))
-static RoofSection roof_at(float u) {
- float g=clampf(u,0,1)*(ROOF_COUNT-1);int i=(int)floorf(g);if(i>=ROOF_COUNT-1)i=ROOF_COUNT-2;
- float t=g-i;const RoofSection *a=&roof_sections[clamp_index(i-1,ROOF_COUNT)];
- const RoofSection *b=&roof_sections[clamp_index(i,ROOF_COUNT)],*c=&roof_sections[clamp_index(i+1,ROOF_COUNT)];
- const RoofSection *d=&roof_sections[clamp_index(i+2,ROOF_COUNT)];
- return (RoofSection){vehicle_catmull_rom(a->z,b->z,c->z,d->z,t),
-  fmaxf(2.1f,vehicle_catmull_rom(a->width,b->width,c->width,d->width,t)),
-  vehicle_catmull_rom(a->height,b->height,c->height,d->height,t)};
-}
-
-static void roof_panel(void) {
- for(int strip=0;strip<16;strip++){
-  float x0=-1+strip*.125f,x1=x0+.125f;glBegin(GL_QUAD_STRIP);
-  for(int i=0;i<=48;i++){
-   RoofSection r=roof_at(.24f+.53f*i/48.0f);
-   glNormal3f(x0*.32f,1,0);glVertex3f(r.width*x0,r.height+.12f*(1-x0*x0),r.z);
-   glNormal3f(x1*.32f,1,0);glVertex3f(r.width*x1,r.height+.12f*(1-x1*x1),r.z);
-  }
-  glEnd();
- }
-}
-
-static float signed_power(float value,float power){return (value<0?-1.f:1.f)*powf(fabsf(value),power);}
-
-static Vec3 concept_hull_point(BodySection s,float angle,Vec3 *normal) {
- float c=cosf(angle),sn=sinf(angle),centre=(s.lower+s.top)*.5f,half=fmaxf(.08f,(s.top-s.lower)*.5f);
- *normal=vnorm(v3(c/fmaxf(s.width,.1f),sn/half,0));
- return v3(s.width*signed_power(c,.72f),centre+half*signed_power(sn,.78f),s.z);
-}
-
-static void concept_hull(void) {
- /* Exterior hull: a closed superellipse loft through the same Catmull-Rom
-  * body stations used by the driver cutaway. Rounded rectangular sections
-  * give broad modern shoulders without flat off-road slabs or open seams. */
- for(int side=0;side<48;side++){
-  float a=side*2*EV_PI/48,b=(side+1)*2*EV_PI/48;glBegin(GL_QUAD_STRIP);
-  for(int i=0;i<=80;i++){
-   BodySection s=body_at(i/80.0f);Vec3 na,nb,pa=concept_hull_point(s,a,&na),pb=concept_hull_point(s,b,&nb);
-   glNormal3f(na.x,na.y,na.z);glVertex3f(pa.x,pa.y,pa.z);glNormal3f(nb.x,nb.y,nb.z);glVertex3f(pb.x,pb.y,pb.z);
-  }
-  glEnd();
- }
- /* Small rounded end fans close the loft at the nose and tail centreline. */
- for(int end=0;end<2;end++){
-  BodySection s=body_at(end);float sign=end?1:-1,centre=(s.lower+s.top)*.5f;
-  glBegin(GL_TRIANGLE_FAN);glNormal3f(0,0,sign);glVertex3f(0,centre,s.z+sign*.18f);
-  for(int i=0;i<=48;i++){Vec3 n,p=concept_hull_point(s,i*2*EV_PI/48,&n);glVertex3f(p.x,p.y,p.z);}glEnd();
- }
-}
-
-static Vec3 concept_canopy_point(RoofSection r,float angle,Vec3 *normal) {
- float c=cosf(angle),sn=sinf(angle),bottom=.34f,height=fmaxf(.05f,r.height-bottom);
- *normal=vnorm(v3(c/r.width,sn/height,0));
- return v3(r.width*c,bottom+height*powf(fmaxf(0,sn),.62f),r.z);
-}
-
-static void concept_canopy(void) {
- /* One opaque, continuous fastback surface replaces the old collection of
-  * separate roof/deck/window pieces. Deep panoramic glass is a deliberate
-  * exterior treatment; the driver renderer below keeps its transparent pass. */
- for(int strip=0;strip<40;strip++){
-  float a=strip*EV_PI/40,b=(strip+1)*EV_PI/40;glBegin(GL_QUAD_STRIP);
-  for(int i=0;i<=64;i++){
-   RoofSection r=roof_at(i/64.0f);Vec3 na,nb,pa=concept_canopy_point(r,a,&na),pb=concept_canopy_point(r,b,&nb);
-   glNormal3f(na.x,na.y,na.z);glVertex3f(pa.x,pa.y,pa.z);glNormal3f(nb.x,nb.y,nb.z);glVertex3f(pb.x,pb.y,pb.z);
-  }
-  glEnd();
- }
+static int clamp_index(int i, int count) {
+ return i < 0 ? 0 : (i >= count ? count - 1 : i);
 }
 
 static void spline_cable(const Vec3 *points, int count, float radius) {
- /* Piecewise Catmull-Rom cable routing avoids the impossible right angles
-  * that make concept EV models look like toys. Endpoint duplication keeps the
-  * cable anchored exactly at its connector and preserves tangent continuity. */
- for(int segment=0;segment<count-1;segment++){
-  Vec3 p[4]={points[clamp_index(segment-1,count)],points[segment],points[segment+1],points[clamp_index(segment+2,count)]};
-  Vec3 previous=p[1];
-  for(int i=1;i<=12;i++){
-   Vec3 next=vehicle_catmull_rom_vec3(p,i/12.0f);ev_cylinder(previous,next,radius,8);previous=next;
+ /* Piecewise Catmull-Rom cable routing avoids impossible right angles while
+  * duplicating endpoints so each harness stays anchored at its connector. */
+ for (int segment = 0; segment < count - 1; segment++) {
+  Vec3 p[4] = {
+   points[clamp_index(segment - 1, count)],
+   points[segment],
+   points[segment + 1],
+   points[clamp_index(segment + 2, count)]
+  };
+  Vec3 previous = p[1];
+  for (int i = 1; i <= 12; i++) {
+   Vec3 next = vehicle_catmull_rom_vec3(p, (float)i / 12.0f);
+   ev_cylinder(previous, next, radius, 8);
+   previous = next;
   }
  }
 }
 
-static void spline_led(const Vec3 *points,int count) {
- /* Thin emissive tubes follow the body splines; no chunky off-road lamp pods. */
- glDisable(GL_LIGHTING);spline_cable(points,count,.016f);glEnable(GL_LIGHTING);
+/* Evaluate a point on the front (u=0) or rear (u=1) fascia cap with a smooth
+ * compound aerodynamic bow that shares the exact boundary ring of the hull. */
+static Vec3 fascia_point(bool front, float v, float x_frac, int side, Vec3 *normal) {
+ float u = front ? 0.0f : 1.0f;
+ float sign = front ? -1.0f : 1.0f;
+ Vec3 outer = vehicle_hull_point(u, v, side, NULL);
+ Vec3 centre_top = vehicle_hull_point(u, 1.0f, 1, NULL);
+ Vec3 centre_bot = vehicle_hull_point(u, 0.0f, 1, NULL);
+ float cy = outer.y;
+ if (v > 0.82f) {
+  float t = (v - 0.82f) / 0.18f;
+  cy = outer.y * (1.0f - t) + centre_top.y * t;
+ } else if (v < 0.16f) {
+  float t = v / 0.16f;
+  cy = centre_bot.y * (1.0f - t) + outer.y * t;
+ }
+ float xf = clampf(x_frac, 0.0f, 1.0f);
+ float x = outer.x * xf;
+ float y = cy * (1.0f - xf) + outer.y * xf;
+ /* Nose cone bows forward more strongly near the shoulder (v ~ 0.55); tail
+  * Kammback fascia bows slightly outward at the ducktail lip and diffuser. */
+ float v_profile = sinf(clampf(v, 0.05f, 0.95f) * EV_PI);
+ float max_bow = front ? (0.24f * v_profile + 0.06f) : (0.14f * v_profile + 0.04f);
+ float bow = sign * max_bow * (1.0f - xf * xf);
+ if (normal) {
+  float nx = (float)side * xf * 0.36f;
+  float ny = (v - 0.52f) * 0.45f;
+  *normal = vnorm(v3(nx, ny, sign));
+ }
+ return v3(x, y, outer.z + bow);
 }
 
-static void finned_box(float x,float y,float z,float w,float h,float d) {
- ev_color(.26f,.30f,.38f);ev_box(x,y,z,w,h,d);
- ev_color(.48f,.52f,.60f);
- for(float fx=x-w*.42f;fx<=x+w*.42f;fx+=w*.14f)ev_box(fx,y+h*.55f,z,w*.035f,h*.25f,d*.86f);
-}
-
-static void hover_pod(float x,float z,float nr,float ng,float nb,float phase) {
- ev_color(.15f,.18f,.24f);ev_cylinder(v3(x,-1.30f,z),v3(x,-.78f,z),.30f,24);
- glPushMatrix();glTranslatef(x,-1.25f,z);glRotatef(90,1,0,0);
- ev_color(.30f,.33f,.41f);ev_torus(.39f,.055f,40,10);
- float pulse=.78f+.22f*sinf(phase);glDisable(GL_LIGHTING);glColor3f(nr*pulse,ng*pulse,nb*pulse);ev_torus(.31f,.025f,40,8);
- glEnable(GL_LIGHTING);glPopMatrix();
- /* The luminous downward column makes it explicit that these are hover pods,
-  * not tire models with missing spokes. It is visual emissive geometry only. */
- glDisable(GL_LIGHTING);glEnable(GL_BLEND);glBlendFunc(GL_SRC_ALPHA,GL_ONE);glDepthMask(GL_FALSE);
- glColor4f(nr,ng,nb,.10f);ev_cylinder(v3(x,-1.46f,z),v3(x,-1.28f,z),.25f,20);
- glDepthMask(GL_TRUE);glDisable(GL_BLEND);glEnable(GL_LIGHTING);
-}
-
-static void ev_systems(Server *s,bool cutaway) {
- float nr,ng,nb;scene_neon_color(s,&nr,&ng,&nb);
- /* Skateboard platform + 82 kWh structural pack, twelve serviceable modules. */
- ev_color(.10f,.13f,.18f);ev_box(0,-.96f,.35f,4.18f,.16f,5.70f);
- for(int row=0;row<4;row++)for(int col=0;col<3;col++){
-  float x=(col-1)*1.18f,z=-1.60f+row*1.18f;
-  ev_color(.12f,.22f+.025f*row,.30f+.025f*col);ev_box(x,-.76f,z,1.04f,.24f,1.02f);
-  ev_color(.30f,.55f,.62f);ev_box(x,-.625f,z,.82f,.025f,.78f);
-  ev_color(.92f,.38f,.08f);ev_box(x+.43f,-.60f,z,.055f,.055f,.64f);
- }
- if(!cutaway){ev_color(.15f,.18f,.24f);ev_box(0,-.54f,.35f,4.12f,.08f,5.64f);}
-
- /* Front/rear permanent-magnet drive units, reduction housings and inverters. */
- for(int end=-1;end<=1;end+=2){
-  float z=end<0?-3.55f:3.65f;
-  ev_color(.24f,.28f,.35f);ev_cylinder(v3(-.72f,-.43f,z),v3(.72f,-.43f,z),.43f,32);
-  for(int fin=0;fin<8;fin++){
-   float a=fin*EV_PI/4;ev_cylinder(v3(-.62f,-.43f+.45f*cosf(a),z+.45f*sinf(a)),
-                                    v3(.62f,-.43f+.45f*cosf(a),z+.45f*sinf(a)),.018f,6);
-  }
-  ev_color(.36f,.39f,.46f);ev_cylinder(v3(-1.15f,-.43f,z),v3(-.74f,-.43f,z),.34f,24);
-  finned_box(1.35f,-.32f,z,1.0f,.42f,1.10f);
-  ev_color(.16f,.19f,.25f);ev_cylinder(v3(-2.50f,-.68f,z),v3(2.50f,-.68f,z),.065f,12);
- }
-
- /* 800 V junction/fuse contactor box, onboard charger, DC/DC and 12 V battery. */
- finned_box(0,-.30f,2.90f,1.20f,.40f,.72f);
- finned_box(-1.55f,-.30f,4.45f,1.25f,.40f,.90f); /* onboard charger */
- finned_box( 1.55f,-.30f,4.45f,1.10f,.40f,.90f); /* high-voltage -> 12 V DC/DC */
- ev_color(.09f,.11f,.15f);ev_box(-2.05f,-.28f,-2.55f,.78f,.52f,1.10f);
- ev_color(.85f,.28f,.08f);ev_box(-2.24f,.005f,-2.72f,.13f,.07f,.18f);
- ev_color(.15f,.18f,.23f);ev_box(-1.87f,.005f,-2.72f,.13f,.07f,.18f);
-
- /* Orange high-voltage harnesses and a separate blue thermal loop. */
- ev_color(1.0f,.30f,.035f);
- const Vec3 front_hv[]={{0,-.31f,2.9f},{.65f,-.25f,1.5f},{1.25f,-.25f,-1.3f},{1.35f,-.25f,-3.55f}};
- const Vec3 rear_hv[]={{0,-.31f,2.9f},{.75f,-.20f,3.25f},{1.35f,-.25f,3.65f}};
- const Vec3 charge_hv[]={{0,-.31f,2.9f},{-.85f,-.20f,3.6f},{-1.55f,-.18f,4.45f}};
- spline_cable(front_hv,4,.042f);spline_cable(rear_hv,3,.042f);spline_cable(charge_hv,3,.042f);
- ev_color(.08f,.48f,.67f);
- const Vec3 coolant[]={{0,-.45f,-4.55f},{-1.4f,-.40f,-3.5f},{-1.5f,-.42f,0},{-1.0f,-.40f,3.65f}};
- spline_cable(coolant,4,.030f);
-
- /* Heat exchanger, coolant reservoir and charge-port hardware. */
- ev_color(.20f,.24f,.30f);ev_box(0,-.30f,-4.75f,3.55f,.72f,.20f);
- ev_color(.43f,.48f,.55f);for(float x=-1.55f;x<1.6f;x+=.16f)ev_box(x,-.30f,-4.63f,.035f,.60f,.035f);
- ev_color(.18f,.48f,.57f);ev_cylinder(v3(2.15f,-.55f,-3.6f),v3(2.15f,.02f,-3.6f),.22f,20);
- ev_color(.10f,.12f,.17f);ev_box(-2.77f,.16f,3.95f,.16f,.38f,.48f);
- ev_glow_line(v3(-2.87f,.15f,3.79f),v3(-2.87f,.15f,4.11f),.025f,nr,ng,nb);
-
- /* Four independent visual pods share the single heave DOF in vehicle.c. */
- for(int side=-1;side<=1;side+=2)for(int end=-1;end<=1;end+=2)
-  hover_pod(side*2.45f,end<0?-3.55f:3.65f,nr,ng,nb,(float)s->time*3+side+end);
-
- /* Seats remain visible in the systems cutaway to preserve the car scale. */
- for(int side=-1;side<=1;side+=2){
-  float x=side<0?-.90f:1.25f;
-  ev_color(.12f,.055f,.18f);ev_box(x,-.48f,2.25f,1.15f,.28f,1.30f);
-  glPushMatrix();glTranslatef(x,.12f,2.85f);glRotatef(12,1,0,0);ev_box(0,0,0,1.12f,1.30f,.24f);glPopMatrix();
-  ev_color(.26f,.20f,.34f);ev_box(x,.90f,2.98f,.62f,.35f,.25f);
- }
-}
-
-static float concept_nose_z(float x,float y) {
- /* Invert the rounded superellipse section radially, then apply the same bow
-  * as concept_hull's end fan. A tiny offset prevents z-fighting only. */
- BodySection s=body_at(0);float centre=(s.lower+s.top)*.5f,half=(s.top-s.lower)*.5f;
- float ax=fabsf(x)/s.width,ay=fabsf(y-centre)/half;
- float sum=powf(ax,2/.72f)+powf(ay,2/.78f),radial=sum>1?1:powf(sum,.375f);
- return s.z-.195f+.18f*radial;
-}
-
-static void exterior_details(Server *s) {
- float nr,ng,nb;scene_neon_color(s,&nr,&ng,&nb);
- /* A flush single-frame fascia follows the nose fan's compound curvature.
-  * Its centre sits just ahead of the cap and its edges return into the hull;
-  * there is no separate rectangular bumper to break the concept silhouette. */
- glDisable(GL_LIGHTING);glColor3f(.012f,.020f,.030f);
- glBegin(GL_TRIANGLE_FAN);glVertex3f(0,-.46f,concept_nose_z(0,-.46f));
- for(int i=0;i<=48;i++){
-  float a=i*2*EV_PI/48,x=1.75f*cosf(a),y=-.46f+.17f*sinf(a);
-  glVertex3f(x,y,concept_nose_z(x,y));
- }
- glEnd();
- glColor3f(.065f,.085f,.115f);glLineWidth(1.2f);glBegin(GL_LINE_STRIP);
- for(int i=0;i<=48;i++){
-  float a=i*2*EV_PI/48,x=1.75f*cosf(a),y=-.46f+.17f*sinf(a);
-  glVertex3f(x,y,concept_nose_z(x,y)-.008f);
- }
- glEnd();
- /* Four small interlocked metal rings provide the requested Audi-concept
-  * visual cue without introducing a raster badge or external asset. */
- glColor3f(.58f,.65f,.74f);glLineWidth(1.5f);
- for(int ring=0;ring<4;ring++){
-  float centre=(ring-1.5f)*.16f;glBegin(GL_LINE_STRIP);
-  for(int i=0;i<=32;i++){
-   float a=i*2*EV_PI/32,x=centre+.115f*cosf(a),y=-.43f+.115f*sinf(a);
-   glVertex3f(x,y,concept_nose_z(x,y)-.012f);
-  }
-  glEnd();
- }
- glLineWidth(1);glEnable(GL_LIGHTING);
- /* Concept-car light signatures are curved, flush and deliberately much
-  * thinner than the utility-vehicle bars in the first hull. */
- for(int side=-1;side<=1;side+=2){
-  ev_color(.60f,.86f,1.0f);
-  const Vec3 headlamp[]={{side*.25f,-.08f,-5.86f},{side*1.10f,.015f,-5.70f},{side*2.06f,.12f,-5.28f}};
-  spline_led(headlamp,3);
-  ev_color(1.0f,.035f,.10f);
-  const Vec3 tail_lamp[]={{side*.10f,.02f,5.74f},{side*1.15f,.10f,5.60f},{side*2.10f,.16f,5.18f}};
-  spline_led(tail_lamp,3);
-  ev_color(.12f,.14f,.19f);ev_cylinder(v3(side*2.70f,.67f,.05f),v3(side*3.18f,.71f,.02f),.032f,12);
-  ev_box(side*3.24f,.71f,.02f,.25f,.13f,.34f);
-  ev_color(.025f,.04f,.055f);ev_box(side*3.25f,.72f,.20f,.18f,.07f,.018f);
-  /* Flush handles and a subtle lower aero highlight, not exposed hinges. */
-  ev_color(.07f,.08f,.11f);ev_box(side*3.035f,.35f,1.10f,.018f,.025f,.34f);ev_box(side*2.99f,.32f,3.35f,.018f,.025f,.34f);
-  ev_glow_line(v3(side*3.02f,-.43f,-2.3f),v3(side*2.98f,-.43f,3.5f),.010f,nr,ng,nb);
- }
- /* Flush roof sensor strip replaces the tall aftermarket-looking lidar pod. */
- ev_color(.08f,.10f,.14f);ev_box(0,2.18f,-.05f,.72f,.075f,.30f);
- ev_glow_line(v3(-.25f,2.22f,-.10f),v3(.25f,2.22f,-.10f),.010f,nr,ng,nb);
-}
-
-void vehicle_render(Server *s,bool cutaway) {
- float nr,ng,nb;scene_neon_color(s,&nr,&ng,&nb);
- ev_systems(s,cutaway);
- if(cutaway){body_outline(nr,ng,nb);return;}
-
- /* Multi-layer metallic paint is approximated with the existing fixed-function
-  * specular material; the spline curvature, not a normal-map dependency,
-  * supplies the highlights in both EGL/llvmpipe and GLX backends. */
- if(s->camera_mode==VEHICLE_CAMERA_DRIVER){
-  /* Interior visibility cutaway: retain transparent glazing and expose the
-   * dashboard, while using the same spline stations as the closed exterior. */
-  ev_color(.20f,.22f,.30f);body_sides();
-  ev_color(.235f,.255f,.335f);body_top(0,.48f);body_top(.82f,1);body_cap(true);body_cap(false);
-  ev_color(.115f,.135f,.19f);roof_panel();
- }else{
-  ev_color(.24f,.27f,.35f);concept_hull();
-  ev_color(.022f,.035f,.055f);concept_canopy();
- }
- ev_color(.07f,.08f,.11f);ev_box(0,-.90f,.55f,4.15f,.12f,9.20f);
- exterior_details(s);
-}
-
-static float body_width_at_z(float z) {
- BodySection previous=body_at(0);
- for(int i=1;i<=80;i++){
-  BodySection next=body_at(i/80.0f);
-  if(z>=previous.z&&z<=next.z){float t=(z-previous.z)/(next.z-previous.z);return previous.width+(next.width-previous.width)*t;}
-  previous=next;
- }
- return z<0?body_at(0).width:body_at(1).width;
-}
-
-void vehicle_render_glass(Server *s) {
- if(s->camera_mode!=VEHICLE_CAMERA_DRIVER)return; /* exterior canopy is opaque */
- /* Glass is a separate late pass. It must not write depth: Wayland monitors
-  * behind the windshield still need to render, and their textures must retain
-  * correct alpha compositing instead of being discarded by transparent glass. */
- glDisable(GL_LIGHTING);glEnable(GL_BLEND);glBlendFunc(GL_SRC_ALPHA,GL_ONE_MINUS_SRC_ALPHA);glDepthMask(GL_FALSE);
- glColor4f(.035f,.075f,.11f,.14f);
- for(int strip=0;strip<16;strip++){
-  float x0=-1+strip*.125f,x1=x0+.125f;
-  for(int part=0;part<2;part++){
-   float from=part? .76f:0,to=part?1:.27f;glBegin(GL_QUAD_STRIP);
-   for(int i=0;i<=24;i++){
-    RoofSection r=roof_at(from+(to-from)*i/24.0f);
-    glVertex3f(r.width*x0,r.height+.10f*(1-x0*x0),r.z);
-    glVertex3f(r.width*x1,r.height+.10f*(1-x1*x1),r.z);
+static void render_fascia_cap(Server *s, bool front) {
+ float nr, ng, nb;
+ scene_neon_color(s, &nr, &ng, &nb);
+ const int v_steps = 24, x_steps = 16;
+ for (int side = -1; side <= 1; side += 2) {
+  for (int iv = 0; iv < v_steps; iv++) {
+   float v0 = (float)iv / (float)v_steps;
+   float v1 = (float)(iv + 1) / (float)v_steps;
+   float vm = 0.5f * (v0 + v1);
+   /* Zone-based material: lower carbon splitter/diffuser, dark recessed
+    * intake/lightbar aperture in the middle, metallic body paint on top. */
+   if (vm < 0.25f) {
+    ev_set_material(EV_MAT_MATTE_CARBON);
+    ev_color(0.055f, 0.062f, 0.082f);
+   } else if (front && vm >= 0.25f && vm <= 0.58f) {
+    ev_set_material(EV_MAT_MATTE_CARBON);
+    ev_color(0.025f, 0.032f, 0.046f);
+   } else if (!front && vm >= 0.44f && vm <= 0.68f) {
+    ev_set_material(EV_MAT_MATTE_CARBON);
+    ev_color(0.022f, 0.026f, 0.038f);
+   } else {
+    ev_set_material(EV_MAT_BODY_PAINT);
+    ev_color(0.22f, 0.25f, 0.34f);
+   }
+   glBegin(GL_QUAD_STRIP);
+   for (int ix = 0; ix <= x_steps; ix++) {
+    float xf = (float)ix / (float)x_steps;
+    Vec3 n0, n1;
+    Vec3 p0 = fascia_point(front, v0, xf, side, &n0);
+    Vec3 p1 = fascia_point(front, v1, xf, side, &n1);
+    glNormal3f(n0.x, n0.y, n0.z); glVertex3f(p0.x, p0.y, p0.z);
+    glNormal3f(n1.x, n1.y, n1.z); glVertex3f(p1.x, p1.y, p1.z);
    }
    glEnd();
   }
  }
- for(int side=-1;side<=1;side+=2){
+
+ if (front) {
+  /* Satin titanium single-frame intake surround & horizontal aero louvers,
+   * evaluated directly on the front fascia surface so nothing detaches. */
+  ev_set_material(EV_MAT_SATIN_METAL);
+  glDisable(GL_LIGHTING);
+  glColor3f(0.46f, 0.52f, 0.62f);
+  glLineWidth(1.8f);
+  for (int side = -1; side <= 1; side += 2) {
+   glBegin(GL_LINE_STRIP);
+   for (int ix = 0; ix <= 12; ix++) {
+    float xf = (float)ix / 12.0f * 0.78f;
+    Vec3 p = fascia_point(true, 0.26f, xf, side, NULL);
+    glVertex3f(p.x, p.y, p.z - 0.008f);
+   }
+   for (int iv = 0; iv <= 8; iv++) {
+    float v = 0.26f + 0.30f * (float)iv / 8.0f;
+    Vec3 p = fascia_point(true, v, 0.78f, side, NULL);
+    glVertex3f(p.x, p.y, p.z - 0.008f);
+   }
+   for (int ix = 12; ix >= 0; ix--) {
+    float xf = (float)ix / 12.0f * 0.78f;
+    Vec3 p = fascia_point(true, 0.56f, xf, side, NULL);
+    glVertex3f(p.x, p.y, p.z - 0.008f);
+   }
+   glEnd();
+  }
+  /* Horizontal intake vanes inside the front aero mouth. */
+  glColor3f(0.14f, 0.17f, 0.23f);
+  glLineWidth(1.3f);
+  for (int lv = 1; lv <= 3; lv++) {
+   float v = 0.26f + 0.075f * (float)lv;
+   for (int side = -1; side <= 1; side += 2) {
+    glBegin(GL_LINE_STRIP);
+    for (int ix = 0; ix <= 10; ix++) {
+     Vec3 p = fascia_point(true, v, (float)ix / 10.0f * 0.74f, side, NULL);
+     glVertex3f(p.x, p.y, p.z - 0.006f);
+    }
+    glEnd();
+   }
+  }
+  /* Four interlocked metallic concept rings mounted flush on the nose cone. */
+  glColor3f(0.74f, 0.80f, 0.90f);
+  glLineWidth(1.8f);
+  Vec3 badge_c = fascia_point(true, 0.45f, 0.0f, 1, NULL);
+  for (int ring = 0; ring < 4; ring++) {
+   float cx = ((float)ring - 1.5f) * 0.145f;
+   glBegin(GL_LINE_STRIP);
+   for (int i = 0; i <= 32; i++) {
+    float a = (float)i * 2.0f * EV_PI / 32.0f;
+    float rx = cx + 0.102f * cosf(a);
+    float ry = badge_c.y + 0.098f * sinf(a);
+    float bz = badge_c.z - 0.014f + 0.018f * rx * rx;
+    glVertex3f(rx, ry, bz);
+   }
+   glEnd();
+  }
+  /* Subtle neon front splitter leading-edge accent. */
+  glColor3f(nr * 0.85f, ng * 0.85f, nb * 0.85f);
+  glLineWidth(1.6f);
+  for (int side = -1; side <= 1; side += 2) {
+   glBegin(GL_LINE_STRIP);
+   for (int ix = 0; ix <= 14; ix++) {
+    Vec3 p = fascia_point(true, 0.18f, (float)ix / 14.0f * 0.90f, side, NULL);
+    glVertex3f(p.x, p.y, p.z - 0.008f);
+   }
+   glEnd();
+  }
+  glLineWidth(1.0f);
+  glEnable(GL_LIGHTING);
+ } else {
+  /* Full-width crimson OLED rear lightblade & vertical laser brake strakes,
+   * evaluated directly on the rear fascia surface. */
+  glDisable(GL_LIGHTING);
+  for (int side = -1; side <= 1; side += 2) {
+   glColor3f(1.0f, 0.06f, 0.14f);
+   glBegin(GL_QUAD_STRIP);
+   for (int ix = 0; ix <= 16; ix++) {
+    float xf = (float)ix / 16.0f * 0.92f;
+    Vec3 p0 = fascia_point(false, 0.55f, xf, side, NULL);
+    Vec3 p1 = fascia_point(false, 0.60f, xf, side, NULL);
+    glVertex3f(p0.x, p0.y, p0.z + 0.008f);
+    glVertex3f(p1.x, p1.y, p1.z + 0.008f);
+   }
+   glEnd();
+   /* Four vertical OLED brake-light fins per side inside the rear channel. */
+   glColor3f(1.0f, 0.18f, 0.22f);
+   for (int fin = 1; fin <= 4; fin++) {
+    float xf = 0.28f + (float)fin * 0.14f;
+    Vec3 b0 = fascia_point(false, 0.48f, xf - 0.015f, side, NULL);
+    Vec3 b1 = fascia_point(false, 0.48f, xf + 0.015f, side, NULL);
+    Vec3 t1 = fascia_point(false, 0.55f, xf + 0.015f, side, NULL);
+    Vec3 t0 = fascia_point(false, 0.55f, xf - 0.015f, side, NULL);
+    glBegin(GL_QUADS);
+    glVertex3f(b0.x, b0.y, b0.z + 0.009f);
+    glVertex3f(b1.x, b1.y, b1.z + 0.009f);
+    glVertex3f(t1.x, t1.y, t1.z + 0.009f);
+    glVertex3f(t0.x, t0.y, t0.z + 0.009f);
+    glEnd();
+   }
+  }
+  /* Rear Venturi diffuser strakes & central energy-recovery beacon. */
+  glEnable(GL_LIGHTING);
+  ev_set_material(EV_MAT_MATTE_CARBON);
+  ev_color(0.08f, 0.095f, 0.125f);
+  for (int side = -1; side <= 1; side += 2) {
+   for (int st = 1; st <= 2; st++) {
+    Vec3 p = fascia_point(false, 0.14f, 0.24f * (float)st, side, NULL);
+    ev_box(p.x, p.y + 0.02f, p.z - 0.08f, 0.028f, 0.14f, 0.22f);
+   }
+  }
+  Vec3 beacon = fascia_point(false, 0.16f, 0.0f, 1, NULL);
+  ev_glow_line(v3(-0.08f, beacon.y + 0.02f, beacon.z + 0.01f),
+               v3( 0.08f, beacon.y + 0.02f, beacon.z + 0.01f), 0.014f, 1.0f, 0.08f, 0.16f);
+ }
+}
+
+static void render_exterior_hull(void) {
+ const int u_steps = 80, v_steps = 36;
+ for (int side = -1; side <= 1; side += 2) {
+  for (int iv = 0; iv < v_steps; iv++) {
+   float v0 = (float)iv / (float)v_steps;
+   float v1 = (float)(iv + 1) / (float)v_steps;
+   float vm = 0.5f * (v0 + v1);
+
+   if (vm < 0.24f) {
+    /* Flat Venturi undertray and lower carbon aero rocker skirt. */
+    ev_set_material(EV_MAT_MATTE_CARBON);
+    ev_color(0.050f, 0.058f, 0.078f);
+   } else if (vm < 0.30f) {
+    /* Satin titanium lower rocker molding. */
+    ev_set_material(EV_MAT_SATIN_METAL);
+    ev_color(0.14f, 0.16f, 0.22f);
+   } else {
+    /* Metallic clearcoat body panels, subtly richer on the upper deck. */
+    ev_set_material(EV_MAT_BODY_PAINT);
+    float shade = 0.88f + 0.18f * ((vm - 0.30f) / 0.70f);
+    ev_color(0.21f * shade, 0.24f * shade, 0.34f * shade);
+   }
+
+   glBegin(GL_QUAD_STRIP);
+   for (int iu = 0; iu <= u_steps; iu++) {
+    float u = (float)iu / (float)u_steps;
+    /* Darken the recessed side-scoop cove along the doors for visual depth. */
+    if (vm >= 0.32f && vm <= 0.50f && u >= 0.33f && u <= 0.66f) {
+     ev_color(0.13f, 0.15f, 0.22f);
+    } else if (vm >= 0.30f) {
+     float shade = 0.88f + 0.18f * ((vm - 0.30f) / 0.70f);
+     ev_color(0.21f * shade, 0.24f * shade, 0.34f * shade);
+    }
+    Vec3 n0, n1;
+    Vec3 p0 = vehicle_hull_point(u, v0, side, &n0);
+    Vec3 p1 = vehicle_hull_point(u, v1, side, &n1);
+    glNormal3f(n0.x, n0.y, n0.z); glVertex3f(p0.x, p0.y, p0.z);
+    glNormal3f(n1.x, n1.y, n1.z); glVertex3f(p1.x, p1.y, p1.z);
+   }
+   glEnd();
+  }
+ }
+}
+
+static Vec3 hull_offset_point(float u, float v, int side, float offset, Vec3 *n_out) {
+ Vec3 n;
+ Vec3 p = vehicle_hull_point(u, v, side, &n);
+ if (n_out) *n_out = n;
+ return vadd(p, vmul(n, offset));
+}
+
+static void render_driver_hull(void) {
+ /* From the first-person driver's seat, only the outer side flanks (v <= 0.78,
+  * outside the cabin beltline), the front hood (u <= 0.41, ahead of the z=-1.0
+  * dashboard), and the rear deck (u >= 0.82) are drawn. Keeping the front hood
+  * and rear deck as separate quad strips prevents bridging across the cockpit. */
+ ev_set_material(EV_MAT_BODY_PAINT);
+ const int u_steps = 72;
+ for (int side = -1; side <= 1; side += 2) {
+  for (int iv = 4; iv < 19; iv++) {
+   float v0 = (float)iv / 24.0f;
+   float v1 = (float)(iv + 1) / 24.0f;
+   ev_color(iv < 15 ? 0.19f : 0.22f, iv < 15 ? 0.22f : 0.25f, iv < 15 ? 0.30f : 0.34f);
+   glBegin(GL_QUAD_STRIP);
+   for (int iu = 0; iu <= u_steps; iu++) {
+    float u = (float)iu / (float)u_steps;
+    Vec3 n0, n1;
+    Vec3 p0 = vehicle_hull_point(u, v0, side, &n0);
+    Vec3 p1 = vehicle_hull_point(u, v1, side, &n1);
+    glNormal3f(n0.x, n0.y, n0.z); glVertex3f(p0.x, p0.y, p0.z);
+    glNormal3f(n1.x, n1.y, n1.z); glVertex3f(p1.x, p1.y, p1.z);
+   }
+   glEnd();
+  }
+ }
+ /* Front hood (ahead of the windshield/dashboard) and rear deck center panels. */
+ for (int part = 0; part < 2; part++) {
+  float u_from = part ? 0.82f : 0.0f;
+  float u_to   = part ? 1.00f : 0.41f;
+  for (int side = -1; side <= 1; side += 2) {
+   for (int iv = 19; iv < 24; iv++) {
+    float v0 = (float)iv / 24.0f;
+    float v1 = (float)(iv + 1) / 24.0f;
+    ev_color(0.23f, 0.26f, 0.35f);
+    glBegin(GL_QUAD_STRIP);
+    for (int iu = 0; iu <= 32; iu++) {
+     float u = u_from + (u_to - u_from) * (float)iu / 32.0f;
+     Vec3 n0, n1;
+     Vec3 p0 = vehicle_hull_point(u, v0, side, &n0);
+     Vec3 p1 = vehicle_hull_point(u, v1, side, &n1);
+     glNormal3f(n0.x, n0.y, n0.z); glVertex3f(p0.x, p0.y, p0.z);
+     glNormal3f(n1.x, n1.y, n1.z); glVertex3f(p1.x, p1.y, p1.z);
+    }
+    glEnd();
+   }
+  }
+ }
+}
+
+static void render_exterior_canopy(Server *s) {
+ float nr, ng, nb;
+ scene_neon_color(s, &nr, &ng, &nb);
+ const int u_steps = 64, v_steps = 28;
+ for (int side = -1; side <= 1; side += 2) {
+  for (int iv = 0; iv < v_steps; iv++) {
+   float v0 = (float)iv / (float)v_steps;
+   float v1 = (float)(iv + 1) / (float)v_steps;
+   float vm = 0.5f * (v0 + v1);
+
+   glBegin(GL_QUAD_STRIP);
+   for (int iu = 0; iu <= u_steps; iu++) {
+    float u = (float)iu / (float)u_steps;
+    /* Structural body-colored A-pillars, cantrails (v in [0.64, 0.74]), and
+     * flying-buttress C-pillars frame the tinted sapphire-obsidian glass. */
+    bool cantrail = (vm >= 0.64f && vm <= 0.74f && u >= 0.08f && u <= 0.92f);
+    bool base_trim = (vm < 0.06f);
+    bool b_pillar = (vm < 0.66f && u >= 0.44f && u <= 0.47f);
+    bool rear_buttress = (vm < 0.22f && u > 0.74f);
+    bool front_pillar = (vm < 0.16f && u < 0.18f);
+
+    if (base_trim) {
+     ev_set_material(EV_MAT_SATIN_METAL);
+     ev_color(0.38f, 0.43f, 0.52f);
+    } else if (cantrail || rear_buttress || front_pillar) {
+     ev_set_material(EV_MAT_BODY_PAINT);
+     ev_color(0.22f, 0.25f, 0.35f);
+    } else if (b_pillar) {
+     ev_set_material(EV_MAT_DARK_GLASS);
+     ev_color(0.018f, 0.022f, 0.032f);
+    } else {
+     ev_set_material(EV_MAT_DARK_GLASS);
+     ev_color(0.032f, 0.052f, 0.082f);
+    }
+    Vec3 n0, n1;
+    Vec3 p0 = vehicle_canopy_point(u, v0, side, &n0);
+    Vec3 p1 = vehicle_canopy_point(u, v1, side, &n1);
+    glNormal3f(n0.x, n0.y, n0.z); glVertex3f(p0.x, p0.y, p0.z);
+    glNormal3f(n1.x, n1.y, n1.z); glVertex3f(p1.x, p1.y, p1.z);
+   }
+   glEnd();
+  }
+ }
+
+ /* Flush roof LiDAR & autonomous sensor module contoured directly onto the
+  * windshield header crown (u_c in [0.17, 0.26], v_c in [0.78, 1.00]). */
+ ev_set_material(EV_MAT_MATTE_CARBON);
+ ev_color(0.07f, 0.085f, 0.12f);
+ for (int side = -1; side <= 1; side += 2) {
   glBegin(GL_QUAD_STRIP);
-  for(int i=0;i<=32;i++){
-   RoofSection r=roof_at(.25f+.53f*i/32.0f);
-   float belt_width=body_width_at_z(r.z)*.97f;
-   glVertex3f(side*belt_width,.48f,r.z);glVertex3f(side*r.width,r.height,r.z);
+  for (int iu = 0; iu <= 10; iu++) {
+   float u = 0.17f + 0.09f * (float)iu / 10.0f;
+   Vec3 n0, n1;
+   Vec3 p0 = vehicle_canopy_point(u, 0.80f, side, &n0);
+   Vec3 p1 = vehicle_canopy_point(u, 1.00f, side, &n1);
+   p0 = vadd(p0, vmul(n0, 0.018f));
+   p1 = vadd(p1, vmul(n1, 0.026f));
+   glNormal3f(n0.x, n0.y, n0.z); glVertex3f(p0.x, p0.y, p0.z);
+   glNormal3f(n1.x, n1.y, n1.z); glVertex3f(p1.x, p1.y, p1.z);
   }
   glEnd();
  }
- glDepthMask(GL_TRUE);glDisable(GL_BLEND);glEnable(GL_LIGHTING);
+ Vec3 lidar_l = vehicle_canopy_point(0.175f, 0.86f, -1, NULL);
+ Vec3 lidar_r = vehicle_canopy_point(0.175f, 0.86f,  1, NULL);
+ ev_glow_line(v3(lidar_l.x * 0.7f, lidar_l.y + 0.022f, lidar_l.z - 0.01f),
+              v3(lidar_r.x * 0.7f, lidar_r.y + 0.022f, lidar_r.z - 0.01f),
+              0.008f, nr, ng, nb);
+}
+
+/* Flush electromagnetic vectoring hover-thruster nacelle.
+ * Instead of dangling below the car on stovepipe legs, the thruster housing is
+ * recessed upward into the undertray bay so its chamfered stator ring sits
+ * flush with the lower hull contour (y = base_y). */
+static void render_hover_nacelle(float x, float base_y, float z,
+                                 float nr, float ng, float nb, float phase, bool cutaway) {
+ /* Upper magnetic flux housing tucked inside the fender bay. */
+ ev_set_material(EV_MAT_SATIN_METAL);
+ ev_color(0.16f, 0.19f, 0.26f);
+ ev_cylinder(v3(x, base_y + 0.01f, z), v3(x, base_y + 0.26f, z), 0.44f, 28);
+ if (cutaway) {
+  /* In cutaway mode, expose the upper copper/orange electromagnetic coil packs. */
+  ev_color(0.88f, 0.36f, 0.10f);
+  glPushMatrix();
+  glTranslatef(x, base_y + 0.16f, z);
+  glRotatef(90.0f, 1, 0, 0);
+  ev_torus(0.38f, 0.045f, 32, 10);
+  glPopMatrix();
+ }
+
+ /* Flush chamfered titanium outer shroud ring at the underbody plane. */
+ glPushMatrix();
+ glTranslatef(x, base_y, z);
+ glRotatef(90.0f, 1, 0, 0);
+ ev_set_material(EV_MAT_SATIN_METAL);
+ ev_color(0.32f, 0.36f, 0.45f);
+ ev_torus(0.46f, 0.048f, 36, 12);
+ ev_set_material(EV_MAT_MATTE_CARBON);
+ ev_color(0.05f, 0.06f, 0.09f);
+ ev_torus(0.32f, 0.032f, 32, 10);
+
+ /* Twelve radial thrust-vectoring stator vanes inside the recessed aperture. */
+ ev_color(0.24f, 0.28f, 0.36f);
+ for (int vane = 0; vane < 12; vane++) {
+  float a = (float)vane * 2.0f * EV_PI / 12.0f;
+  Vec3 inner = v3(0.12f * cosf(a), 0.12f * sinf(a), 0.0f);
+  Vec3 outer = v3(0.41f * cosf(a), 0.41f * sinf(a), 0.0f);
+  ev_cylinder(inner, outer, 0.012f, 6);
+ }
+
+ /* Dual concentric emissive plasma levitation rings. */
+ float pulse = 0.82f + 0.18f * sinf(phase);
+ glDisable(GL_LIGHTING);
+ glColor3f(nr * pulse, ng * pulse, nb * pulse);
+ ev_torus(0.37f, 0.022f, 36, 8);
+ glColor3f(0.55f + 0.40f * nr, 0.78f + 0.20f * ng, 1.0f);
+ ev_torus(0.20f, 0.018f, 28, 8);
+ glEnable(GL_LIGHTING);
+ glPopMatrix();
+
+ /* Subtle downward ground-effect magnetic cushion glow directly beneath the
+  * flush aperture (visual emissive aura only, never a physical wheel/leg). */
+ glDisable(GL_LIGHTING);
+ glEnable(GL_BLEND);
+ glBlendFunc(GL_SRC_ALPHA, GL_ONE);
+ glDepthMask(GL_FALSE);
+ glColor4f(nr, ng, nb, 0.11f);
+ ev_cylinder(v3(x, base_y - 0.10f, z), v3(x, base_y - 0.01f, z), 0.38f, 24);
+ glColor4f(0.55f, 0.85f, 1.0f, 0.08f);
+ ev_cylinder(v3(x, base_y - 0.16f, z), v3(x, base_y - 0.02f, z), 0.24f, 20);
+ glDepthMask(GL_TRUE);
+ glDisable(GL_BLEND);
+ glEnable(GL_LIGHTING);
+}
+
+static void render_all_hover_nacelles(Server *s, bool cutaway) {
+ float nr, ng, nb;
+ scene_neon_color(s, &nr, &ng, &nb);
+ static const float u_pos[2] = {0.25f, 0.75f}; /* z = -3.55 front, +3.55 rear */
+ static const float x_pos[2] = {1.68f, 1.76f}; /* inside the flat 0.74*width undertray */
+ for (int end = 0; end < 2; end++) {
+  VehicleHullSection sec = vehicle_hull_section(u_pos[end]);
+  for (int side = -1; side <= 1; side += 2) {
+   float phase = (float)s->time * 3.2f + (float)side + (float)(end * 2);
+   render_hover_nacelle((float)side * x_pos[end], sec.lower - 0.01f, sec.z,
+                        nr, ng, nb, phase, cutaway);
+  }
+ }
+}
+
+static void render_exterior_details(Server *s) {
+ float nr, ng, nb;
+ scene_neon_color(s, &nr, &ng, &nb);
+
+ for (int side = -1; side <= 1; side += 2) {
+  /* 1. Sculpted Matrix LED Headlamps & Ice-Cyan DRLs:
+   * Every vertex is evaluated on vehicle_hull_point(u, v, side, &n) and
+   * displaced slightly along the outward normal so the lamp housing and light
+   * blades hug the compound front fender curvature with zero air gap. */
+  ev_set_material(EV_MAT_MATTE_CARBON);
+  ev_color(0.025f, 0.032f, 0.048f);
+  glBegin(GL_QUAD_STRIP);
+  for (int i = 0; i <= 14; i++) {
+   float t = (float)i / 14.0f;
+   float u = 0.012f + 0.115f * t;
+   float v_lo = 0.56f + 0.06f * t;
+   float v_hi = 0.67f + 0.07f * t;
+   Vec3 n0, n1;
+   Vec3 p0 = vehicle_hull_point(u, v_lo, side, &n0);
+   Vec3 p1 = vehicle_hull_point(u, v_hi, side, &n1);
+   p0 = vadd(p0, vmul(n0, 0.006f));
+   p1 = vadd(p1, vmul(n1, 0.006f));
+   glNormal3f(n0.x, n0.y, n0.z); glVertex3f(p0.x, p0.y, p0.z);
+   glNormal3f(n1.x, n1.y, n1.z); glVertex3f(p1.x, p1.y, p1.z);
+  }
+  glEnd();
+
+  /* Upper ice-cyan DRL light blade & lower matrix LED segments. */
+  glDisable(GL_LIGHTING);
+  glColor3f(0.68f, 0.92f, 1.0f);
+  glBegin(GL_QUAD_STRIP);
+  for (int i = 0; i <= 14; i++) {
+   float t = (float)i / 14.0f;
+   float u = 0.012f + 0.115f * t;
+   float v_a = 0.65f + 0.07f * t;
+   float v_b = 0.675f + 0.07f * t;
+   Vec3 pa = hull_offset_point(u, v_a, side, 0.011f, NULL);
+   Vec3 pb = hull_offset_point(u, v_b, side, 0.011f, NULL);
+   glVertex3f(pa.x, pa.y, pa.z);
+   glVertex3f(pb.x, pb.y, pb.z);
+  }
+  glEnd();
+  /* Three crystalline matrix projector modules inside each headlamp recess. */
+  glColor3f(0.90f, 0.96f, 1.0f);
+  for (int m = 0; m < 3; m++) {
+   float t0 = 0.15f + (float)m * 0.24f, t1 = t0 + 0.15f;
+   float u0 = 0.012f + 0.115f * t0, u1 = 0.012f + 0.115f * t1;
+   Vec3 p0 = hull_offset_point(u0, 0.58f + 0.06f * t0, side, 0.012f, NULL);
+   Vec3 p1 = hull_offset_point(u1, 0.58f + 0.06f * t1, side, 0.012f, NULL);
+   Vec3 p2 = hull_offset_point(u1, 0.63f + 0.06f * t1, side, 0.012f, NULL);
+   Vec3 p3 = hull_offset_point(u0, 0.63f + 0.06f * t0, side, 0.012f, NULL);
+   glBegin(GL_QUADS);
+   glVertex3f(p0.x, p0.y, p0.z); glVertex3f(p1.x, p1.y, p1.z);
+   glVertex3f(p2.x, p2.y, p2.z); glVertex3f(p3.x, p3.y, p3.z);
+   glEnd();
+  }
+  glEnable(GL_LIGHTING);
+
+  /* 2. Aerodynamic Side Camera-Mirrors:
+   * Rooted inside the upper door shoulder at u = 0.34, v = 0.76 (right at the
+   * base of the A-pillar) so the strut emerges directly from the bodywork. */
+  Vec3 m_norm;
+  Vec3 m_base = vehicle_hull_point(0.34f, 0.76f, side, &m_norm);
+  Vec3 m_root = vsub(m_base, vmul(m_norm, 0.03f)); /* anchored inside hull */
+  Vec3 m_tip  = vadd(m_base, v3((float)side * 0.28f, 0.05f, 0.06f));
+  ev_set_material(EV_MAT_SATIN_METAL);
+  ev_color(0.18f, 0.21f, 0.29f);
+  ev_cylinder(m_root, m_tip, 0.026f, 12);
+  ev_set_material(EV_MAT_BODY_PAINT);
+  ev_color(0.22f, 0.25f, 0.35f);
+  ev_box(m_tip.x + (float)side * 0.04f, m_tip.y, m_tip.z + 0.02f, 0.20f, 0.085f, 0.26f);
+  /* Rear-facing camera lens & integrated neon turn repeater. */
+  ev_set_material(EV_MAT_MATTE_CARBON);
+  ev_color(0.02f, 0.03f, 0.045f);
+  ev_box(m_tip.x + (float)side * 0.04f, m_tip.y, m_tip.z + 0.152f, 0.14f, 0.05f, 0.012f);
+  glDisable(GL_LIGHTING);
+  glColor3f(nr, ng, nb);
+  ev_box(m_tip.x + (float)side * 0.05f, m_tip.y, m_tip.z - 0.112f, 0.15f, 0.014f, 0.012f);
+  glEnable(GL_LIGHTING);
+
+  /* 3. Flush Capacitive Door Handles:
+   * Evaluated directly on the door shoulder surface (u in [0.46, 0.51]). */
+  ev_set_material(EV_MAT_SATIN_METAL);
+  ev_color(0.10f, 0.12f, 0.17f);
+  glBegin(GL_QUAD_STRIP);
+  for (int i = 0; i <= 6; i++) {
+   float u = 0.455f + 0.055f * (float)i / 6.0f;
+   Vec3 n0, n1;
+   Vec3 p0 = hull_offset_point(u, 0.63f, side, 0.007f, &n0);
+   Vec3 p1 = hull_offset_point(u, 0.655f, side, 0.007f, &n1);
+   glNormal3f(n0.x, n0.y, n0.z); glVertex3f(p0.x, p0.y, p0.z);
+   glNormal3f(n1.x, n1.y, n1.z); glVertex3f(p1.x, p1.y, p1.z);
+  }
+  glEnd();
+
+  /* 4. Side Rocker Neon Underglow Blade:
+   * Follows the exact plan-view coke-bottle curve along v = 0.25. */
+  Vec3 rocker_pts[7];
+  for (int i = 0; i < 7; i++) {
+   float u = 0.24f + 0.50f * (float)i / 6.0f;
+   rocker_pts[i] = hull_offset_point(u, 0.25f, side, 0.010f, NULL);
+  }
+  glDisable(GL_LIGHTING);
+  ev_color(nr, ng, nb);
+  spline_cable(rocker_pts, 7, 0.012f);
+  glEnable(GL_LIGHTING);
+
+  /* 5. Flush Hover-Thruster Side Gill Louvers (front u~0.24, rear u~0.75):
+   * Replaces traditional wheel cutouts with flush carbon vector-thrust intake
+   * gills and an embedded plasma status bar along the lower fender flares. */
+  static const float bay_u[2] = {0.20f, 0.71f};
+  for (int bay = 0; bay < 2; bay++) {
+   float u_start = bay_u[bay], u_end = u_start + 0.085f;
+   ev_set_material(EV_MAT_MATTE_CARBON);
+   ev_color(0.032f, 0.038f, 0.054f);
+   glBegin(GL_QUAD_STRIP);
+   for (int i = 0; i <= 8; i++) {
+    float u = u_start + (u_end - u_start) * (float)i / 8.0f;
+    Vec3 n0, n1;
+    Vec3 p0 = hull_offset_point(u, 0.27f, side, 0.005f, &n0);
+    Vec3 p1 = hull_offset_point(u, 0.39f, side, 0.005f, &n1);
+    glNormal3f(n0.x, n0.y, n0.z); glVertex3f(p0.x, p0.y, p0.z);
+    glNormal3f(n1.x, n1.y, n1.z); glVertex3f(p1.x, p1.y, p1.z);
+   }
+   glEnd();
+   glDisable(GL_LIGHTING);
+   glColor3f(0.42f * nr + 0.35f, 0.42f * ng + 0.52f, 0.42f * nb + 0.58f);
+   glLineWidth(1.5f);
+   for (int gill = 1; gill <= 3; gill++) {
+    float v_g = 0.27f + 0.03f * (float)gill;
+    glBegin(GL_LINE_STRIP);
+    for (int i = 0; i <= 6; i++) {
+     float u = u_start + 0.008f + (u_end - u_start - 0.016f) * (float)i / 6.0f;
+     Vec3 pg = hull_offset_point(u, v_g, side, 0.009f, NULL);
+     glVertex3f(pg.x, pg.y, pg.z);
+    }
+    glEnd();
+   }
+   glLineWidth(1.0f);
+   glEnable(GL_LIGHTING);
+  }
+
+  /* 6. Sculpted Front Hood Aero Extractor Vents (u in [0.16, 0.24], v in [0.85, 0.92]). */
+  ev_set_material(EV_MAT_MATTE_CARBON);
+  ev_color(0.035f, 0.042f, 0.060f);
+  glBegin(GL_QUAD_STRIP);
+  for (int i = 0; i <= 6; i++) {
+   float u = 0.16f + 0.08f * (float)i / 6.0f;
+   Vec3 n0, n1;
+   Vec3 p0 = hull_offset_point(u, 0.85f, side, 0.005f, &n0);
+   Vec3 p1 = hull_offset_point(u, 0.92f, side, 0.005f, &n1);
+   glNormal3f(n0.x, n0.y, n0.z); glVertex3f(p0.x, p0.y, p0.z);
+   glNormal3f(n1.x, n1.y, n1.z); glVertex3f(p1.x, p1.y, p1.z);
+  }
+  glEnd();
+ }
+
+ /* 7. Flush Left-Rear Charge Port Door (side = -1, u in [0.76, 0.80]) with a
+  * thin surface-hugging LED strip (no protruding halo cylinder). */
+ ev_set_material(EV_MAT_MATTE_CARBON);
+ ev_color(0.08f, 0.10f, 0.15f);
+ glBegin(GL_QUAD_STRIP);
+ for (int i = 0; i <= 6; i++) {
+  float u = 0.76f + 0.045f * (float)i / 6.0f;
+  Vec3 n0, n1;
+  Vec3 p0 = hull_offset_point(u, 0.52f, -1, 0.006f, &n0);
+  Vec3 p1 = hull_offset_point(u, 0.62f, -1, 0.006f, &n1);
+  glNormal3f(n0.x, n0.y, n0.z); glVertex3f(p0.x, p0.y, p0.z);
+  glNormal3f(n1.x, n1.y, n1.z); glVertex3f(p1.x, p1.y, p1.z);
+ }
+ glEnd();
+ glDisable(GL_LIGHTING);
+ glColor3f(nr, ng, nb);
+ glLineWidth(1.8f);
+ glBegin(GL_LINE_STRIP);
+ for (int i = 0; i <= 6; i++) {
+  float u = 0.765f + 0.035f * (float)i / 6.0f;
+  Vec3 p = hull_offset_point(u, 0.54f, -1, 0.009f, NULL);
+  glVertex3f(p.x, p.y, p.z);
+ }
+ glEnd();
+ glLineWidth(1.0f);
+ glEnable(GL_LIGHTING);
+}
+
+static void finned_box(float x, float y, float z, float w, float h, float d) {
+ ev_set_material(EV_MAT_SATIN_METAL);
+ ev_color(0.26f, 0.30f, 0.38f);
+ ev_box(x, y, z, w, h, d);
+ ev_color(0.48f, 0.53f, 0.62f);
+ for (float fx = x - w * 0.40f; fx <= x + w * 0.401f; fx += w * 0.16f) {
+  ev_box(fx, y + h * 0.54f, z, w * 0.035f, h * 0.18f, d * 0.86f);
+ }
+}
+
+static void render_ev_systems(Server *s) {
+ float nr, ng, nb;
+ scene_neon_color(s, &nr, &ng, &nb);
+
+ /* 1. Structural 800 V Skateboard Platform & 82 kWh 12-Module Battery Pack:
+  * Packaged strictly inside z in [-2.20, +2.20], |x| <= 1.65, y in [-0.72, -0.36]
+  * so it sits cleanly above the -0.82 hull floor and inside the side sills. */
+ ev_set_material(EV_MAT_MATTE_CARBON);
+ ev_color(0.10f, 0.13f, 0.18f);
+ ev_box(0.0f, -0.66f, 0.0f, 3.30f, 0.12f, 4.40f);
+ ev_set_material(EV_MAT_SATIN_METAL);
+ for (int row = 0; row < 4; row++) {
+  for (int col = 0; col < 3; col++) {
+   float x = (float)(col - 1) * 0.98f;
+   float z = -1.47f + (float)row * 0.98f;
+   ev_color(0.13f, 0.23f + 0.025f * (float)row, 0.32f + 0.025f * (float)col);
+   ev_box(x, -0.50f, z, 0.86f, 0.20f, 0.86f);
+   ev_color(0.32f, 0.56f, 0.64f);
+   ev_box(x, -0.39f, z, 0.70f, 0.022f, 0.68f);
+   ev_color(0.94f, 0.40f, 0.09f);
+   ev_box(x + 0.35f, -0.37f, z, 0.048f, 0.040f, 0.56f);
+  }
+ }
+
+ /* 2. Front & Rear Coaxial PMSM Drive Units, Reduction Housings, SiC Inverters,
+  * and Internal Hover-Thruster Power Conduits (z = -3.45 front, +3.45 rear). */
+ for (int end = -1; end <= 1; end += 2) {
+  float z = end < 0 ? -3.45f : 3.45f;
+  ev_set_material(EV_MAT_SATIN_METAL);
+  ev_color(0.25f, 0.29f, 0.37f);
+  ev_cylinder(v3(-0.62f, -0.42f, z), v3(0.62f, -0.42f, z), 0.30f, 28);
+  for (int fin = 0; fin < 8; fin++) {
+   float a = (float)fin * EV_PI / 4.0f;
+   ev_cylinder(v3(-0.54f, -0.42f + 0.31f * cosf(a), z + 0.31f * sinf(a)),
+               v3( 0.54f, -0.42f + 0.31f * cosf(a), z + 0.31f * sinf(a)), 0.015f, 6);
+  }
+  /* Coaxial reduction gearbox on the left (-X) and SiC inverter on the right (+X). */
+  ev_color(0.36f, 0.40f, 0.48f);
+  ev_cylinder(v3(-0.98f, -0.42f, z), v3(-0.62f, -0.42f, z), 0.24f, 22);
+  finned_box(0.96f, -0.34f, z, 0.62f, 0.26f, 0.74f);
+  /* Internal transverse structural mount linking the flush hover nacelles. */
+  ev_color(0.16f, 0.19f, 0.26f);
+  float pod_x = end < 0 ? 1.68f : 1.76f;
+  ev_cylinder(v3(-pod_x, -0.60f, z), v3(pod_x, -0.60f, z), 0.050f, 12);
+ }
+
+ /* 3. 800 V Junction/Contactor Box, Onboard Charger (OBC), and HV->12 V DC/DC
+  * Converter packaged neatly on the rear electronics shelf (z = 2.55 .. 4.15,
+  * |x| <= 1.05, y in [-0.42, -0.14]) strictly inside the rear decklid. */
+ finned_box( 0.00f, -0.30f, 2.55f, 0.96f, 0.24f, 0.56f); /* HV junction box */
+ finned_box(-0.78f, -0.30f, 4.10f, 0.76f, 0.24f, 0.68f); /* Onboard charger */
+ finned_box( 0.78f, -0.30f, 4.10f, 0.72f, 0.24f, 0.68f); /* HV->12V DC/DC */
+
+ /* 4. Front Slanted Heat Exchanger / Condenser, Coolant Reservoir, and 12 V
+  * Auxiliary Lithium Battery packaged inside the front nose (z = -4.55 .. -2.65,
+  * |x| <= 1.25, y in [-0.60, -0.18]). */
+ glPushMatrix();
+ glTranslatef(0.0f, -0.42f, -4.55f);
+ glRotatef(26.0f, 1, 0, 0);
+ ev_set_material(EV_MAT_SATIN_METAL);
+ ev_color(0.22f, 0.26f, 0.33f);
+ ev_box(0.0f, 0.0f, 0.0f, 2.10f, 0.36f, 0.14f);
+ ev_color(0.45f, 0.50f, 0.58f);
+ for (float x = -0.92f; x <= 0.93f; x += 0.13f) {
+  ev_box(x, 0.0f, 0.08f, 0.025f, 0.30f, 0.025f);
+ }
+ glPopMatrix();
+
+ /* Coolant expansion tank (+X front bay) & 12 V auxiliary battery (-X front bay). */
+ ev_color(0.18f, 0.50f, 0.60f);
+ ev_cylinder(v3(1.18f, -0.58f, -2.75f), v3(1.18f, -0.22f, -2.75f), 0.16f, 20);
+ ev_set_material(EV_MAT_MATTE_CARBON);
+ ev_color(0.10f, 0.12f, 0.17f);
+ ev_box(-1.18f, -0.38f, -2.75f, 0.54f, 0.30f, 0.68f);
+ ev_color(0.88f, 0.28f, 0.08f);
+ ev_box(-1.32f, -0.21f, -2.88f, 0.09f, 0.05f, 0.12f);
+ ev_color(0.18f, 0.22f, 0.28f);
+ ev_box(-1.04f, -0.21f, -2.88f, 0.09f, 0.05f, 0.12f);
+
+ /* 5. Internal Charge-Port Receiver anchored inside the left rear quarter. */
+ Vec3 cp_in = vehicle_hull_point(0.78f, 0.56f, -1, NULL);
+ ev_color(0.12f, 0.15f, 0.21f);
+ ev_box(cp_in.x + 0.16f, cp_in.y - 0.04f, cp_in.z, 0.24f, 0.24f, 0.34f);
+
+ /* 6. Piecewise Catmull-Rom 800 V Orange Harnesses & Blue Thermal Coolant Loop. */
+ ev_set_material(EV_MAT_SATIN_METAL);
+ ev_color(1.0f, 0.32f, 0.04f);
+ const Vec3 front_hv[] = {
+  {0.00f, -0.30f,  2.55f},
+  {0.55f, -0.32f,  1.20f},
+  {0.88f, -0.32f, -1.40f},
+  {0.96f, -0.34f, -3.45f}
+ };
+ const Vec3 rear_hv[] = {
+  {0.00f, -0.30f, 2.55f},
+  {0.52f, -0.28f, 3.00f},
+  {0.96f, -0.34f, 3.45f}
+ };
+ const Vec3 charge_hv[] = {
+  { 0.00f, -0.30f, 2.55f},
+  {-0.48f, -0.28f, 3.30f},
+  {-0.78f, -0.30f, 4.10f},
+  {cp_in.x + 0.22f, cp_in.y - 0.04f, cp_in.z}
+ };
+ spline_cable(front_hv, 4, 0.034f);
+ spline_cable(rear_hv,  3, 0.034f);
+ spline_cable(charge_hv, 4, 0.030f);
+
+ ev_color(0.10f, 0.52f, 0.72f);
+ const Vec3 coolant[] = {
+  { 0.00f, -0.44f, -4.50f},
+  { 1.18f, -0.42f, -2.75f},
+  {-0.72f, -0.40f, -3.45f},
+  {-0.95f, -0.44f,  0.00f},
+  {-0.72f, -0.40f,  3.45f}
+ };
+ spline_cable(coolant, 5, 0.026f);
+
+ /* 7. Sculpted Sport Bucket Seats inside the cabin envelope (y_max = 0.86,
+  * sitting with generous headroom beneath the y = 1.32 fastback canopy arch). */
+ ev_set_material(EV_MAT_MATTE_CARBON);
+ for (int side = -1; side <= 1; side += 2) {
+  float x = (float)side * 0.82f;
+  ev_color(0.13f, 0.07f, 0.20f);
+  ev_box(x, -0.40f, 0.95f, 0.86f, 0.18f, 0.92f);
+  glPushMatrix();
+  glTranslatef(x, 0.06f, 1.38f);
+  glRotatef(14.0f, 1, 0, 0);
+  ev_box(0.0f, 0.0f, 0.0f, 0.82f, 0.82f, 0.18f);
+  glPopMatrix();
+  ev_color(0.26f, 0.20f, 0.36f);
+  ev_box(x, 0.62f, 1.50f, 0.46f, 0.24f, 0.18f);
+ }
+}
+
+static void render_body_outline(float nr, float ng, float nb) {
+ /* In EV systems cutaway view, draw a faint translucent ghost pass of the hull
+  * and canopy plus crisp spline wireframe curves (longitudinal feature lines
+  * and transverse cross-section ribs) so the viewer sees the complete hovercar
+  * silhouette enclosing every internal component. */
+ glDisable(GL_LIGHTING);
+ glEnable(GL_BLEND);
+ glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+ glDepthMask(GL_FALSE);
+
+ glColor4f(0.18f, 0.24f, 0.36f, 0.055f);
+ for (int side = -1; side <= 1; side += 2) {
+  for (int iv = 0; iv < 12; iv++) {
+   float v0 = (float)iv / 12.0f, v1 = (float)(iv + 1) / 12.0f;
+   glBegin(GL_QUAD_STRIP);
+   for (int iu = 0; iu <= 48; iu++) {
+    float u = (float)iu / 48.0f;
+    Vec3 p0 = vehicle_hull_point(u, v0, side, NULL);
+    Vec3 p1 = vehicle_hull_point(u, v1, side, NULL);
+    glVertex3f(p0.x, p0.y, p0.z);
+    glVertex3f(p1.x, p1.y, p1.z);
+   }
+   glEnd();
+  }
+  for (int iv = 0; iv < 8; iv++) {
+   float v0 = (float)iv / 8.0f, v1 = (float)(iv + 1) / 8.0f;
+   glBegin(GL_QUAD_STRIP);
+   for (int iu = 0; iu <= 36; iu++) {
+    float u = (float)iu / 36.0f;
+    Vec3 p0 = vehicle_canopy_point(u, v0, side, NULL);
+    Vec3 p1 = vehicle_canopy_point(u, v1, side, NULL);
+    glVertex3f(p0.x, p0.y, p0.z);
+    glVertex3f(p1.x, p1.y, p1.z);
+   }
+   glEnd();
+  }
+ }
+
+ glLineWidth(1.5f);
+ static const float hull_v_lines[] = {0.18f, 0.32f, 0.56f, 0.67f, 0.84f};
+ for (int side = -1; side <= 1; side += 2) {
+  for (int li = 0; li < 5; li++) {
+   float v = hull_v_lines[li];
+   if (li == 3 || li == 4) glColor4f(nr, ng, nb, 0.82f);
+   else glColor4f(0.32f, 0.42f, 0.56f, 0.65f);
+   glBegin(GL_LINE_STRIP);
+   for (int iu = 0; iu <= 64; iu++) {
+    Vec3 p = vehicle_hull_point((float)iu / 64.0f, v, side, NULL);
+    glVertex3f(p.x, p.y, p.z);
+   }
+   glEnd();
+  }
+  /* Fastback canopy cantrail & roof crown lines. */
+  static const float canopy_v_lines[] = {0.0f, 0.68f, 1.0f};
+  for (int ci = 0; ci < 3; ci++) {
+   glColor4f(ci == 1 ? nr : 0.38f, ci == 1 ? ng : 0.52f, ci == 1 ? nb : 0.68f, 0.75f);
+   glBegin(GL_LINE_STRIP);
+   for (int iu = 0; iu <= 48; iu++) {
+    Vec3 p = vehicle_canopy_point((float)iu / 48.0f, canopy_v_lines[ci], side, NULL);
+    glVertex3f(p.x, p.y, p.z);
+   }
+   glEnd();
+  }
+ }
+ /* Transverse station ribs so the 3D cross-section volume reads clearly. */
+ glColor4f(0.28f, 0.38f, 0.52f, 0.45f);
+ for (int r = 1; r <= 7; r++) {
+  float u = (float)r / 8.0f;
+  for (int side = -1; side <= 1; side += 2) {
+   glBegin(GL_LINE_STRIP);
+   for (int iv = 0; iv <= 18; iv++) {
+    Vec3 p = vehicle_hull_point(u, (float)iv / 18.0f, side, NULL);
+    glVertex3f(p.x, p.y, p.z);
+   }
+   glEnd();
+  }
+ }
+
+ glDepthMask(GL_TRUE);
+ glDisable(GL_BLEND);
+ glEnable(GL_LIGHTING);
+ glLineWidth(1.0f);
+}
+
+/* Interior roof header & glazing for the first-person DRIVER camera.
+ * Keeps the high cockpit ceiling required by the 8 spatial Wayland monitors
+ * while exterior views use the sleek GT fastback canopy. */
+typedef struct { float z, width, height; } DriverRoofSection;
+static const DriverRoofSection driver_roof_sections[] = {
+ {-1.50f, 2.52f, 0.50f},
+ {-0.15f, 2.30f, 2.10f},
+ { 1.85f, 2.22f, 2.45f},
+ { 3.75f, 2.30f, 1.92f},
+ { 5.20f, 2.52f, 0.40f}
+};
+#define DRIVER_ROOF_COUNT ((int)(sizeof(driver_roof_sections) / sizeof(driver_roof_sections[0])))
+
+static DriverRoofSection driver_roof_at(float u) {
+ float g = clampf(u, 0.0f, 1.0f) * (float)(DRIVER_ROOF_COUNT - 1);
+ int i = (int)floorf(g);
+ if (i >= DRIVER_ROOF_COUNT - 1) i = DRIVER_ROOF_COUNT - 2;
+ float t = g - (float)i;
+ const DriverRoofSection *a = &driver_roof_sections[clamp_index(i - 1, DRIVER_ROOF_COUNT)];
+ const DriverRoofSection *b = &driver_roof_sections[clamp_index(i,     DRIVER_ROOF_COUNT)];
+ const DriverRoofSection *c = &driver_roof_sections[clamp_index(i + 1, DRIVER_ROOF_COUNT)];
+ const DriverRoofSection *d = &driver_roof_sections[clamp_index(i + 2, DRIVER_ROOF_COUNT)];
+ return (DriverRoofSection){
+  vehicle_catmull_rom(a->z,      b->z,      c->z,      d->z,      t),
+  fmaxf(2.1f, vehicle_catmull_rom(a->width, b->width, c->width, d->width, t)),
+  vehicle_catmull_rom(a->height, b->height, c->height, d->height, t)
+ };
+}
+
+static void render_driver_roof_panel(void) {
+ ev_set_material(EV_MAT_MATTE_CARBON);
+ ev_color(0.115f, 0.135f, 0.19f);
+ for (int strip = 0; strip < 16; strip++) {
+  float x0 = -1.0f + (float)strip * 0.125f, x1 = x0 + 0.125f;
+  glBegin(GL_QUAD_STRIP);
+  for (int i = 0; i <= 48; i++) {
+   DriverRoofSection r = driver_roof_at(0.24f + 0.53f * (float)i / 48.0f);
+   glNormal3f(x0 * 0.32f, 1.0f, 0.0f);
+   glVertex3f(r.width * x0, r.height + 0.12f * (1.0f - x0 * x0), r.z);
+   glNormal3f(x1 * 0.32f, 1.0f, 0.0f);
+   glVertex3f(r.width * x1, r.height + 0.12f * (1.0f - x1 * x1), r.z);
+  }
+  glEnd();
+ }
+}
+
+void vehicle_render(Server *s, bool cutaway) {
+ float nr, ng, nb;
+ scene_neon_color(s, &nr, &ng, &nb);
+
+ /* Studio front-quarter key/rim light (LIGHT3) illuminates the nose, hood
+  * creases, and fastback glass facing the exterior showcase camera. */
+ glEnable(GL_LIGHT3);
+ GLfloat l3_pos[]  = {6.5f, 8.0f, -9.5f, 0.0f};
+ GLfloat l3_diff[] = {0.54f, 0.60f, 0.74f, 1.0f};
+ GLfloat l3_spec[] = {0.85f, 0.90f, 1.00f, 1.0f};
+ glLightfv(GL_LIGHT3, GL_POSITION, l3_pos);
+ glLightfv(GL_LIGHT3, GL_DIFFUSE,  l3_diff);
+ glLightfv(GL_LIGHT3, GL_SPECULAR, l3_spec);
+
+ if (cutaway) {
+  render_ev_systems(s);
+  render_all_hover_nacelles(s, true);
+  render_body_outline(nr, ng, nb);
+  glDisable(GL_LIGHT3);
+  ev_restore_scene_material();
+  return;
+ }
+
+ if (s->camera_mode == VEHICLE_CAMERA_DRIVER) {
+  /* Driver mode renders only the exterior panels visible through the cockpit
+   * windows; internal EV cutaway geometry is omitted so no cables or boxes
+   * ever intersect the interior dashboard or waste software-rasterizer time. */
+  render_driver_hull();
+  render_fascia_cap(s, true);
+  render_fascia_cap(s, false);
+  render_driver_roof_panel();
+ } else {
+  render_exterior_hull();
+  render_fascia_cap(s, true);
+  render_fascia_cap(s, false);
+  render_exterior_canopy(s);
+  render_all_hover_nacelles(s, false);
+  render_exterior_details(s);
+ }
+
+ glDisable(GL_LIGHT3);
+ ev_restore_scene_material();
+}
+
+void vehicle_render_glass(Server *s) {
+ if (s->camera_mode != VEHICLE_CAMERA_DRIVER) return; /* exterior canopy is opaque */
+ /* Glass is a separate late pass. It must not write depth: Wayland monitors
+  * behind the windshield still need to render, and their textures must retain
+  * correct alpha compositing instead of being discarded by transparent glass. */
+ glDisable(GL_LIGHTING);
+ glEnable(GL_BLEND);
+ glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+ glDepthMask(GL_FALSE);
+ glColor4f(0.035f, 0.075f, 0.11f, 0.14f);
+ for (int strip = 0; strip < 16; strip++) {
+  float x0 = -1.0f + (float)strip * 0.125f, x1 = x0 + 0.125f;
+  for (int part = 0; part < 2; part++) {
+   float from = part ? 0.76f : 0.0f, to = part ? 1.0f : 0.27f;
+   glBegin(GL_QUAD_STRIP);
+   for (int i = 0; i <= 24; i++) {
+    DriverRoofSection r = driver_roof_at(from + (to - from) * (float)i / 24.0f);
+    glVertex3f(r.width * x0, r.height + 0.10f * (1.0f - x0 * x0), r.z);
+    glVertex3f(r.width * x1, r.height + 0.10f * (1.0f - x1 * x1), r.z);
+   }
+   glEnd();
+  }
+ }
+ for (int side = -1; side <= 1; side += 2) {
+  glBegin(GL_QUAD_STRIP);
+  for (int i = 0; i <= 32; i++) {
+   DriverRoofSection r = driver_roof_at(0.25f + 0.53f * (float)i / 32.0f);
+   Vec3 belt = vehicle_hull_point(0.25f + 0.53f * (float)i / 32.0f, 0.80f, side, NULL);
+   glVertex3f(belt.x, belt.y, r.z);
+   glVertex3f((float)side * r.width, r.height, r.z);
+  }
+  glEnd();
+ }
+ glDepthMask(GL_TRUE);
+ glDisable(GL_BLEND);
+ glEnable(GL_LIGHTING);
 }

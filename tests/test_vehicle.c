@@ -79,6 +79,48 @@ int main(void) {
  CHECK(nearf(a.position.x, b.position.x, 1e-3f) && nearf(a.position.z, b.position.z, 1e-3f)
        && nearf(a.speed, b.speed, 1e-3f), "fixed-step result depends on render cadence");
 
+ /* Verify bicubic Catmull-Rom hull & fastback canopy watertightness, symmetry,
+  * and that all cutaway EV systems sit strictly inside the hull envelope. */
+ for (int i = 0; i <= 20; i++) {
+  float u = (float)i / 20.0f;
+  Vec3 n_bot, n_top;
+  Vec3 bot_l = vehicle_hull_point(u, 0.0f, -1, &n_bot);
+  Vec3 bot_r = vehicle_hull_point(u, 0.0f,  1, NULL);
+  Vec3 top_l = vehicle_hull_point(u, 1.0f, -1, &n_top);
+  Vec3 top_r = vehicle_hull_point(u, 1.0f,  1, NULL);
+  CHECK(nearf(bot_l.x, 0.0f, 1e-4f) && nearf(bot_r.x, 0.0f, 1e-4f),
+        "undertray seam not closed at u=%f", u);
+  CHECK(nearf(top_l.x, 0.0f, 1e-4f) && nearf(top_r.x, 0.0f, 1e-4f),
+        "hood/deck seam not closed at u=%f", u);
+  CHECK(nearf(n_bot.x, 0.0f, 1e-4f) && nearf(n_top.x, 0.0f, 1e-4f),
+        "centreline normal not horizontal at u=%f", u);
+
+  VehicleHullSection sec = vehicle_hull_section(u);
+  Vec3 c_sill = vehicle_canopy_point(u, 0.0f, 1, NULL);
+  Vec3 c_peak = vehicle_canopy_point(u, 1.0f, 1, NULL);
+  VehicleHullSection c_sec = vehicle_hull_section(0.26f + u * 0.64f);
+  CHECK(c_sill.x <= c_sec.width * 0.95f && nearf(c_peak.x, 0.0f, 1e-4f),
+        "canopy overhangs hull at u=%f: sill_x=%f hull_w=%f", u, c_sill.x, c_sec.width);
+  CHECK(sec.width >= 1.90f && sec.top > sec.lower, "invalid hull section at u=%f", u);
+ }
+
+ /* Representative bounding corners of the internal EV cutaway components:
+  * skateboard battery modules, front/rear motors & inverters, rear OBC/DCDC,
+  * slanted front heat exchanger, coolant tank, 12 V battery, and cabin seats. */
+ const Vec3 internal_parts[] = {
+  { 1.40f, -0.50f, -1.47f}, {-1.40f, -0.50f,  1.47f}, /* 82 kWh battery modules */
+  { 1.25f, -0.34f, -3.45f}, {-0.98f, -0.42f, -3.45f}, /* front motor/inverter/gearbox */
+  { 1.25f, -0.34f,  3.45f}, {-0.98f, -0.42f,  3.45f}, /* rear motor/inverter/gearbox */
+  { 0.00f, -0.30f,  2.55f}, {-1.15f, -0.30f,  4.10f}, /* 800 V junction, OBC, DC/DC */
+  { 1.05f, -0.42f, -4.55f}, { 1.18f, -0.25f, -2.75f}, /* front radiator & coolant tank */
+  {-1.18f, -0.25f, -2.75f}, { 0.82f,  0.74f,  1.50f}  /* 12 V battery & sport seat head */
+ };
+ for (size_t i = 0; i < sizeof(internal_parts) / sizeof(internal_parts[0]); i++) {
+  CHECK(vehicle_point_inside_envelope(internal_parts[i], 0.02f),
+        "EV component %zu protrudes outside hull envelope: (%f, %f, %f)",
+        i, internal_parts[i].x, internal_parts[i].y, internal_parts[i].z);
+ }
+
  if (failures) {
   fprintf(stderr, "%d vehicle checks failed\n", failures);
   return 1;
