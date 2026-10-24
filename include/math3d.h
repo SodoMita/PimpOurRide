@@ -26,6 +26,9 @@ Plane plane_rotate(Plane p,float yaw,float pitch,float roll);
 Plane plane_uniform_scale(Plane p,Plane base,float factor);
 Plane plane_resize(Plane p,Plane base,Vec3 eye,float width,float height,int fixed_x,int fixed_y);
 Plane plane_resize_aspect(Plane p,Plane base,Vec3 eye,float width,float height,int fixed_x,int fixed_y);
+void plane_window_pixels(Plane start,Plane resized,int start_w,int start_h,int *out_w,int *out_h);
+Plane plane_resize_window_pixels(Plane start,Plane base,Vec3 eye,int start_w,int start_h,int win_w,int win_h,int fixed_x,int fixed_y);
+Plane plane_resize_window_pixels_aspect(Plane start,Plane base,Vec3 eye,int start_w,int start_h,int win_w,int win_h,int fixed_x,int fixed_y);
 typedef enum {MOUNT_WINDSHIELD,MOUNT_DASH_SLIDE,MOUNT_DOOR_SLIDE,MOUNT_ROOF_FLIP,MOUNT_REAR_FIXED,MOUNT_CLUSTER} MonitorMount;
 Plane monitor_plane(int index); /* fully deployed transform */
 Plane windshield_hud_plane(void); /* fitted projection on the shared windshield */

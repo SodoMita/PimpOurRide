@@ -58,6 +58,20 @@ int main(void){
  float ratio=resized.width/resized.height;
  Plane aspect=plane_uniform_scale(resized,base,1.1f);
  assert(near(aspect.width/aspect.height,ratio));
+ /* White-grip resizes request new logical window dimensions: the same
+  * 1.5x-by-2x plane above is 1500x1250 from a 1000x625 start. A request
+  * clamped by client hints maps back to an anchored plane on the current
+  * monitor geometry, and Shift+corner keeps the drag-start aspect. */
+ int win_w=0,win_h=0;
+ plane_window_pixels(base,resized,1000,625,&win_w,&win_h);
+ assert(win_w==1500&&win_h==1250);
+ Plane hinted=plane_resize_window_pixels(base,base,eye,1000,625,1150,625,-1,0);
+ assert(near(hinted.width,base.width*1.15f)&&near(hinted.height,base.height));
+ assert(near(hinted.center.x-hinted.width/2,base.center.x-base.width/2));
+ Plane hinted_aspect=plane_resize_window_pixels_aspect(base,base,eye,1000,625,1150,625,-1,0);
+ assert(near(hinted_aspect.width,hinted.width)&&near(hinted_aspect.height,base.height*1.15f));
+ assert(near(hinted_aspect.width/hinted_aspect.height,base.width/base.height));
+ assert(near(hinted_aspect.center.x-hinted_aspect.width/2,base.center.x-base.width/2));
  /* Shift+corner resize: a single factor preserves the drag-start aspect
   * exactly, stays within both base limits, and keeps the opposite corner
   * anchored even when one dimension reaches its limit first. */

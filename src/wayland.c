@@ -146,7 +146,12 @@ static void surface_apply(Surface *p){
  p->scale=p->pending_scale;p->transform=p->pending_transform;
  if(p->buffer_changed){
   if(p->pending_null){
+   bool cluster=p->slot==CD_CLUSTER_SLOT||strstr(p->app_id,"chromedrive.cluster");
    surface_unmap(p);if(p->xdg){p->configured=false;p->configure_sent=false;}
+   /* An ordinary toplevel remaps from the default request, matching the
+    * scene_monitor_reset() that runs when it maps into a bay again. The fixed
+    * cluster keeps its own configure size and is never driven by this. */
+   if(p->toplevel&&!cluster){p->win_w=CD_APP_W;p->win_h=CD_APP_H;}
    if(p->dmabuf){wl_buffer_send_release(p->dmabuf->resource);p->dmabuf=NULL;}
    if(p->texture&&p->texture_owned)glDeleteTextures(1,&p->texture);p->texture=0;p->texture_owned=true;
   }else if(p->pending_dmabuf){
@@ -220,12 +225,40 @@ static void positioner_parent_size(struct wl_client *c,struct wl_resource *r,int
 static void positioner_parent_configure(struct wl_client *c,struct wl_resource *r,uint32_t serial){}
 static const struct xdg_positioner_interface positioner_impl={.destroy=resource_destroy_request,.set_size=positioner_size,.set_anchor_rect=positioner_rect,.set_anchor=positioner_anchor,.set_gravity=positioner_gravity,.set_constraint_adjustment=positioner_constraint,.set_offset=positioner_offset,.set_reactive=positioner_reactive,.set_parent_size=positioner_parent_size,.set_parent_configure=positioner_parent_configure};
 static void wm_positioner(struct wl_client *c,struct wl_resource *r,uint32_t id){struct wl_resource *out=wl_resource_create(c,&xdg_positioner_interface,wl_resource_get_version(r),id);Positioner *p=calloc(1,sizeof(*p));if(!out||!p){wl_client_post_no_memory(c);free(p);return;}wl_resource_set_implementation(out,&positioner_impl,p,positioner_destroyed);}
+static int clamp_toplevel_dim(int v,int min_hint,int max_hint){
+ if(v<1)v=1;
+ if(v>8192)v=8192; /* match the wl_shm attach ceiling in surface_attach() */
+ if(max_hint>0&&v>max_hint)v=max_hint;
+ if(min_hint>0&&v<min_hint)v=min_hint;
+ return v;
+}
+static bool surface_is_cluster(const Surface *p){
+ return p->slot==CD_CLUSTER_SLOT||strstr(p->app_id,"chromedrive.cluster")!=NULL;
+}
 static void send_configure(Surface *p){
  if(!p->xdg)return;Server *s=p->server;
- if(p->toplevel){struct wl_array states;wl_array_init(&states);if(s->keyboard_focus==p){uint32_t *a=wl_array_add(&states,4);if(a)*a=XDG_TOPLEVEL_STATE_ACTIVATED;}bool cluster=p->slot==CD_CLUSTER_SLOT||strstr(p->app_id,"chromedrive.cluster");xdg_toplevel_send_configure(p->toplevel,cluster?CD_CLUSTER_W:CD_APP_W,cluster?CD_CLUSTER_H:CD_APP_H,&states);wl_array_release(&states);}
+ if(p->toplevel){struct wl_array states;wl_array_init(&states);if(s->keyboard_focus==p){uint32_t *a=wl_array_add(&states,4);if(a)*a=XDG_TOPLEVEL_STATE_ACTIVATED;}int w,h;if(surface_is_cluster(p)){/* The instrument cluster is a fixed physical gauge, not a resizable app. */w=CD_CLUSTER_W;h=CD_CLUSTER_H;}else{w=clamp_toplevel_dim(p->win_w>0?p->win_w:CD_APP_W,p->min_w,p->max_w);h=clamp_toplevel_dim(p->win_h>0?p->win_h:CD_APP_H,p->min_h,p->max_h);p->win_w=w;p->win_h=h;}xdg_toplevel_send_configure(p->toplevel,w,h,&states);wl_array_release(&states);}
  else if(p->popup)xdg_popup_send_configure(p->popup,p->x,p->y,p->popup_w,p->popup_h);
  else return;
  p->configure_serial=wl_display_next_serial(s->display);xdg_surface_send_configure(p->xdg,p->configure_serial);p->configure_sent=true;
+}
+bool server_request_window_size(Surface *p,int width,int height,int *out_w,int *out_h){
+ if(!p||!p->toplevel||!p->xdg){if(out_w)*out_w=width;if(out_h)*out_h=height;return false;}
+ if(surface_is_cluster(p)){if(out_w)*out_w=CD_CLUSTER_W;if(out_h)*out_h=CD_CLUSTER_H;return false;}
+ if(p->win_w<=0)p->win_w=p->width>0?p->width:CD_APP_W;
+ if(p->win_h<=0)p->win_h=p->height>0?p->height:CD_APP_H;
+ width=clamp_toplevel_dim(width,p->min_w,p->max_w);
+ height=clamp_toplevel_dim(height,p->min_h,p->max_h);
+ if(out_w)*out_w=width;
+ if(out_h)*out_h=height;
+ if(width==p->win_w&&height==p->win_h)return true;
+ p->win_w=width;p->win_h=height;
+ /* Before the first configure handshake this just records the size the
+  * initial commit will offer; once mapped, offer the new size now. xdg
+  * configure sizes are still suggestions: a client may ack and commit a
+  * nearby size (terminals snap to cells, fixed-size apps may not move). */
+ if(p->configure_sent)send_configure(p);
+ return true;
 }
 static void top_destroyed(struct wl_resource *r){Surface *p=wl_resource_get_user_data(r);if(p){surface_unmap(p);p->toplevel=NULL;}}
 static void top_parent(struct wl_client *c,struct wl_resource *r,struct wl_resource *parent){}
@@ -234,12 +267,13 @@ static void top_app_id(struct wl_client *c,struct wl_resource *r,const char *id)
 static void top_menu(struct wl_client *c,struct wl_resource *r,struct wl_resource *seat,uint32_t serial,int32_t x,int32_t y){}
 static void top_move(struct wl_client *c,struct wl_resource *r,struct wl_resource *seat,uint32_t serial){}
 static void top_resize(struct wl_client *c,struct wl_resource *r,struct wl_resource *seat,uint32_t serial,uint32_t edges){}
-static void top_size(struct wl_client *c,struct wl_resource *r,int32_t w,int32_t h){}
+static void top_max_size(struct wl_client *c,struct wl_resource *r,int32_t w,int32_t h){Surface *p=wl_resource_get_user_data(r);if(p&&w>=0&&h>=0){p->max_w=w;p->max_h=h;}}
+static void top_min_size(struct wl_client *c,struct wl_resource *r,int32_t w,int32_t h){Surface *p=wl_resource_get_user_data(r);if(p&&w>=0&&h>=0){p->min_w=w;p->min_h=h;}}
 static void top_state(struct wl_client *c,struct wl_resource *r){Surface *p=wl_resource_get_user_data(r);if(p)send_configure(p);}
 static void top_fullscreen(struct wl_client *c,struct wl_resource *r,struct wl_resource *output){top_state(c,r);}
 static void top_minimize(struct wl_client *c,struct wl_resource *r){}
-static const struct xdg_toplevel_interface top_impl={.destroy=resource_destroy_request,.set_parent=top_parent,.set_title=top_title,.set_app_id=top_app_id,.show_window_menu=top_menu,.move=top_move,.resize=top_resize,.set_max_size=top_size,.set_min_size=top_size,.set_maximized=top_state,.unset_maximized=top_state,.set_fullscreen=top_fullscreen,.unset_fullscreen=top_state,.set_minimized=top_minimize};
-static void xdg_toplevel_create(struct wl_client *c,struct wl_resource *r,uint32_t id){Surface *p=wl_resource_get_user_data(r);if(!p)return;if(p->toplevel||p->popup){wl_resource_post_error(r,XDG_SURFACE_ERROR_ALREADY_CONSTRUCTED,"role already constructed");return;}p->toplevel=wl_resource_create(c,&xdg_toplevel_interface,wl_resource_get_version(r),id);if(!p->toplevel){wl_client_post_no_memory(c);return;}wl_resource_set_implementation(p->toplevel,&top_impl,p,top_destroyed);snprintf(p->title,sizeof(p->title),"Wayland application");}
+static const struct xdg_toplevel_interface top_impl={.destroy=resource_destroy_request,.set_parent=top_parent,.set_title=top_title,.set_app_id=top_app_id,.show_window_menu=top_menu,.move=top_move,.resize=top_resize,.set_max_size=top_max_size,.set_min_size=top_min_size,.set_maximized=top_state,.unset_maximized=top_state,.set_fullscreen=top_fullscreen,.unset_fullscreen=top_state,.set_minimized=top_minimize};
+static void xdg_toplevel_create(struct wl_client *c,struct wl_resource *r,uint32_t id){Surface *p=wl_resource_get_user_data(r);if(!p)return;if(p->toplevel||p->popup){wl_resource_post_error(r,XDG_SURFACE_ERROR_ALREADY_CONSTRUCTED,"role already constructed");return;}p->toplevel=wl_resource_create(c,&xdg_toplevel_interface,wl_resource_get_version(r),id);if(!p->toplevel){wl_client_post_no_memory(c);return;}wl_resource_set_implementation(p->toplevel,&top_impl,p,top_destroyed);p->win_w=CD_APP_W;p->win_h=CD_APP_H;p->min_w=p->min_h=p->max_w=p->max_h=0;snprintf(p->title,sizeof(p->title),"Wayland application");}
 static void popup_position(Surface *p,Positioner *pos){
  /* Positioner enums aren't bitfields: normalize their vertical/horizontal parts. */
  int a=pos->anchor,g=pos->gravity;bool al=(a==3||a==5||a==7),ar=(a==4||a==6||a==8),at=(a==1||a==5||a==6),ab=(a==2||a==7||a==8);
