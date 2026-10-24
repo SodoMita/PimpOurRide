@@ -1,0 +1,19 @@
+# Build output
+/bin/
+/.generated/
+
+# Runtime-generated screenshots (never commit uncompressed/raw PNG captures —
+# docs/hero.webp is the curated, compressed exception, added deliberately)
+/screenshots/*.png
+/screenshots/*.jpg
+!/screenshots/.gitkeep
+
+# noVNC static assets staged by tools/prepare-viewer.sh (symlinks to the
+# system novnc package, not project content)
+/tools/viewer/core
+/tools/viewer/vendor
+
+# Editor/OS cruft
+*.o
+*.swp
+.DS_Store
