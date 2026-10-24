@@ -15,7 +15,7 @@ garage—without pretending to simulate wheels. F7 switches the physical steerin
 wheel and driving keys between Wayland-client input and hover-car control; F8
 cycles driver, smooth exterior-concept, and EV-systems cameras, while F9
 switches between properly aligned driver and passenger seats. The shared seats,
-controls and door trim sit forward beside the doorway. F5 opens and closes real
+controls and door trim sit forward beside the doorway. Meta+O opens and closes real
 full-height hinged door assemblies—from the sill through the side glass and
 roof rail, including interior trim and door-mounted displays—and F6 toggles
 the monitor Arrange editor. Applications
@@ -255,7 +255,8 @@ reverse proxy and firewall before exposing them to an untrusted network.
 | F2 | Reset to the selected seat view |
 | F3 | Toggle a tight focus zoom on the active screen |
 | F4 | Cycle underglow color (violet / ice blue / acid lime) |
-| F5 | Open or close both full-height hinged doors (sill, glass, roof rail, trim and door displays move too) |
+| Meta+O | Open or close both full-height hinged doors (sill, glass, roof rail, trim and door displays move too) |
+| F5 | Unbound in the compositor; reserved for browser/client restart or reload |
 | F6 | Toggle Arrange for the selected screen (move / rotate / roll / scale / resize) |
 | F7 | Toggle client input / hover-drive ownership |
 | F8 | Cycle driver / exterior concept / EV systems cutaway |

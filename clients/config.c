@@ -40,6 +40,7 @@
  */
 #define _GNU_SOURCE
 #include "cdconfig.h"
+#include "math3d.h"
 #include "xdg-shell-client.h"
 #include <cairo/cairo.h>
 #include <ctype.h>
@@ -131,7 +132,7 @@ static const Def CD_DEFS[] = {
     { "Display", "display", "width", "Framebuffer width", K_INT, 640, 3840, 10, "%.0f", "1600", {0}, 0, false, true },
     { "Display", "display", "height", "Framebuffer height", K_INT, 400, 2160, 10, "%.0f", "1000", {0}, 0, false, true },
     { "Display", "display", "fps", "Frame cap (fps)", K_INT, 10, 120, 1, "%.0f", "60", {0}, 0, false, false },
-    { "Display", "display", "fov", "Driver field of view", K_FLOAT, 40, 100, 0.5, "%.1f", "65", {0}, 0, false, false },
+    { "Display", "display", "fov", "Driver field of view", K_FLOAT, CD_DRIVER_FOV_MIN, CD_DRIVER_FOV_MAX, 0.5, "%.1f", "65", {0}, 0, false, false },
     { "Display", "display", "fullscreen", "Start fullscreen (windowed)", K_BOOL, 0, 0, 0, NULL, "false", {0}, 0, false, true },
     { "Cockpit", "cockpit", "neon", "Underglow colour", K_ENUM, 0, 2, 1, NULL, "0", { "Ultraviolet", "Ice Blue", "Acid Lime" }, 3, false, false },
     { "Cockpit", "cockpit", "hud", "HUD overlay", K_BOOL, 0, 0, 0, NULL, "true", {0}, 0, false, false },

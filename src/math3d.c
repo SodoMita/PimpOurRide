@@ -59,6 +59,18 @@ Plane plane_translate_local(Plane p,Vec3 eye,float right_amount,float up_amount,
  p.center=vadd(p.center,vadd(vadd(vmul(right,right_amount),vmul(up,up_amount)),vmul(normal,normal_amount)));
  return plane_clamp_center(p,eye);
 }
+/* The close glyph is part of ui_monitor_label()'s fixed 1200x76 titlebar
+ * texture, not a normalized sub-rectangle of the application. Keep its hit
+ * target in plane-local metres: v-based tests drift away from the glyph as
+ * soon as a monitor is resized, while local coordinates remain valid after
+ * every translate/rotate/scale operation. The generous target surrounds the
+ * visible 18 px X without covering the application below the titlebar. */
+void plane_close_rect(Plane p,float *cx,float *cy,float *w,float *h){
+ if(cx)*cx=p.width*(1159.f/1200.f-.5f);
+ if(cy)*cy=p.height*.5f+.011f+.137f*(1.f-39.f/76.f);
+ if(w)*w=fmaxf(.12f,p.width*.04f);
+ if(h)*h=.11f;
+}
 Plane plane_translate(Plane p,Vec3 eye,float right_amount,float up_amount,float toward_eye){
  p=plane_translate_local(p,eye,right_amount,up_amount,0);
  if(toward_eye!=0.f){

@@ -48,7 +48,7 @@ void backend_sdl_poll(Server *s){
    if(down&&e.button.button==SDL_BUTTON_LEFT){if(hit.kind==HIT_BUTTON){app_launch(s,hit.button,(SDL_GetModState()&KMOD_SHIFT)!=0);continue;}if(hit.kind==HIT_CLOSE){server_close_surface(hit.surface);continue;}if(hit.kind==HIT_COG){app_open_settings(s);continue;}}
    if(down&&e.button.button==SDL_BUTTON_RIGHT&&hit.kind==HIT_BUTTON){app_open_settings_slot(s,hit.button,true);continue;}
    if(hit.kind==HIT_APP||s->pointer_grab)server_pointer_button(s,button,down,now);
-  }else if(e.type==SDL_MOUSEWHEEL){if(s->arrange_mode)app_arrange_pointer_wheel(s,e.wheel.preciseY);else{Hit hit=scene_pick(s,s->mouse_x,s->mouse_y,false);if(hit.kind==HIT_APP)server_pointer_axis(s,e.wheel.preciseX,e.wheel.preciseY,now);else s->target_fov=clampf(s->target_fov-e.wheel.preciseY*2,30,75);}}
+  }else if(e.type==SDL_MOUSEWHEEL){if(s->arrange_mode)app_arrange_pointer_wheel(s,e.wheel.preciseY);else{Hit hit=scene_pick(s,s->mouse_x,s->mouse_y,false);if(hit.kind==HIT_APP)server_pointer_axis(s,e.wheel.preciseX,e.wheel.preciseY,now);else s->target_fov=clampf(s->target_fov-e.wheel.preciseY*2,CD_DRIVER_FOV_MIN,CD_DRIVER_SCROLL_FOV_MAX);}}
  }
 }
 void backend_sdl_present(Server *s){SDL_GL_SwapWindow(s->window);}

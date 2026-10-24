@@ -21,7 +21,7 @@ void app_release_input(Server *s,uint32_t time){
  /* Drive keys are compositor-local and therefore are not present in the
   * Wayland seat's s->keys[] bitmap. Both sets must be released on focus loss,
   * otherwise switching windows could leave a client key or motor latched. */
- server_release_keys(s,time);clear_drive_controls(s);scene_wheel_cancel(s);
+ server_release_keys(s,time);clear_drive_controls(s);s->door_shortcut_down=false;scene_wheel_cancel(s);
 }
 /* ---- persistent configuration (chromedrive.conf, edited by the GUI) ----
  * Precedence: built-in defaults < config file < command line. The file is
@@ -49,7 +49,7 @@ static void apply_config(Server *s,const CdConfig *cfg,bool startup,const char *
   if(socket_out&&sock&&*sock){snprintf(socket_buf,sizeof(socket_buf),"%s",sock);*socket_out=socket_buf;}
  }
  s->fps_limit=(int)clampf((float)cd_config_get_int(cfg,"display","fps",s->fps_limit),1,120);
- s->target_fov=clampf((float)cd_config_get_double(cfg,"display","fov",s->target_fov),40,100);
+ s->target_fov=clampf((float)cd_config_get_double(cfg,"display","fov",s->target_fov),CD_DRIVER_FOV_MIN,CD_DRIVER_FOV_MAX);
  if(startup)s->fov=s->target_fov;
  long neon=cd_config_get_int(cfg,"cockpit","neon",s->theme);neon=((neon%3)+3)%3;
  if((int)neon!=s->theme){s->theme=(int)neon;s->rebuild_scene=true;}
@@ -446,6 +446,20 @@ static bool drive_key(Server *s,uint32_t key,bool down){
 bool app_global_key(Server *s,uint32_t evdev,bool down){
  bool ctrl=s->keys[KEY_LEFTCTRL]||s->keys[KEY_RIGHTCTRL];
  bool alt=s->keys[KEY_LEFTALT]||s->keys[KEY_RIGHTALT];
+ bool meta=s->keys[KEY_LEFTMETA]||s->keys[KEY_RIGHTMETA];
+ /* Meta+O is a compositor shortcut, not an O key for the focused client.
+  * Track its press independently of the modifier: auto-repeat must not
+  * retrigger the doors, and releasing Meta before O must not leak a stray
+  * O release into Wayland. Plain O and pre-existing client O holds pass
+  * through unchanged. */
+ if(evdev==KEY_O){
+  if(s->door_shortcut_down){if(!down)s->door_shortcut_down=false;return true;}
+  if(down&&meta&&!s->keys[KEY_O]){
+   s->door_shortcut_down=true;vehicle_toggle_doors(&s->vehicle);
+   app_notice(s,"%s",s->vehicle.door_target[0]>.5f?"Doors opening / Meta+O closes both":"Doors closing / Meta+O opens both");
+   return true;
+  }
+ }
  if(ctrl&&alt&&(evdev==KEY_ENTER||evdev==KEY_KPENTER||evdev==KEY_Q)){if(down){if(evdev==KEY_Q)s->running=false;else launch_new_terminal(s);}return true;}
  if(evdev==KEY_F6){if(down)arrange_toggle(s);return true;}
  if(s->arrange_mode&&evdev!=KEY_F1&&evdev!=KEY_F2&&evdev!=KEY_F4&&evdev!=KEY_F5&&evdev!=KEY_F7&&evdev!=KEY_F8&&evdev!=KEY_F9&&evdev!=KEY_F10&&evdev!=KEY_F11&&evdev!=KEY_F12){
@@ -481,17 +495,13 @@ bool app_global_key(Server *s,uint32_t evdev,bool down){
   if(changed)arrange_notice(s);
   return true;
  }
- bool global=evdev==KEY_F1||evdev==KEY_F2||evdev==KEY_F3||evdev==KEY_F4||evdev==KEY_F5||evdev==KEY_F6||evdev==KEY_F7||evdev==KEY_F8||evdev==KEY_F9||evdev==KEY_F10||evdev==KEY_F11||evdev==KEY_F12;
+ bool global=evdev==KEY_F1||evdev==KEY_F2||evdev==KEY_F3||evdev==KEY_F4||evdev==KEY_F6||evdev==KEY_F7||evdev==KEY_F8||evdev==KEY_F9||evdev==KEY_F10||evdev==KEY_F11||evdev==KEY_F12;
  if(!global)return drive_key(s,evdev,down);if(!down)return true;
  switch(evdev){
  case KEY_F1:s->show_help=!s->show_help;break;
  case KEY_F2:scene_reset_camera(s);break;
  case KEY_F3:if(s->keyboard_focus)scene_focus_monitor(s,s->keyboard_focus->slot,!s->focus_view);else next_monitor(s);break;
  case KEY_F4:action_cycle_neon(s);break;
- case KEY_F5:
-  vehicle_toggle_doors(&s->vehicle);
-  app_notice(s,"%s",s->vehicle.door_target[0]>.5f?"Doors opening / F5 closes both":"Doors closing / F5 opens both");
-  break;
  case KEY_F7:
   /* Release app keys before changing ownership. Otherwise a key held during
    * the transition could remain pressed in the client even after its release
@@ -524,9 +534,9 @@ bool app_global_key(Server *s,uint32_t evdev,bool down){
  }
  return true;
 }
-static void usage(const char *name){printf("ChromeDrive " CD_VERSION " — native, first-person Wayland cockpit\n\nUsage: %s [options]\n  --demo                Start the configured autostart Wayland clients\n  --socket NAME         Wayland socket (default: automatic)\n  --exec COMMAND        Launch an extra Wayland client (repeatable)\n  --size WIDTHxHEIGHT   Framebuffer/host window size (default 1600x1000)\n  --fps N               Frame cap, 1..120 (default 60)\n  --headless            Run with no X server: surfaceless EGL + built-in VNC server (default)\n  --windowed            Dev/debug mode: open a real SDL2/GLX window on an X server instead\n  --vnc-port N          VNC port for --headless mode (default 5900)\n  --fullscreen          --windowed only: start fullscreen, F11 to leave\n  --exit-after SECONDS   Useful for automated checks\n  --screenshot PATH     Capture a WebP after 3 seconds\n  --config PATH         Config file (default: ~/.config/chromedrive/chromedrive.conf)\n  --no-config           Ignore the config file entirely\n  --help                Show this help\n\nF1 help | F2 selected seat | F3 focus/next | F4 neon | F5 doors | F6 arrange\nF7 client/drive input | F8 driver/exterior/systems | F9 switch seat | F10 recover car\nDrive: WASD/arrows + Space + drag wheel\nMiddle-drag/VNC-drag to look | Drag a titlebar to move | HANDLES shows the Arrange gizmo\nArrange: Tab next window, Esc/F6 exit | Ctrl+Alt+Enter new terminal\n",name);}
+static void usage(const char *name){printf("ChromeDrive " CD_VERSION " — native, first-person Wayland cockpit\n\nUsage: %s [options]\n  --demo                Start the configured autostart Wayland clients\n  --socket NAME         Wayland socket (default: automatic)\n  --exec COMMAND        Launch an extra Wayland client (repeatable)\n  --size WIDTHxHEIGHT   Framebuffer/host window size (default 1600x1000)\n  --fps N               Frame cap, 1..120 (default 60)\n  --headless            Run with no X server: surfaceless EGL + built-in VNC server (default)\n  --windowed            Dev/debug mode: open a real SDL2/GLX window on an X server instead\n  --vnc-port N          VNC port for --headless mode (default 5900)\n  --fullscreen          --windowed only: start fullscreen, F11 to leave\n  --exit-after SECONDS   Useful for automated checks\n  --screenshot PATH     Capture a WebP after 3 seconds\n  --config PATH         Config file (default: ~/.config/chromedrive/chromedrive.conf)\n  --no-config           Ignore the config file entirely\n  --help                Show this help\n\nF1 help | F2 selected seat | F3 focus/next | F4 neon | F6 arrange | Meta+O doors\nF7 client/drive input | F8 driver/exterior/systems | F9 switch seat | F10 recover car\nF5 is unbound for browser/client restart or reload\nDrive: WASD/arrows + Space + drag wheel\nMiddle-drag/VNC-drag to look | Drag a titlebar to move | HANDLES shows the Arrange gizmo\nArrange: Tab next window, Esc/F6 exit | Ctrl+Alt+Enter new terminal\n",name);}
 int main(int argc,char **argv){
- Server s={.width=1600,.height=1000,.fps_limit=60,.running=true,.hud_visible=true,.hover_button=-1,.keymap_fd=-1,.arrange_slot=-1,.frame_drag_slot=-1,.fov=65,.target_fov=65,.headless=true,.vnc_port=5900,.telemetry_fd=-1};
+ Server s={.width=1600,.height=1000,.fps_limit=60,.running=true,.hud_visible=true,.hover_button=-1,.hover_close=-1,.keymap_fd=-1,.arrange_slot=-1,.frame_drag_slot=-1,.fov=65,.target_fov=65,.headless=true,.vnc_port=5900,.telemetry_fd=-1};
  vehicle_init(&s.vehicle);
  const char *socket_name=NULL;double exit_after=0;bool auto_screenshot=false;
  /* Config pre-scan: --config/--no-config must be known before the file is
@@ -605,7 +615,7 @@ int main(int argc,char **argv){
   static bool collision_seen;if(s.vehicle.collision&&!collision_seen)app_notice(&s,"Hover bumper absorbed a garage wall contact");collision_seen=s.vehicle.collision;
   if(!s.wheel_drag)s.wheel_client_angle+=(0-s.wheel_client_angle)*(1.f-expf(-(float)s.dt*9.f));
   float blend=1.f-expf(-(float)s.dt*12.f);s.yaw+=(s.target_yaw-s.yaw)*blend;s.pitch+=(s.target_pitch-s.pitch)*blend;s.fov+=(s.target_fov-s.fov)*blend;
-  Hit hover=scene_pick(&s,s.mouse_x,s.mouse_y,false);s.hover_button=hover.kind==HIT_BUTTON?hover.button:-1;s.cog_hover=hover.kind==HIT_COG;s.wheel_hover=hover.kind==HIT_WHEEL;
+  Hit hover=scene_pick(&s,s.mouse_x,s.mouse_y,false);s.hover_button=hover.kind==HIT_BUTTON?hover.button:-1;s.hover_close=hover.kind==HIT_CLOSE?hover.slot:-1;s.cog_hover=hover.kind==HIT_COG;s.wheel_hover=hover.kind==HIT_WHEEL;
   s.cog_angle+=((s.time<s.cog_spin_until)?540.f:s.cog_hover?160.f:20.f)*(float)s.dt;if(s.cog_angle>=360.f)s.cog_angle-=360.f;
   /* One thread owns the current GL context for the entire frame: UI texture
    * regeneration, vehicle/cockpit geometry, and Wayland surface textures are

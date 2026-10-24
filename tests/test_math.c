@@ -4,6 +4,7 @@
 #include <math.h>
 #include <stdio.h>
 static int near(float a,float b){return fabsf(a-b)<.001f;}
+static int close_hit(Plane p,float x,float y){float cx,cy,w,h;plane_close_rect(p,&cx,&cy,&w,&h);return fabsf(x-cx)<=w*.5f&&fabsf(y-cy)<=h*.5f;}
 int main(void){
  Vec3 eye=v3(0,1,2.8f-VEHICLE_COCKPIT_FORWARD);float u,v,d;Plane p=monitor_plane(0);
  assert(plane_hit(p,eye,vnorm(vsub(p.center,eye)),&u,&v,&d,true));assert(near(u,.5)&&near(v,.5));
@@ -82,5 +83,21 @@ int main(void){
  assert(near(fixed_after.x,fixed_before.x)&&near(fixed_after.y,fixed_before.y)&&near(fixed_after.z,fixed_before.z));
  Plane axis=plane_translate_local(base,eye,0,0,.5f);
  assert(near(axis.center.z,base.center.z+.5f));
- puts("PASS: nine output transforms, fixed/sliding/flip mounts, animated-plane picking, rolled planes, Arrange transforms, anchored aspect resize, back-face rejection");return 0;
+ /* The titlebar X is a fixed-size texture element. Its pick rectangle must
+  * follow the glyph in local metres at every monitor height and transform,
+  * rather than using a v range that only fits the original .75 m display. */
+ const float heights[]={.30f,.50f,.75f,1.50f,2.10f};
+ for(unsigned i=0;i<sizeof(heights)/sizeof(heights[0]);i++){
+  Plane close_plane=monitor_plane(0);close_plane.height=heights[i];close_plane.center.x+=.37f;close_plane.yaw=13;close_plane.pitch=-9;close_plane.roll=21;
+  float cx,cy,w,h;plane_close_rect(close_plane,&cx,&cy,&w,&h);
+  assert(close_hit(close_plane,cx,cy));assert(!close_hit(close_plane,cx+w,cy));assert(!close_hit(close_plane,0,0));
+  Vec3 cr,cu;plane_axes(close_plane,&cr,&cu,NULL);
+  Vec3 close_point=vadd(close_plane.center,vadd(vmul(cr,cx),vmul(cu,cy)));
+  assert(plane_hit(close_plane,eye,vnorm(vsub(close_point,eye)),&u,&v,&d,false));
+  assert(close_hit(close_plane,(u-.5f)*close_plane.width,(.5f-v)*close_plane.height));
+ }
+ assert(near(clampf(-100,CD_DRIVER_FOV_MIN,CD_DRIVER_FOV_MAX),10));
+ assert(near(clampf(500,CD_DRIVER_FOV_MIN,CD_DRIVER_FOV_MAX),100));
+ assert(near(clampf(-100,CD_DRIVER_FOV_MIN,CD_DRIVER_SCROLL_FOV_MAX),10));
+ puts("PASS: nine output transforms, fixed/sliding/flip mounts, animated-plane picking, rolled planes, Arrange transforms, anchored aspect resize, transformed close targets, FOV bounds, back-face rejection");return 0;
 }

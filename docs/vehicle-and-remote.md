@@ -126,7 +126,7 @@ and cantrail (`v_c = 0.715`). The undertray and roof crown remain fixed. Shared
 split mesh axes at those boundaries prevent leftover strips or overlaps between
 fixed bodywork and the moving door. Separate outer/inner shells, edge thickness,
 hinge knuckles, weather seals, recessed satin pulls, quilted panels, armrests,
-speakers, upper frames and glass all use the same front-edge hinge. F5 reversibly
+speakers, upper frames and glass all use the same front-edge hinge. Meta+O reversibly
 opens/closes both sides through 68 degrees in 1.15 seconds of fixed-step travel;
 door-mounted Wayland displays follow too, and F10 recovery closes both doors.
 Collision extents include the moving lower panels, upper frame, glass and trim,

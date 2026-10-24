@@ -567,7 +567,8 @@ Hit scene_pick(Server *s,float x,float y,bool grab){
    int handle=arrange_handle_at(p,k,lx,ly,z_hit,zlx,zly);
    if(handle!=CD_HANDLE_NONE){best=(Hit){.kind=HIT_ARRANGE_HANDLE,.surface=m->surface,.slot=i,.handle=handle,.x=lx,.y=ly,.distance=handle==CD_HANDLE_AXIS_Z?zd:d};continue;}
   }
-  if(i!=CD_CLUSTER_SLOT&&u>.92&&u<1.01&&v<0&&v>-.12){best=(Hit){.kind=HIT_CLOSE,.surface=m->surface,.slot=i,.distance=d};continue;}
+  float close_x,close_y,close_w,close_h;plane_close_rect(p,&close_x,&close_y,&close_w,&close_h);
+  if(i!=CD_CLUSTER_SLOT&&fabsf(lx-close_x)<=close_w*.5f&&fabsf(ly-close_y)<=close_h*.5f){best=(Hit){.kind=HIT_CLOSE,.surface=m->surface,.slot=i,.distance=d};continue;}
   if(u<0||u>1||v<0||v>1){
    bool frame=i!=CD_CLUSTER_SLOT&&lx>=-(p.width*.5f+.07f*k)&&lx<=p.width*.5f+.07f*k&&ly>=-(p.height*.5f+.06f*k)&&ly<=p.height*.5f+.21f*k;
    if(frame)best=(Hit){.kind=HIT_FRAME,.surface=m->surface,.slot=i,.x=lx,.y=ly,.distance=d};
@@ -656,7 +657,7 @@ void scene_focus_monitor(Server *s,int slot,bool zoom){
  while(desired-s->yaw>180)desired-=360;while(desired-s->yaw<-180)desired+=360;
  s->target_yaw=desired;s->target_pitch=atan2f(rel.y,fmaxf(horizontal,.05f))/RAD;
  float fit_fov=fmaxf(2.f*atanf((p.height*.85f)/fmaxf(dist,.1f)),2.f*atanf((p.width*.85f)/(fmaxf(dist,.1f)*fmaxf((float)s->width/(float)s->height,.1f))))/RAD;
- s->target_fov=zoom?clampf(fit_fov,16.f,55.f):65;s->focus_view=zoom;
+ s->target_fov=zoom?clampf(fit_fov,CD_DRIVER_FOV_MIN,55.f):65;s->focus_view=zoom;
 }
 void scene_reset_camera(Server *s){s->camera_mode=VEHICLE_CAMERA_DRIVER;s->eye=vehicle_seat_eye(s->camera_seat);s->target_yaw=roundf(s->yaw/360)*360;s->target_pitch=-6;s->target_fov=65;s->focus_view=false;}
 void scene_save_screenshot(Server *s,const char *path){

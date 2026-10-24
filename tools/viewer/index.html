@@ -23,9 +23,10 @@ footer{min-height:30px;flex:none;display:flex;align-items:center;justify-content
  <nav class="actions" aria-label="Native compositor controls">
   <button data-key="65471" title="Return to the first-person driver camera">Driver<span class="key">F2</span></button>
   <button data-key="65472" title="Focus the active Wayland monitor">Focus<span class="key">F3</span></button>
-  <button data-key="65474" title="Cycle driver, exterior concept, and EV systems cutaway">View<span class="key">F5</span></button>
+  <button data-meta-key="111" title="Open or close both full-height hinged doors">Doors<span class="key">Meta+O</span></button>
+  <button data-key="65477" title="Cycle driver, exterior concept, and EV systems cutaway">View<span class="key">F8</span></button>
   <button data-key="65476" id="mode-button" title="Toggle steering-wheel and keyboard ownership">Hover drive<span class="key">F7</span></button>
-  <button data-key="65477" class="optional" title="Recover the car to its garage start pose">Recover<span class="key">F8</span></button>
+  <button data-key="65479" class="optional" title="Recover the car to its garage start pose">Recover<span class="key">F10</span></button>
   <button data-key="65470" class="optional" title="Open the native driver's manual">Help<span class="key">F1</span></button>
   <button id="fullscreen" class="icon-button" title="Toggle browser fullscreen" aria-label="Toggle fullscreen">⛶</button>
  </nav>
@@ -76,6 +77,11 @@ function tap(key){
  if(!connected)return;
  rfb.sendKey(key,null,true);rfb.sendKey(key,null,false);rfb.focus();
 }
+function tapMeta(key){
+ if(!connected)return;
+ const meta=65515; // XK_Super_L: the same Meta+O path as a physical keyboard.
+ rfb.sendKey(meta,null,true);rfb.sendKey(key,null,true);rfb.sendKey(key,null,false);rfb.sendKey(meta,null,false);rfb.focus();
+}
 function release(key){
  if(!held.has(key))return;
  const button=held.get(key);held.delete(key);button?.classList.remove('active');
@@ -103,6 +109,7 @@ document.querySelectorAll('[data-key]').forEach(button=>button.addEventListener(
  const key=Number(button.dataset.key);
  if(key===65476){releaseAll();tap(key);webDriveMode=!webDriveMode;updateDriveUI();}else tap(key);
 }));
+document.querySelectorAll('[data-meta-key]').forEach(button=>button.addEventListener('click',()=>tapMeta(Number(button.dataset.metaKey))));
 holdButtons.forEach(button=>{
  button.addEventListener('pointerdown',event=>{
   event.preventDefault();button.setPointerCapture(event.pointerId);press(Number(button.dataset.hold),button);

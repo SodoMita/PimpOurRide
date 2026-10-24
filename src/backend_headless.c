@@ -150,7 +150,7 @@ void cd_vnc_ptr(int mask,int x,int y,rfbClientPtr cl){
    else if(left!=prev_left&&(hit.kind==HIT_APP||s->pointer_grab))server_pointer_button(s,BTN_LEFT,left,now);
    if(right&&!prev_right&&hit.kind==HIT_BUTTON)app_open_settings_slot(s,hit.button,true);
    else if(right!=prev_right&&(hit.kind==HIT_APP||s->pointer_grab))server_pointer_button(s,BTN_RIGHT,right,now);
-   if(wu||wd){if(hit.kind==HIT_APP)server_pointer_axis(s,0,wu?-3:3,now);else s->target_fov=clampf(s->target_fov-(wu?3:-3),30,75);}
+   if(wu||wd){if(hit.kind==HIT_APP)server_pointer_axis(s,0,wu?-3:3,now);else s->target_fov=clampf(s->target_fov-(wu?3:-3),CD_DRIVER_FOV_MIN,CD_DRIVER_SCROLL_FOV_MAX);}
   }
  }
  s->vnc_prev_mask=mask;s->vnc_prev_x=x;s->vnc_prev_y=y;

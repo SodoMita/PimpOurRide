@@ -1,6 +1,9 @@
 #ifndef CD_MATH3D_H
 #define CD_MATH3D_H
 #include <stdbool.h>
+#define CD_DRIVER_FOV_MIN 10.0f
+#define CD_DRIVER_FOV_MAX 100.0f
+#define CD_DRIVER_SCROLL_FOV_MAX 75.0f
 typedef struct { float x,y,z; } Vec3;
 typedef struct { Vec3 center; float width,height,yaw,pitch,roll; } Plane;
 Vec3 v3(float x,float y,float z);
@@ -16,6 +19,7 @@ Vec3 rotate_z(Vec3 v,float deg);
 Vec3 camera_ray(float x,float y,int w,int h,float fov,float yaw,float pitch);
 void plane_axes(Plane p,Vec3 *right,Vec3 *up,Vec3 *normal);
 bool plane_hit(Plane p,Vec3 origin,Vec3 ray,float *u,float *v,float *distance,bool clip);
+void plane_close_rect(Plane p,float *cx,float *cy,float *w,float *h);
 Plane plane_translate(Plane p,Vec3 eye,float right,float up,float toward_eye);
 Plane plane_translate_local(Plane p,Vec3 eye,float right,float up,float normal);
 Plane plane_rotate(Plane p,float yaw,float pitch,float roll);

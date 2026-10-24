@@ -146,7 +146,7 @@ int main(void) {
  float reversing = v.door_open[0];
  vehicle_toggle_doors(&v);
  run_steps(&v, (VehicleInput){0}, 30);
- CHECK(v.door_open[0] < reversing, "second F5 did not reverse half-travel doors");
+ CHECK(v.door_open[0] < reversing, "second Meta+O did not reverse half-travel doors");
  vehicle_toggle_doors(&v);
  run_steps(&v, (VehicleInput){0}, 240);
  CHECK(nearf(v.door_open[0], 1.0f, 1e-6f) && nearf(v.door_open[1], 1.0f, 1e-6f),

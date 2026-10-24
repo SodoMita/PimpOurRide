@@ -118,7 +118,7 @@ struct Server {
  void *vnc_screen;int vnc_port;uint8_t *vnc_pixels;    /* rfbScreenInfoPtr, opaque here (see backend_headless.c) */
  int vnc_prev_mask,vnc_prev_x,vnc_prev_y;              /* RFB pointer edge-detection state (no separate down/up events in the protocol) */
  bool dmabuf_supported;int dmabuf_format_count;DmabufFormat dmabuf_formats[CD_DMABUF_MAX_FORMATS];
- int width,height,fps_limit,theme,hover_button,active_slot;
+ int width,height,fps_limit,theme,hover_button,hover_close,active_slot;
  int bg_mode; /* CD_BG_*: which environment() backdrop to draw */
  bool running,middle_look,focus_view,show_help,hud_visible,fullscreen,demo,launch_pending;
  /* F6 Arrange mode: session-only whole-monitor translate/rotate/scale.
@@ -140,6 +140,7 @@ struct Server {
  VehicleCameraMode camera_mode;
  VehicleSeat camera_seat;
  bool drive_forward,drive_reverse,drive_left,drive_right,drive_brake;
+ bool door_shortcut_down;
  bool wheel_drag;
  float wheel_steer,wheel_client_angle,wheel_axis_accum,wheel_last_x,wheel_last_y;
  double time,dt,fps,start_time,last_ui_time,last_windshield_time,notice_until;
