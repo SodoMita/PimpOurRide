@@ -294,7 +294,7 @@ click through to the app underneath.
 | PageUp / PageDown | Move closer / farther away |
 | A/D, W/S, Q/E | Yaw, pitch, and roll |
 | `-` / `=`, or keypad `+` / `-` | Uniform scale down/up |
-| R or 0 | Reset this screen to its default bay transform |
+| R or 0 | Reset this screen to its default bay transform and 1000×625 window request |
 | Esc or F6 | Leave Arrange mode |
 
 When the gizmo is shown, its handles are ray-picked in 3D just like the
@@ -305,8 +305,8 @@ dashboard buttons:
 | Amber square | Free movement in the monitor plane |
 | Red / green / blue axis arrows and end knobs | Move only along local X / Y / Z (drag the blue Z knob up/down) |
 | Green / red / blue rings outside the frame | Yaw / pitch / roll around the matching local axis |
-| White corner squares | Resize width + height, anchoring the opposite corner; hold Shift to preserve aspect |
-| White edge squares | Resize only width or height, anchoring the opposite edge |
+| White corner squares | Resize the app window's width + height, anchoring the opposite corner; hold Shift to preserve aspect |
+| White edge squares | Resize only the app window's width or height, anchoring the opposite edge |
 | Magenta diamond | Uniformly scale both dimensions, preserving the current aspect |
 
 Hold **Shift** for larger keyboard steps or **Ctrl** for finer ones (the Ctrl
@@ -319,10 +319,16 @@ transformed plane, so clicks stay aligned after you leave Arrange mode. A
 custom transform also overrides the slot's deployment and door-hinge motion
 until reset; otherwise door-mounted screens follow their physical door.
 Corner/edge resizing changes
-the physical monitor's width/height (and therefore its aspect); the client's
-Wayland buffer is not resized, so its image is letterboxed on the resized
-screen. The magenta uniform-scale handle and mouse wheel instead scale both
-dimensions together, preserving whatever aspect the monitor currently has.
+the app window's logical dimensions: ChromeDrive sends a new
+`xdg_toplevel.configure` size (respecting the client's min/max hints) and
+moves the 3D screen plane with it, so the app redraws at the new size instead
+of merely having its old buffer scaled. While the client is redrawing — or if
+it chooses a nearby size, as cell-snapping terminals may — the existing buffer
+is letterboxed, never stretched. The magenta uniform-scale handle and mouse
+wheel remain the explicit physical scaling controls: they scale both plane
+dimensions together, preserving the current aspect, without changing the
+client's window size. Pressing **R**/**0** restores the default plane and
+requests the default 1000×625 window size again.
 To keep a screen recoverable, each dimension is limited to 0.35×–2.75× its
 default, pitch to ±85°, and the centre stays 0.8–12 m from the eye inside the
 garage bounds. Frame moves and Arrange transforms are deliberately

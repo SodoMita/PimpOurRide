@@ -67,6 +67,7 @@ struct Surface {
  DmabufBuffer *dmabuf,*pending_dmabuf;
  uint8_t *pending_pixels;
  int bw,bh,width,height,scale,transform,pending_w,pending_h,pending_scale,pending_transform;
+ int win_w,win_h,min_w,min_h,max_w,max_h; /* last requested toplevel size + client hints (0 = unset) */
  int gx,gy,gw,gh,popup_w,popup_h;
  struct wl_resource *pending_buffer;
  struct wl_listener buffer_destroy;
@@ -126,7 +127,7 @@ struct Server {
   * a new top-level maps into that bay. Mount animation yields to this custom
   * plane instead of overwriting the user's arrangement every frame. */
  bool arrange_mode,arrange_dragging,arrange_handles;int arrange_slot,arrange_drag_button,arrange_last_x,arrange_last_y;
- int arrange_handle,arrange_start_x,arrange_start_y;Plane arrange_start_plane;float arrange_start_local_x,arrange_start_local_y;
+ int arrange_handle,arrange_start_x,arrange_start_y;Plane arrange_start_plane;int arrange_start_win_w,arrange_start_win_h;float arrange_start_local_x,arrange_start_local_y;
  /* KWin-like titlebar/frame drag outside Arrange mode: just translation,
   * without making the whole input path modal. */
  bool frame_dragging;int frame_drag_slot,frame_last_x,frame_last_y;
@@ -169,6 +170,7 @@ void server_key(Server *s,uint32_t key,bool down,uint32_t time);
 void server_release_keys(Server *s,uint32_t time);
 void server_focus(Server *s,Surface *surface);
 void server_close_surface(Surface *surface);
+bool server_request_window_size(Surface *surface,int width,int height,int *out_w,int *out_h);
 Surface *surface_root(Surface *s);
 Surface *surface_at(Surface *root,float x,float y,float *sx,float *sy);
 void server_each_surface(Surface *root,void (*fn)(Surface*,int,int,void*),void *data);

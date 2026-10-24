@@ -117,6 +117,33 @@ Plane plane_resize_aspect(Plane p,Plane base,Vec3 eye,float width,float height,i
  p.width=new_w;p.height=new_h;
  return plane_clamp_center(p,eye);
 }
+static int plane_dim_pixels(float start_dim,float new_dim,int start_px){
+ if(start_px<=0)return 1;
+ if(start_dim<=0.f||new_dim<=0.f)return start_px;
+ int px=(int)lrintf((float)start_px*new_dim/start_dim);
+ return px<1?1:px;
+}
+void plane_window_pixels(Plane start,Plane resized,int start_w,int start_h,int *out_w,int *out_h){
+ /* Convert a white-grip plane resize into logical window pixels using the
+  * density at drag start. The magenta uniform-scale handle is the separate
+  * operation that changes that density; a border resize asks the app for
+  * different dimensions instead of only stretching its old buffer. */
+ if(out_w)*out_w=plane_dim_pixels(start.width,resized.width,start_w);
+ if(out_h)*out_h=plane_dim_pixels(start.height,resized.height,start_h);
+}
+static Plane plane_resize_window_pixels_impl(Plane start,Plane base,Vec3 eye,int start_w,int start_h,int win_w,int win_h,int fixed_x,int fixed_y,bool keep_aspect){
+ if(start.width<=0.f||start.height<=0.f||start_w<=0||start_h<=0||win_w<=0||win_h<=0)return start;
+ float w=start.width*(float)win_w/(float)start_w;
+ float h=start.height*(float)win_h/(float)start_h;
+ return keep_aspect?plane_resize_aspect(start,base,eye,w,h,fixed_x,fixed_y)
+                   :plane_resize(start,base,eye,w,h,fixed_x,fixed_y);
+}
+Plane plane_resize_window_pixels(Plane start,Plane base,Vec3 eye,int start_w,int start_h,int win_w,int win_h,int fixed_x,int fixed_y){
+ return plane_resize_window_pixels_impl(start,base,eye,start_w,start_h,win_w,win_h,fixed_x,fixed_y,false);
+}
+Plane plane_resize_window_pixels_aspect(Plane start,Plane base,Vec3 eye,int start_w,int start_h,int win_w,int win_h,int fixed_x,int fixed_y){
+ return plane_resize_window_pixels_impl(start,base,eye,start_w,start_h,win_w,win_h,fixed_x,fixed_y,true);
+}
 MonitorMount monitor_mount(int index){
  if(index==8)return MOUNT_CLUSTER;
  static const MonitorMount mounts[8]={MOUNT_WINDSHIELD,MOUNT_DASH_SLIDE,MOUNT_DASH_SLIDE,MOUNT_DOOR_SLIDE,MOUNT_DOOR_SLIDE,MOUNT_ROOF_FLIP,MOUNT_ROOF_FLIP,MOUNT_REAR_FIXED};

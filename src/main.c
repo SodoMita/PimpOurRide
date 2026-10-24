@@ -211,9 +211,12 @@ static bool arrange_valid(Server *s){
 }
 static void monitor_transform_notice(Server *s,int slot,const char *prefix){
  if(slot<0||slot>=CD_MAX_MONITORS||!s->monitors[slot].surface)return;
- Plane p=s->monitors[slot].plane;
- app_notice(s,"%s CD-%02d | %.2f, %.2f, %.2f m | yaw %.0f pitch %.0f roll %.0f | %.2fx%.2f m",
-  prefix,slot+1,p.center.x,p.center.y,p.center.z,p.yaw,p.pitch,p.roll,p.width,p.height);
+ Plane p=s->monitors[slot].plane;Surface *surf=s->monitors[slot].surface;
+ int win_w,win_h;
+ if(surf->slot==CD_CLUSTER_SLOT||strstr(surf->app_id,"chromedrive.cluster")){win_w=CD_CLUSTER_W;win_h=CD_CLUSTER_H;}
+ else{win_w=surf->win_w>0?surf->win_w:(surf->width>0?surf->width:CD_APP_W);win_h=surf->win_h>0?surf->win_h:(surf->height>0?surf->height:CD_APP_H);}
+ app_notice(s,"%s CD-%02d | %.2f, %.2f, %.2f m | yaw %.0f pitch %.0f roll %.0f | %.2fx%.2f m | window %dx%d",
+  prefix,slot+1,p.center.x,p.center.y,p.center.z,p.yaw,p.pitch,p.roll,p.width,p.height,win_w,win_h);
 }
 static void arrange_notice(Server *s){
  if(arrange_valid(s))monitor_transform_notice(s,s->arrange_slot,"Arrange");
@@ -296,6 +299,9 @@ static void arrange_begin_drag(Server *s,uint32_t button,int handle){
  s->arrange_dragging=true;s->arrange_drag_button=(int)button;s->arrange_handle=handle;
  s->arrange_last_x=s->arrange_start_x=s->mouse_x;s->arrange_last_y=s->arrange_start_y=s->mouse_y;
  s->arrange_start_plane=s->monitors[s->arrange_slot].plane;
+ Surface *surf=s->monitors[s->arrange_slot].surface;
+ s->arrange_start_win_w=surf&&surf->win_w>0?surf->win_w:(surf&&surf->width>0?surf->width:CD_APP_W);
+ s->arrange_start_win_h=surf&&surf->win_h>0?surf->win_h:(surf&&surf->height>0?surf->height:CD_APP_H);
  if(!arrange_local_point(s,s->arrange_start_plane,s->mouse_x,s->mouse_y,&s->arrange_start_local_x,&s->arrange_start_local_y)){s->arrange_start_local_x=0;s->arrange_start_local_y=0;}
 }
 static void arrange_cycle(Server *s){
@@ -364,8 +370,23 @@ void app_arrange_pointer_motion(Server *s,int x,int y){
    if(hd==CD_HANDLE_RESIZE_N||hd==CD_HANDLE_RESIZE_NE||hd==CD_HANDLE_RESIZE_NW){new_h+=dly;fixed_y=-1;}
    if(hd==CD_HANDLE_RESIZE_S||hd==CD_HANDLE_RESIZE_SE||hd==CD_HANDLE_RESIZE_SW){new_h-=dly;fixed_y=1;}
    bool corner=hd==CD_HANDLE_RESIZE_NW||hd==CD_HANDLE_RESIZE_NE||hd==CD_HANDLE_RESIZE_SE||hd==CD_HANDLE_RESIZE_SW;
-   if(shift&&corner)out=plane_resize_aspect(start,base,s->eye,new_w,new_h,fixed_x,fixed_y);
-   else out=plane_resize(start,base,s->eye,new_w,new_h,fixed_x,fixed_y);break;
+   bool aspect=shift&&corner;
+   if(aspect)out=plane_resize_aspect(start,base,s->eye,new_w,new_h,fixed_x,fixed_y);
+   else out=plane_resize(start,base,s->eye,new_w,new_h,fixed_x,fixed_y);
+   if(hd>=CD_HANDLE_RESIZE_NW&&hd<=CD_HANDLE_RESIZE_W){
+    Surface *surf=s->monitors[slot].surface;
+    if(surf){
+     int start_w=s->arrange_start_win_w>0?s->arrange_start_win_w:(surf->win_w>0?surf->win_w:CD_APP_W);
+     int start_h=s->arrange_start_win_h>0?s->arrange_start_win_h:(surf->win_h>0?surf->win_h:CD_APP_H);
+     int req_w=start_w,req_h=start_h,got_w=req_w,got_h=req_h;
+     plane_window_pixels(start,out,start_w,start_h,&req_w,&req_h);
+     got_w=req_w;got_h=req_h;
+     if(server_request_window_size(surf,req_w,req_h,&got_w,&got_h)&&(got_w!=req_w||got_h!=req_h))
+      out=aspect?plane_resize_window_pixels_aspect(start,base,s->eye,start_w,start_h,got_w,got_h,fixed_x,fixed_y)
+                :plane_resize_window_pixels(start,base,s->eye,start_w,start_h,got_w,got_h,fixed_x,fixed_y);
+    }
+   }
+   break;
   }
   }
   scene_monitor_set_plane(s,slot,out);
@@ -475,7 +496,7 @@ bool app_global_key(Server *s,uint32_t evdev,bool down){
   case KEY_E:scene_monitor_rotate(s,slot,0,0,3.f*step);break;
   case KEY_MINUS:case KEY_KPMINUS:scene_monitor_scale(s,slot,powf(1.08f,-step));break;
   case KEY_EQUAL:case KEY_KPPLUS:scene_monitor_scale(s,slot,powf(1.08f,step));break;
-  case KEY_R:case KEY_0:scene_monitor_reset(s,slot);break;
+  case KEY_R:case KEY_0:{scene_monitor_reset(s,slot);Surface *surf=s->monitors[slot].surface;if(surf)server_request_window_size(surf,CD_APP_W,CD_APP_H,NULL,NULL);break;}
   default:changed=false;break;
   }
   if(changed)arrange_notice(s);

@@ -184,9 +184,11 @@ last until the next file edit, then the file wins for the keys it sets.
   **Restart:** `display.width/height/fullscreen`, `session.*`.
 - **Spatial window transforms:** titlebar/frame dragging and F6 Arrange
   position, yaw/pitch/roll, uniform scale and corner/edge resize dimensions
-  are intentionally session-only. They have no config keys and are not saved
-  by the GUI; restarting ChromeDrive, or mapping a new window into a bay,
-  restores that bay's built-in monitor transform.
+  are intentionally session-only. Corner/edge grips request a real new logical
+  window size from the client for the current mapping; they still have no
+  config keys and are not saved by the GUI. Restarting ChromeDrive, or mapping
+  a new window into a bay, restores that bay's built-in monitor transform and
+  the default 1000×625 request.
 - **Garage3D, live:** everything except `window.width/height` (initial size).
   `window.fullscreen`/`scale` are re-requested live. Physics toggles,
   pendulum amplitude changes (energy is rescaled smoothly) and rain count
