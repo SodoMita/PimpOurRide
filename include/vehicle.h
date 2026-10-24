@@ -14,14 +14,22 @@
  * clearance, not just the skateboard. Yaw rotates this box with the car. */
 #define VEHICLE_COLLISION_HALF_WIDTH 3.42f
 #define VEHICLE_COLLISION_HALF_LENGTH 5.90f
-/* Real front-hinged door assemblies. The same parametric aperture is removed
- * from the lower hull and filled by a rigid outer/inner door + side glass. */
+/* Real front-hinged, full-height side door assemblies. The lower aperture
+ * reaches the underbody/sill crease and beltline; the matching canopy aperture
+ * continues through the side glass and cantrail (roof rail). Only the fixed
+ * roof crown remains above it. Every boundary is shared by fixed bodywork,
+ * moving structure/glass, collision sampling and tests. */
 #define VEHICLE_DOOR_U0 0.34f
 #define VEHICLE_DOOR_U1 0.54f
-#define VEHICLE_DOOR_V0 0.27f
-#define VEHICLE_DOOR_V1 0.79f
+#define VEHICLE_DOOR_V0 (1.0f / 6.0f)
+#define VEHICLE_DOOR_V1 0.84f
+#define VEHICLE_DOOR_CANOPY_V1 0.715f
 #define VEHICLE_DOOR_MAX_ANGLE 68.0f
 #define VEHICLE_DOOR_TRAVEL_SECONDS 1.15f
+/* Forward means -Z in car-local space. One offset moves the shared seats,
+ * dashboard, controls, cameras, door trim and displays toward the actual door
+ * opening; rendering and every pick plane consume the same resulting layout. */
+#define VEHICLE_COCKPIT_FORWARD 1.55f
 
 typedef enum {
  VEHICLE_STEER_CLIENT = 0, /* wheel is a scroll/input controller for a Wayland app */
@@ -112,6 +120,7 @@ Vec3 vehicle_hull_point(float u, float v, int side, Vec3 *normal);
 Vec3 vehicle_canopy_point(float u, float v, int side, Vec3 *normal);
 bool vehicle_point_inside_envelope(Vec3 p, float margin);
 bool vehicle_door_aperture(float u, float v);
+bool vehicle_door_canopy_aperture(float u, float v);
 void vehicle_toggle_doors(Vehicle *v);
 float vehicle_door_open(const Vehicle *v, int side);
 float vehicle_door_angle(const Vehicle *v, int side); /* signed GL/Y degrees */

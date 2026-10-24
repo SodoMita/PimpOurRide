@@ -45,6 +45,7 @@ typedef enum {
 
 static int canopy_zone(float u, float v);
 static void render_canopy_structure(void);
+static void render_door_canopy_structure(int side);
 
 static void ev_set_material(EvMaterial mat) {
  switch (mat) {
@@ -450,6 +451,31 @@ static void hull_seam(float u0, float v0, float u1, float v1, int side) {
  glEnd();
 }
 
+static void canopy_seam(float u0, float v0, float u1, float v1, int side) {
+ /* Fixed weather seal on the exact roof-rail/side-glass aperture boundary. */
+ glBegin(GL_LINE_STRIP);
+ for (int i = 0; i <= 20; i++) {
+  float t = (float)i / 20.0f, u = u0 + (u1 - u0) * t, v = v0 + (v1 - v0) * t;
+  Vec3 n, p = vehicle_canopy_point(u, v, side, &n);p = vadd(p, vmul(n, 0.009f));
+  glVertex3f(p.x, p.y, p.z);
+ }
+ glEnd();
+}
+
+static void door_canopy_edge(float u0, float v0, float u1, float v1, int side) {
+ /* Moving edge thickness makes the upper frame/glass a rigid door assembly,
+  * not a transparency trick or a camera-dependent roof cutaway. */
+ glBegin(GL_QUAD_STRIP);
+ for (int i = 0; i <= 20; i++) {
+  float t = (float)i / 20.0f, u = u0 + (u1 - u0) * t, v = v0 + (v1 - v0) * t;
+  Vec3 n, outer = vehicle_canopy_point(u, v, side, &n);
+  Vec3 inner = vadd(outer, vmul(n, -0.028f));outer = vadd(outer, vmul(n, 0.004f));
+  glNormal3f(n.x, n.y, n.z);glVertex3f(outer.x, outer.y, outer.z);
+  glVertex3f(inner.x, inner.y, inner.z);
+ }
+ glEnd();
+}
+
 static void door_gl_transform(const Vehicle *v, int side) {
  Vec3 pivot = vehicle_door_pivot(side);
  glTranslatef(pivot.x, pivot.y, pivot.z);
@@ -539,9 +565,9 @@ static void render_door_handle(int side) {
 }
 
 static void render_door_interior(int side) {
- /* This is the validated shared cockpit upholstery, now rigidly attached to
-  * the exterior shell. Closed-pose coordinates are unchanged. */
- glPushMatrix();glTranslatef(side * 2.00f, -0.39f, 0.64f);glRotatef(side * -40.0f, 0, 1, 0);
+ /* The shared cockpit upholstery is rigidly attached to the exterior shell
+  * and uses the same forward occupant offset as the seats and controls. */
+ glPushMatrix();glTranslatef(side * 2.00f, -0.39f, 0.64f - VEHICLE_COCKPIT_FORWARD);glRotatef(side * -40.0f, 0, 1, 0);
  ev_set_material(EV_MAT_MATTE_CARBON);ev_color(0.13f, 0.058f, 0.21f);ev_rbox(0, 0.35f, 0, 0.56f, 1.10f, 0.15f, 0.12f);
  glDisable(GL_LIGHTING);ev_color(0.36f, 0.19f, 0.46f);glBegin(GL_LINES);
  for (float x = -0.05f; x < 0.75f; x += 0.12f) {
@@ -568,31 +594,34 @@ static void render_doors(Server *s) {
   hull_seam(VEHICLE_DOOR_U0, VEHICLE_DOOR_V0, VEHICLE_DOOR_U1, VEHICLE_DOOR_V0, side);
   hull_seam(VEHICLE_DOOR_U1, VEHICLE_DOOR_V0, VEHICLE_DOOR_U1, VEHICLE_DOOR_V1, side);
   hull_seam(VEHICLE_DOOR_U0, VEHICLE_DOOR_V1, VEHICLE_DOOR_U1, VEHICLE_DOOR_V1, side);
+  float cu0 = (VEHICLE_DOOR_U0 - 0.26f) / 0.64f;
+  float cu1 = (VEHICLE_DOOR_U1 - 0.26f) / 0.64f;
+  canopy_seam(cu0, 0, cu0, VEHICLE_DOOR_CANOPY_V1, side);
+  canopy_seam(cu1, 0, cu1, VEHICLE_DOOR_CANOPY_V1, side);
+  canopy_seam(cu0, 0, cu1, 0, side);
+  canopy_seam(cu0, VEHICLE_DOOR_CANOPY_V1, cu1, VEHICLE_DOOR_CANOPY_V1, side);
   glLineWidth(1.0f);glEnable(GL_LIGHTING);
   glPushMatrix();door_gl_transform(&s->vehicle, side);
-  render_door_shell(side,vehicle_door_open(&s->vehicle,side)>0.001f);render_door_handle(side);render_door_interior(side);
+  render_door_shell(side,vehicle_door_open(&s->vehicle,side)>0.001f);
+  render_door_canopy_structure(side);
+  render_door_handle(side);render_door_interior(side);
   glPopMatrix();
  }
 }
 
-static int door_glass_cell(float u, float v) {
- float hull_u = 0.26f + 0.64f * u;
- return hull_u >= VEHICLE_DOOR_U0 && hull_u <= VEHICLE_DOOR_U1
-     && v >= 0.06f && v < 0.675f && !canopy_zone(u, v);
-}
-
 static void render_driver_hull(void) {
- /* From the first-person driver's seat, only the outer side flanks (v <= 0.78,
-  * outside the cabin beltline), the front hood (u <= 0.41, ahead of the z=-1.0
-  * dashboard), and the rear deck (u >= 0.82) are drawn. Keeping the front hood
-  * and rear deck as separate quad strips prevents bridging across the cockpit. */
+ /* From the first-person driver's seat, only the outer side flanks up to the
+  * beltline, front hood and rear deck are drawn. The full-height door aperture
+  * spans that entire flank; no fixed strip is left across its sill or window. */
  ev_set_material(EV_MAT_BODY_PAINT);
  for (int side = -1; side <= 1; side += 2) {
-  float flank_lo = 4.0f / 24.0f, flank_hi = 19.0f / 24.0f;
+  float flank_lo = VEHICLE_DOOR_V0, flank_hi = VEHICLE_DOOR_V1;
   render_hull_patch(side, 0.0f, VEHICLE_DOOR_U0, flank_lo, flank_hi, 24, 15);
   render_hull_patch(side, VEHICLE_DOOR_U1, 1.0f, flank_lo, flank_hi, 34, 15);
-  render_hull_patch(side, VEHICLE_DOOR_U0, VEHICLE_DOOR_U1, flank_lo, VEHICLE_DOOR_V0, 16, 4);
-  render_hull_patch(side, VEHICLE_DOOR_U0, VEHICLE_DOOR_U1, VEHICLE_DOOR_V1, flank_hi, 16, 1);
+  if (VEHICLE_DOOR_V0 > flank_lo)
+   render_hull_patch(side, VEHICLE_DOOR_U0, VEHICLE_DOOR_U1, flank_lo, VEHICLE_DOOR_V0, 16, 4);
+  if (VEHICLE_DOOR_V1 < flank_hi)
+   render_hull_patch(side, VEHICLE_DOOR_U0, VEHICLE_DOOR_U1, VEHICLE_DOOR_V1, flank_hi, 16, 1);
  }
  /* Front hood (ahead of the windshield/dashboard) and rear deck center panels. */
  for (int part = 0; part < 2; part++) {
@@ -1123,32 +1152,70 @@ static int canopy_zone(float u, float v) {
  return 0;
 }
 
-static void render_canopy_structure(void) {
- const int u_steps = 64, v_steps = 28;
- for (int side = -1; side <= 1; side += 2) {
-  for (int iv = 0; iv < v_steps; iv++) {
-   float v0 = (float)iv / v_steps, v1 = (float)(iv + 1) / v_steps;
-   for (int iu = 0; iu < u_steps; iu++) {
-    float u0 = (float)iu / u_steps, u1 = (float)(iu + 1) / u_steps;
-    int zone = canopy_zone(0.5f * (u0 + u1), 0.5f * (v0 + v1));
-    if (!zone) continue;
-    if (zone == 1) { ev_set_material(EV_MAT_SATIN_METAL); ev_color(0.38f, 0.43f, 0.52f); }
-    else if (zone == 2) { ev_set_material(EV_MAT_BODY_PAINT); ev_color(0.22f, 0.25f, 0.35f); }
-    else { ev_set_material(EV_MAT_DARK_GLASS); ev_color(0.018f, 0.022f, 0.032f); }
-    Vec3 n00, n01, n11, n10;
-    Vec3 p00 = vehicle_canopy_point(u0, v0, side, &n00);
-    Vec3 p01 = vehicle_canopy_point(u0, v1, side, &n01);
-    Vec3 p11 = vehicle_canopy_point(u1, v1, side, &n11);
-    Vec3 p10 = vehicle_canopy_point(u1, v0, side, &n10);
-    glBegin(GL_QUADS);
-    glNormal3f(n00.x, n00.y, n00.z); glVertex3f(p00.x, p00.y, p00.z);
-    glNormal3f(n01.x, n01.y, n01.z); glVertex3f(p01.x, p01.y, p01.z);
-    glNormal3f(n11.x, n11.y, n11.z); glVertex3f(p11.x, p11.y, p11.z);
-    glNormal3f(n10.x, n10.y, n10.z); glVertex3f(p10.x, p10.y, p10.z);
-    glEnd();
-   }
-  }
+static void canopy_axis_insert(float *axis, int *count, float value) {
+ /* Base tessellation and aperture boundaries share one sorted axis. Thus the
+  * fixed and moving meshes meet exactly instead of depending on cell centres. */
+ if (value <= 0.0f || value >= 1.0f) return;
+ int i = 0;while (i < *count && axis[i] < value) i++;
+ if (i < *count && fabsf(axis[i] - value) < 1e-6f) return;
+ for (int j = *count; j > i; j--) axis[j] = axis[j - 1];
+ axis[i] = value;(*count)++;
+}
+
+static void canopy_mesh_axes(float *us, int *nu, float *vs, int *nv) {
+ for (int i = 0; i <= 64; i++) us[i] = (float)i / 64.0f;
+ for (int i = 0; i <= 28; i++) vs[i] = (float)i / 28.0f;
+ *nu = 65;*nv = 29;
+ canopy_axis_insert(us, nu, (VEHICLE_DOOR_U0 - 0.26f) / 0.64f);
+ canopy_axis_insert(us, nu, (VEHICLE_DOOR_U1 - 0.26f) / 0.64f);
+ canopy_axis_insert(vs, nv, VEHICLE_DOOR_CANOPY_V1);
+}
+
+static void canopy_material(int zone) {
+ if (zone == 1) { ev_set_material(EV_MAT_SATIN_METAL); ev_color(0.38f, 0.43f, 0.52f); }
+ else if (zone == 2) { ev_set_material(EV_MAT_BODY_PAINT); ev_color(0.22f, 0.25f, 0.35f); }
+ else { ev_set_material(EV_MAT_DARK_GLASS); ev_color(0.018f, 0.022f, 0.032f); }
+}
+
+static void canopy_quad(int side, float u0, float v0, float u1, float v1) {
+ Vec3 n00, n01, n11, n10;
+ Vec3 p00 = vehicle_canopy_point(u0, v0, side, &n00);
+ Vec3 p01 = vehicle_canopy_point(u0, v1, side, &n01);
+ Vec3 p11 = vehicle_canopy_point(u1, v1, side, &n11);
+ Vec3 p10 = vehicle_canopy_point(u1, v0, side, &n10);
+ glBegin(GL_QUADS);
+ glNormal3f(n00.x, n00.y, n00.z); glVertex3f(p00.x, p00.y, p00.z);
+ glNormal3f(n01.x, n01.y, n01.z); glVertex3f(p01.x, p01.y, p01.z);
+ glNormal3f(n11.x, n11.y, n11.z); glVertex3f(p11.x, p11.y, p11.z);
+ glNormal3f(n10.x, n10.y, n10.z); glVertex3f(p10.x, p10.y, p10.z);
+ glEnd();
+}
+
+static void render_canopy_structure_part(int side, bool moving_door) {
+ float us[67], vs[30];int nu, nv;canopy_mesh_axes(us, &nu, vs, &nv);
+ for (int iv = 0; iv < nv - 1; iv++) for (int iu = 0; iu < nu - 1; iu++) {
+  float u0 = us[iu], u1 = us[iu + 1], v0 = vs[iv], v1 = vs[iv + 1];
+  float um = 0.5f * (u0 + u1), vm = 0.5f * (v0 + v1);
+  bool aperture = vehicle_door_canopy_aperture(um, vm);
+  int zone = canopy_zone(um, vm);
+  if (aperture != moving_door || !zone) continue;
+  canopy_material(zone);canopy_quad(side, u0, v0, u1, v1);
  }
+}
+
+static void render_canopy_structure(void) {
+ for (int side = -1; side <= 1; side += 2) render_canopy_structure_part(side, false);
+}
+
+static void render_door_canopy_structure(int side) {
+ render_canopy_structure_part(side, true);
+ ev_set_material(EV_MAT_MATTE_CARBON);ev_color(0.035f, 0.040f, 0.055f);
+ float cu0 = (VEHICLE_DOOR_U0 - 0.26f) / 0.64f;
+ float cu1 = (VEHICLE_DOOR_U1 - 0.26f) / 0.64f;
+ door_canopy_edge(cu0, 0, cu0, VEHICLE_DOOR_CANOPY_V1, side);
+ door_canopy_edge(cu1, 0, cu1, VEHICLE_DOOR_CANOPY_V1, side);
+ door_canopy_edge(cu0, 0, cu1, 0, side);
+ door_canopy_edge(cu0, VEHICLE_DOOR_CANOPY_V1, cu1, VEHICLE_DOOR_CANOPY_V1, side);
 }
 
 void vehicle_render(Server *s, bool cutaway) {
@@ -1197,51 +1264,35 @@ void vehicle_render(Server *s, bool cutaway) {
  ev_restore_scene_material();
 }
 
+static void render_canopy_glass_part(int side, bool moving_door) {
+ float us[67], vs[30];int nu, nv;canopy_mesh_axes(us, &nu, vs, &nv);
+ for (int iv = 0; iv < nv - 1; iv++) for (int iu = 0; iu < nu - 1; iu++) {
+  float u0 = us[iu], u1 = us[iu + 1], v0 = vs[iv], v1 = vs[iv + 1];
+  float um = 0.5f * (u0 + u1), vm = 0.5f * (v0 + v1);
+  bool aperture = vehicle_door_canopy_aperture(um, vm);
+  if (aperture != moving_door || canopy_zone(um, vm)) continue;
+  Vec3 p00 = vehicle_canopy_point(u0, v0, side, NULL);
+  Vec3 p01 = vehicle_canopy_point(u0, v1, side, NULL);
+  Vec3 p11 = vehicle_canopy_point(u1, v1, side, NULL);
+  Vec3 p10 = vehicle_canopy_point(u1, v0, side, NULL);
+  glBegin(GL_QUADS);glVertex3f(p00.x, p00.y, p00.z);glVertex3f(p01.x, p01.y, p01.z);
+  glVertex3f(p11.x, p11.y, p11.z);glVertex3f(p10.x, p10.y, p10.z);glEnd();
+ }
+}
+
 void vehicle_render_glass(Server *s) {
  if (s->camera_mode == VEHICLE_CAMERA_SYSTEMS) return;
- /* The same window openings and surface in driver and exterior views. The
-  * shared cockpit has already been depth-drawn, so tinted glass reveals the
-  * actual seats/panels instead of a second exterior-only approximation. */
+ /* Fixed and moving glass use the same split axes as the opaque structure.
+  * Opening a door therefore exposes the entire side aperture through the
+  * cantrail, with no invisible leftover pane or camera-only roof cutaway. */
  bool driver = s->camera_mode == VEHICLE_CAMERA_DRIVER;
  glDisable(GL_LIGHTING);
  glEnable(GL_BLEND); glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA); glDepthMask(GL_FALSE);
  glColor4f(0.035f, 0.075f, 0.11f, driver ? 0.13f : 0.22f);
- const int u_steps = 64, v_steps = 28;
- for (int side = -1; side <= 1; side += 2) {
-  for (int iv = 0; iv < v_steps; iv++) {
-   float v0 = (float)iv / v_steps, v1 = (float)(iv + 1) / v_steps;
-   for (int iu = 0; iu < u_steps; iu++) {
-    float u0 = (float)iu / u_steps, u1 = (float)(iu + 1) / u_steps;
-    float um = 0.5f * (u0 + u1), vm = 0.5f * (v0 + v1);
-    if (canopy_zone(um, vm) || door_glass_cell(um, vm)) continue;
-    Vec3 p00 = vehicle_canopy_point(u0, v0, side, NULL);
-    Vec3 p01 = vehicle_canopy_point(u0, v1, side, NULL);
-    Vec3 p11 = vehicle_canopy_point(u1, v1, side, NULL);
-    Vec3 p10 = vehicle_canopy_point(u1, v0, side, NULL);
-    glBegin(GL_QUADS);
-    glVertex3f(p00.x, p00.y, p00.z); glVertex3f(p01.x, p01.y, p01.z);
-    glVertex3f(p11.x, p11.y, p11.z); glVertex3f(p10.x, p10.y, p10.z);
-    glEnd();
-   }
-  }
- }
- /* The frameless door lights use the exact cells removed above and the same
-  * rigid hinge as the lower shell, so no tinted glass remains in the opening. */
+ for (int side = -1; side <= 1; side += 2) render_canopy_glass_part(side, false);
  for (int side = -1; side <= 1; side += 2) {
   glPushMatrix();door_gl_transform(&s->vehicle, side);
-  for (int iv = 0; iv < v_steps; iv++) {
-   float v0 = (float)iv / v_steps, v1 = (float)(iv + 1) / v_steps;
-   for (int iu = 0; iu < u_steps; iu++) {
-    float u0 = (float)iu / u_steps, u1 = (float)(iu + 1) / u_steps;
-    if (!door_glass_cell(0.5f * (u0 + u1), 0.5f * (v0 + v1))) continue;
-    Vec3 p00 = vehicle_canopy_point(u0, v0, side, NULL);
-    Vec3 p01 = vehicle_canopy_point(u0, v1, side, NULL);
-    Vec3 p11 = vehicle_canopy_point(u1, v1, side, NULL);
-    Vec3 p10 = vehicle_canopy_point(u1, v0, side, NULL);
-    glBegin(GL_QUADS);glVertex3f(p00.x, p00.y, p00.z);glVertex3f(p01.x, p01.y, p01.z);
-    glVertex3f(p11.x, p11.y, p11.z);glVertex3f(p10.x, p10.y, p10.z);glEnd();
-   }
-  }
+  render_canopy_glass_part(side, true);
   glPopMatrix();
  }
  glDepthMask(GL_TRUE); glDisable(GL_BLEND); glEnable(GL_LIGHTING);

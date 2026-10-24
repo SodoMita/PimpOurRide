@@ -1,4 +1,5 @@
 #include "math3d.h"
+#include "vehicle.h"
 #include <math.h>
 #include <stddef.h>
 #define RAD (3.14159265358979323846f/180.f)
@@ -125,19 +126,25 @@ const char *monitor_mount_name(int index){
  static const char *names[]={"WINDSHIELD / FIXED","DASH / SLIDE-UP","DOOR / SLIDE-OUT","ROOF / FLIP-DOWN","REAR DECK / FIXED","INSTRUMENT PANEL"};
  return names[monitor_mount(index)];
 }
+Plane windshield_hud_plane(void){
+ /* The lower, narrower windshield at the forward cockpit position requires a
+  * shorter projection than the old rearward layout. Preserve its original
+  * 2.55:0.62 aspect and keep every corner inside the real canopy. */
+ return (Plane){.center={0,.58f,-1.08f-VEHICLE_COCKPIT_FORWARD},.width=1.90f,.height=.46f,.pitch=-8};
+}
 Plane monitor_plane(int index){
- if(index==8)return (Plane){.center={-.94f,.43f,.28f},.width=1.46f,.height=.59f,.pitch=-12};
+ if(index==8)return (Plane){.center={-.94f,.43f,.28f-VEHICLE_COCKPIT_FORWARD},.width=1.46f,.height=.59f,.pitch=-12};
  /* Every deployed output is packaged inside the same hull/canopy envelope as
-  * the physical cockpit. The old generic 4.4 m monitor ring put dashboard and
-  * door screens through the roof and body when reused in exterior views. */
- if(index==0)return (Plane){.center={0,.85f,-.45f},.width=1.44f,.height=.90f};
- if(index==1)return (Plane){.center={-1.25f,.62f,-.30f},.width=1.00f,.height=.625f,.yaw=12,.pitch=-12};
- if(index==2)return (Plane){.center={ 1.25f,.62f,-.30f},.width=1.00f,.height=.625f,.yaw=-12,.pitch=-12};
- if(index==3)return (Plane){.center={-1.40f,.48f,.75f},.width=.80f,.height=.50f,.yaw=35,.pitch=-8};
- if(index==4)return (Plane){.center={ 1.40f,.48f,.75f},.width=.80f,.height=.50f,.yaw=-35,.pitch=-8};
- if(index==5)return (Plane){.center={-1.05f,.90f,.95f},.width=1.00f,.height=.625f,.yaw=18};
- if(index==6)return (Plane){.center={ 1.05f,.90f,.95f},.width=1.00f,.height=.625f,.yaw=-18};
- return (Plane){.center={0,.55f,3.65f},.width=1.12f,.height=.70f,.yaw=180,.pitch=-12};
+  * the physical cockpit and shares its forward occupant offset. Door outputs
+  * are then registered to the physical hinge by scene_update_mounts(). */
+ if(index==0)return (Plane){.center={0,.68f,-.45f-VEHICLE_COCKPIT_FORWARD},.width=1.20f,.height=.75f};
+ if(index==1)return (Plane){.center={-1.12f,.52f,-.30f-VEHICLE_COCKPIT_FORWARD},.width=.90f,.height=.5625f,.yaw=12,.pitch=-12};
+ if(index==2)return (Plane){.center={ 1.12f,.52f,-.30f-VEHICLE_COCKPIT_FORWARD},.width=.90f,.height=.5625f,.yaw=-12,.pitch=-12};
+ if(index==3)return (Plane){.center={-1.40f,.48f,.75f-VEHICLE_COCKPIT_FORWARD},.width=.80f,.height=.50f,.yaw=35,.pitch=-8};
+ if(index==4)return (Plane){.center={ 1.40f,.48f,.75f-VEHICLE_COCKPIT_FORWARD},.width=.80f,.height=.50f,.yaw=-35,.pitch=-8};
+ if(index==5)return (Plane){.center={-.92f,.82f,.95f-VEHICLE_COCKPIT_FORWARD},.width=.90f,.height=.5625f,.yaw=18};
+ if(index==6)return (Plane){.center={ .92f,.82f,.95f-VEHICLE_COCKPIT_FORWARD},.width=.90f,.height=.5625f,.yaw=-18};
+ return (Plane){.center={0,.55f,3.65f-VEHICLE_COCKPIT_FORWARD},.width=1.12f,.height=.70f,.yaw=180,.pitch=-12};
 }
 Plane monitor_plane_at(int index,float reveal){
  Plane deployed=monitor_plane(index),stowed=deployed;MonitorMount mount=monitor_mount(index);

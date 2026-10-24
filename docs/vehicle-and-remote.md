@@ -101,6 +101,10 @@ outer headrest crowns and both seating eye positions as well as the EV
 components. Driver and passenger eyes come from the same
 `vehicle_seat_anchor()` / `vehicle_seat_eye()` layout as the upholstery, so the
 camera cannot silently drift back to a point between the seats.
+`VEHICLE_COCKPIT_FORWARD` places that shared seating layout 1.55 m farther
+forward, beside the actual door aperture. The same car-local offset owns the
+dashboard, console, steering wheel, door upholstery, display mounts and seat
+cameras, so moving the occupants does not desynchronize rendering or picking.
 
 The exterior is closed at the nose (`u = 0`) and tail (`u = 1`) by watertight
 front single-frame grille and rear Kammback diffuser fascia caps, with a
@@ -115,15 +119,17 @@ submitted from the same scene functions in every view, before the hull; opaque
 bodywork occludes them and the same tinted window openings reveal them outside.
 There is no simplified exterior-only cockpit.
 
-The doors are actual assemblies, not cutlines: exact parametric apertures are
-removed from the surrounding hull, then filled by a separate outer skin, inner
-shell, edge thickness, hinge knuckles, weather seals, recessed satin pulls,
-quilted interior panels, armrests and speakers. Their frameless side-glass cells
-are removed from the fixed canopy pass and submitted with the same front-edge
-hinge transform. F5 reversibly opens/closes both sides through 68 degrees in
-1.15 seconds of fixed-step travel; door-mounted Wayland displays follow too.
-The closed-pose upholstery coordinates are unchanged, and F10 recovery closes
-both doors. Collision extents include the moving lower panels, glass and trim,
+The doors are actual full-height side assemblies, not cutlines: the lower
+aperture reaches from the underbody/sill crease (`v = 1/6`) to the beltline
+(`v = 0.84`), and its exact canopy continuation reaches through the side glass
+and cantrail (`v_c = 0.715`). The undertray and roof crown remain fixed. Shared
+split mesh axes at those boundaries prevent leftover strips or overlaps between
+fixed bodywork and the moving door. Separate outer/inner shells, edge thickness,
+hinge knuckles, weather seals, recessed satin pulls, quilted panels, armrests,
+speakers, upper frames and glass all use the same front-edge hinge. F5 reversibly
+opens/closes both sides through 68 degrees in 1.15 seconds of fixed-step travel;
+door-mounted Wayland displays follow too, and F10 recovery closes both doors.
+Collision extents include the moving lower panels, upper frame, glass and trim,
 so an open door cannot pass through a garage wall outside the closed-hull box.
 
 `render_ev_systems()` is omitted in first person so internal HV cables never
@@ -340,7 +346,10 @@ hover/body finiteness, and identical results under different render cadences.
 non-contiguous letter codes needed by WASD. `tests/test_math.c` covers all nine
 output transforms plus stowed/mid-travel/deployed picking, and
 `tests/test_telemetry.c` verifies the inherited memfd, snapshot sequencing,
-live values, and cleanup. Existing config tests and the native settings
+live values, and cleanup. Door checks include exact sill/beltline/cantrail
+boundaries, rigid upper-frame motion, collision extents and forward seat-eye
+placement; screen and upholstery samples still use the unweakened shared-body
+enclosure assertions. Existing config tests and the native settings
 selftest remain in `make test`. The protocol probe expects eight app outputs
 plus the cluster output. Runtime smoke testing uses the real surfaceless
 EGL/VNC backend and can inject standard RFB key events—the same path used by

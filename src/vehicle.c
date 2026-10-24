@@ -203,17 +203,20 @@ Vec3 vehicle_collision_extents_for_vehicle(const Vehicle *v) {
    float h = VEHICLE_DOOR_V0 + (VEHICLE_DOOR_V1 - VEHICLE_DOOR_V0) * iv / 6.0f;
    half_width = door_collision_width(v, side, vehicle_hull_point(u, h, side, NULL), half_width);
   }
-  /* Frameless glass belongs to the same moving collision silhouette. */
-  for (int iu = 0; iu <= 6; iu++) for (int iv = 0; iv <= 4; iv++) {
+  /* Side glass, belt trim and the moving cantrail all belong to the same
+   * full-height collision silhouette; the fixed roof crown is already inside
+   * the closed hull proxy and does not rotate with the door. */
+  for (int iu = 0; iu <= 6; iu++) for (int iv = 0; iv <= 6; iv++) {
    float hu = VEHICLE_DOOR_U0 + (VEHICLE_DOOR_U1 - VEHICLE_DOOR_U0) * iu / 6.0f;
-   float uc = (hu - 0.26f) / 0.64f, vc = 0.06f + 0.615f * iv / 4.0f;
+   float uc = (hu - 0.26f) / 0.64f;
+   float vc = VEHICLE_DOOR_CANOPY_V1 * iv / 6.0f;
    half_width = door_collision_width(v, side, vehicle_canopy_point(uc, vc, side, NULL), half_width);
   }
   /* The upholstered panel is the farthest interior trim from the hinge. */
   for (int ix = -1; ix <= 1; ix += 2) for (int iy = -1; iy <= 1; iy += 2)
    for (int iz = -1; iz <= 1; iz += 2) {
     Vec3 local = v3(ix * 0.28f, 0.35f + iy * 0.55f, iz * 0.075f);
-    Vec3 closed = vadd(v3(side * 2.00f, -0.39f, 0.64f), rotate_y(local, side * -40.0f));
+    Vec3 closed = vadd(v3(side * 2.00f, -0.39f, 0.64f - VEHICLE_COCKPIT_FORWARD), rotate_y(local, side * -40.0f));
     half_width = door_collision_width(v, side, closed, half_width);
    }
  }
@@ -353,6 +356,12 @@ bool vehicle_door_aperture(float u, float v) {
      && v >= VEHICLE_DOOR_V0 && v <= VEHICLE_DOOR_V1;
 }
 
+bool vehicle_door_canopy_aperture(float u, float v) {
+ float hull_u = 0.26f + 0.64f * u;
+ return hull_u >= VEHICLE_DOOR_U0 && hull_u <= VEHICLE_DOOR_U1
+     && v >= 0.0f && v < VEHICLE_DOOR_CANOPY_V1;
+}
+
 Vec3 vehicle_door_pivot(int side) {
  /* A vertical front-edge hinge on the actual sculpted skin. All closed door
   * points, including the interior trim and frameless glass, rotate about this
@@ -471,14 +480,16 @@ bool vehicle_point_inside_envelope(Vec3 p, float margin) {
 }
 
 Vec3 vehicle_seat_anchor(VehicleSeat seat) {
- return v3(seat == VEHICLE_SEAT_PASSENGER ? 1.25f : -0.90f, 0.0f, 0.0f);
+ return v3(seat == VEHICLE_SEAT_PASSENGER ? 1.25f : -0.90f,
+           0.0f, -VEHICLE_COCKPIT_FORWARD);
 }
 
 Vec3 vehicle_seat_eye(VehicleSeat seat) {
  Vec3 anchor = vehicle_seat_anchor(seat);
  /* Forward of the reclined back/head restraint and directly above the
-  * cushion; the old x=0 eye sat between the seats rather than in either. */
- return v3(anchor.x, 0.86f, 2.55f);
+  * cushion. The shared cockpit offset places this real seat beside the door
+  * aperture instead of leaving the occupant behind its rear edge. */
+ return v3(anchor.x, 0.86f, anchor.z + 2.55f);
 }
 
 Vec3 vehicle_local_direction(const Vehicle *v, Vec3 direction) {

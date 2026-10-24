@@ -226,6 +226,10 @@ static void environment(Server *s){
 }
 static void dashboard(Server *s){
  float nr,ng,nb;neon(s,&nr,&ng,&nb);
+ /* The complete dashboard/console/shifter uses the same forward rig offset as
+  * its buttons, displays and real-seat cameras. This is shared geometry, not
+  * a driver-camera translation. */
+ glPushMatrix();glTranslatef(0,0,-VEHICLE_COCKPIT_FORWARD);
  /* Deep padded dashboard: bevelled profile, rather than a flat HUD backdrop. */
  color(.115,.075,.175);glEnable(GL_TEXTURE_2D);glBindTexture(GL_TEXTURE_2D,s->carbon_tex);
  glBegin(GL_QUAD_STRIP);float profile[][2]={{-1.0f,.18f},{-.72f,.34f},{-.36f,.31f},{.2f,.14f},{.88f,-.24f},{1.5f,-.45f},{1.7f,-.72f}};
@@ -239,8 +243,9 @@ static void dashboard(Server *s){
  glDisable(GL_LIGHTING);color(.56,.31,.69);glLineWidth(1.3f);glBegin(GL_LINES);for(float x=-2.45;x<2.45;x+=.07f){glVertex3f(x,.317,-.22);glVertex3f(x+.035,.317,-.22);}glEnd();glEnable(GL_LIGHTING);
  /* Air vents in a machined surround. */
  for(int side=-1;side<=1;side+=2){glPushMatrix();glTranslatef(side*2.15,.19,-.46);glRotatef(-22,1,0,0);color(.24,.27,.33);rbox(0,0,0,.62,.23,.05,.045);color(.022,.027,.037);rbox(0,0,.031,.55,.16,.014,.023);for(int i=-3;i<=3;i++){color(.19,.22,.28);box(i*.068,0,.055,.012,.14,.025);}glPopMatrix();}
- /* Instrument binnacle. */
- Plane gauge=monitor_plane(CD_CLUSTER_SLOT);plane_begin(gauge);color(.025,.03,.043);rbox(0,0,-.05,1.62,.76,.14,.18);color(.32,.34,.44);rbox(0,0,.005,1.51,.63,.035,.10);
+ /* Instrument binnacle. monitor_plane() is already in shared cockpit space;
+  * cancel this function's parent offset for the physical binnacle substrate. */
+ Plane gauge=monitor_plane(CD_CLUSTER_SLOT);gauge.center.z+=VEHICLE_COCKPIT_FORWARD;plane_begin(gauge);color(.025,.03,.043);rbox(0,0,-.05,1.62,.76,.14,.18);color(.32,.34,.44);rbox(0,0,.005,1.51,.63,.035,.10);
  /* Empty dark substrate only. The visible gauges are the real Wayland
   * cluster client's committed surface, drawn by draw_monitor below. */
  glDisable(GL_LIGHTING);color(.010,.016,.026);quad(-gauge.width/2,-gauge.height/2,gauge.width,gauge.height,.023);glEnable(GL_LIGHTING);glPopMatrix();
@@ -252,8 +257,9 @@ static void dashboard(Server *s){
  glow_line(v3(-.70,-.425,.063),v3(.70,-.425,.063),.004,nr,ng,nb);glPopMatrix();
  /* Canopy structure is rendered from vehicle_canopy_point() in both camera
   * modes; no separate tall driver-only roof or straight header is needed. */
- /* Rear-view mirror and bracket anchored to that exact windshield header. */
- Vec3 header=vehicle_canopy_point(.45f,1.0f,1,NULL);
+ /* Rear-view mirror and bracket stay anchored to the fixed windshield header,
+  * so cancel the dashboard's parent translation for this one attached part. */
+ Vec3 header=vehicle_canopy_point(.45f,1.0f,1,NULL);header.z+=VEHICLE_COCKPIT_FORWARD;
  color(.30,.34,.42);cylinder(v3(0,header.y-.025f,header.z),v3(0,header.y-.15f,header.z+.09f),.035,16);
  color(.24,.28,.36);cylinder(v3(0,header.y-.15f,header.z+.09f),v3(0,header.y-.21f,header.z+.12f),.024,14);
  glPushMatrix();glTranslatef(0,header.y-.23f,header.z+.12f);glRotatef(-5,1,0,0);color(.40,.44,.52);rbox(0,0,0,.85,.26,.07,.06);color(.015,.028,.04);rbox(0,0,.043,.78,.20,.025,.04);texture(s->garage_tex,-.37,-.08,.74,.16,.06);glPopMatrix();
@@ -261,10 +267,11 @@ static void dashboard(Server *s){
   * vehicle_scene.c; nothing door-shaped remains statically in the cabin. */
  /* Polished shifter on the transmission tunnel. */
  color(.045,.04,.072);rbox(.66,-.62,1.02,.70,.36,.29,.10);color(.28,.32,.40);cylinder(v3(.66,-.65,.96),v3(.66,-.30,.96),.025,20);glPushMatrix();glTranslatef(.66,-.28,.96);color(.65,.64,.74);torus(.054,.049,28,16);glPopMatrix();
+ glPopMatrix();
 }
-static Plane steering_plane(void){return (Plane){.center={-.84f,.28f,1.10f},.width=1.12f,.height=1.12f,.pitch=-18};}
+static Plane steering_plane(void){return (Plane){.center={-.84f,.28f,1.10f-VEHICLE_COCKPIT_FORWARD},.width=1.12f,.height=1.12f,.pitch=-18};}
 static void steering_wheel(Server *s){
- float nr,ng,nb;neon(s,&nr,&ng,&nb);glPushMatrix();glTranslatef(-.84,.28,1.10);glRotatef(-18,1,0,0);
+ float nr,ng,nb;neon(s,&nr,&ng,&nb);glPushMatrix();glTranslatef(-.84,.28,1.10-VEHICLE_COCKPIT_FORWARD);glRotatef(-18,1,0,0);
  /* Spin in the wheel's own XY plane, then tilt the complete assembly. Applying
   * Z before the tilt would wobble the rim instead of rotating the control. */
  float wheel_angle=s->steering_mode==VEHICLE_STEER_DRIVE?s->vehicle.wheel_angle:s->wheel_client_angle;
@@ -448,13 +455,13 @@ static void draw_windshield_hud(Server *s){
  /* A transparent projection on the actual glass plane, not framebuffer
   * chrome. Its centre is intentionally quiet so the windshield app remains
   * readable; speed, pack and drive state sit around the edges. */
- Plane p={.center={0,1.0f,-1.08f},.width=2.55f,.height=.62f,.pitch=-8};
+ Plane p=windshield_hud_plane();
  glDepthMask(GL_FALSE);plane_begin(p);texture(s->windshield_tex,-p.width/2,-p.height/2,p.width,p.height,0);glPopMatrix();glDepthMask(GL_TRUE);
 }
 void scene_init(Server *s){
  char path[4200];snprintf(path,sizeof(path),"%s/assets/garage.webp",s->root);s->garage_tex=ui_load_webp(path);
  glEnable(GL_DEPTH_TEST);glDepthFunc(GL_LEQUAL);glEnable(GL_MULTISAMPLE);glShadeModel(GL_SMOOTH);glClearColor(.013,.015,.031,1);s->pitch=s->target_pitch=-6;s->eye=vehicle_seat_eye(s->camera_seat);
- Plane panel={.center={.78,.33,.48},.width=1.56,.height=.9,.yaw=-5,.pitch=-28};Vec3 right=rotate_y(v3(1,0,0),panel.yaw),up=rotate_y(rotate_x(v3(0,1,0),panel.pitch),panel.yaw),normal=vcross(right,up);
+ Plane panel={.center={.78,.33,.48-VEHICLE_COCKPIT_FORWARD},.width=1.56,.height=.9,.yaw=-5,.pitch=-28};Vec3 right=rotate_y(v3(1,0,0),panel.yaw),up=rotate_y(rotate_x(v3(0,1,0),panel.pitch),panel.yaw),normal=vcross(right,up);
  const char *names[]={"TERMINAL","FILES","AUDIO","METERS","NEON","COCKPIT"};const char *subs[]={"01 / SHELL","02 / EXPLORE","03 / SESSION","04 / EV","05 / COLOR","06 / HOME"};
  /* Built-in menu defaults; [app.*] config (applied in main.c after ui_init)
   * may relabel/re-icon/disable any of these live. */
@@ -465,7 +472,7 @@ void scene_init(Server *s){
   * center sits .02 along that normal from the slope point (-.30,-.084,.60)
   * so the boss reads as recessed into the padding. (The violet strip box
   * at z=.37 is behind this sloped surface from the driver's seat.) */
- s->cog=(Plane){.center={-.30f,-.066f,.610f},.width=.24f,.height=.24f,.yaw=0,.pitch=-61};
+ s->cog=(Plane){.center={-.30f,-.066f,.610f-VEHICLE_COCKPIT_FORWARD},.width=.24f,.height=.24f,.yaw=0,.pitch=-61};
 }
 typedef struct {Vec3 eye,forward,right,up;} SceneCamera;
 static SceneCamera scene_camera(Server *s){

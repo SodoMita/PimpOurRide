@@ -118,6 +118,17 @@ int main(void) {
  vehicle_reset_pose(&v);
  CHECK(vehicle_door_aperture(0.40f, 0.50f) && !vehicle_door_aperture(0.20f, 0.50f)
        && !vehicle_door_aperture(0.40f, 0.10f), "door aperture bounds are inconsistent");
+ CHECK(vehicle_door_aperture(0.40f, VEHICLE_DOOR_V0)
+       && vehicle_door_aperture(0.40f, VEHICLE_DOOR_V1)
+       && !vehicle_door_aperture(0.40f, VEHICLE_DOOR_V0 - 0.001f)
+       && !vehicle_door_aperture(0.40f, VEHICLE_DOOR_V1 + 0.001f),
+       "lower door does not reach the exact sill/beltline boundaries");
+ float door_uc = (0.40f - 0.26f) / 0.64f;
+ CHECK(vehicle_door_canopy_aperture(door_uc, 0.0f)
+       && vehicle_door_canopy_aperture(door_uc, VEHICLE_DOOR_CANOPY_V1 - 0.001f)
+       && !vehicle_door_canopy_aperture(door_uc, VEHICLE_DOOR_CANOPY_V1 + 0.001f)
+       && !vehicle_door_canopy_aperture(0.0f, 0.30f),
+       "upper door does not reach the roof rail or leaks into fixed roof");
  for (int side = -1; side <= 1; side += 2) {
   Vec3 pivot = vehicle_door_pivot(side);
   Vec3 closed = vehicle_hull_point(VEHICLE_DOOR_U1, 0.55f, side, NULL);
@@ -151,6 +162,13 @@ int main(void) {
         "fully open hinge angle is wrong on side %d", side);
   CHECK(side < 0 ? opened.x < closed.x : opened.x > closed.x,
         "door opened into the body instead of outward on side %d", side);
+  Vec3 rail = vehicle_canopy_point(0.30f, VEHICLE_DOOR_CANOPY_V1 - 0.001f, side, NULL);
+  Vec3 rail_opened = vehicle_door_point(&v, side, rail);
+  float rail_radius = sqrtf(vdot(vsub(rail, pivot), vsub(rail, pivot)));
+  float opened_rail_radius = sqrtf(vdot(vsub(rail_opened, pivot), vsub(rail_opened, pivot)));
+  CHECK(nearf(rail_radius, opened_rail_radius, 2e-4f)
+        && (side < 0 ? rail_opened.x < rail.x : rail_opened.x > rail.x),
+        "door roof rail did not rotate rigidly outward on side %d", side);
  }
  Vec3 closed_extent = vehicle_collision_extents(v.yaw);
  Vec3 open_extent = vehicle_collision_extents_for_vehicle(&v);
@@ -201,9 +219,9 @@ int main(void) {
   { 1.25f, -0.34f,  3.45f}, {-0.98f, -0.42f,  3.45f}, /* rear motor/inverter/gearbox */
   { 0.00f, -0.30f,  2.55f}, {-1.15f, -0.30f,  4.10f}, /* 800 V junction, OBC, DC/DC */
   { 1.05f, -0.42f, -4.55f}, { 1.18f, -0.25f, -2.75f}, /* front radiator & coolant tank */
-  {-1.18f, -0.25f, -2.75f}, { 1.25f,  0.74f,  2.95f}, /* 12 V battery & sport seat head */
-  { 1.50f,  1.04f,  3.02f}, {-1.15f,  1.04f,  3.02f}, /* detailed headrest outer crowns */
-  { 0.00f, -0.72f,  1.70f}, { 0.66f, -0.80f,  1.02f}  /* lower dashboard & shifter console */
+  {-1.18f, -0.25f, -2.75f}, { 1.25f,  0.74f,  2.95f - VEHICLE_COCKPIT_FORWARD}, /* 12 V battery & sport seat head */
+  { 1.50f,  1.04f,  3.02f - VEHICLE_COCKPIT_FORWARD}, {-1.15f,  1.04f,  3.02f - VEHICLE_COCKPIT_FORWARD}, /* detailed headrest outer crowns */
+  { 0.00f, -0.72f,  1.70f - VEHICLE_COCKPIT_FORWARD}, { 0.66f, -0.80f,  1.02f - VEHICLE_COCKPIT_FORWARD}  /* lower dashboard & shifter console */
  };
  for (size_t i = 0; i < sizeof(internal_parts) / sizeof(internal_parts[0]); i++) {
   CHECK(vehicle_point_inside_envelope(internal_parts[i], 0.02f),
@@ -214,9 +232,11 @@ int main(void) {
  for (int seat = VEHICLE_SEAT_DRIVER; seat <= VEHICLE_SEAT_PASSENGER; seat++) {
   Vec3 anchor = vehicle_seat_anchor((VehicleSeat)seat);
   Vec3 eye = vehicle_seat_eye((VehicleSeat)seat);
-  CHECK(nearf(anchor.x, eye.x, 1e-5f) && eye.z < 2.82f && eye.z > 2.0f
-        && eye.y > 0.65f && eye.y < 1.04f,
-        "seat %d eye is not above/forward of its cushion/backrest", seat);
+  float door_rear_z = vehicle_hull_point(VEHICLE_DOOR_U1, 0.55f, 1, NULL).z;
+  CHECK(nearf(anchor.x, eye.x, 1e-5f) && nearf(anchor.z, -VEHICLE_COCKPIT_FORWARD, 1e-5f)
+        && eye.z < anchor.z + 2.82f && eye.z > anchor.z + 2.0f
+        && eye.z < door_rear_z + 0.50f && eye.y > 0.65f && eye.y < 1.04f,
+        "seat %d eye is not in the forward cockpit beside the door aperture", seat);
   CHECK(vehicle_point_inside_envelope(eye, 0.02f),
         "seat %d eye lies outside the shared canopy", seat);
  }
@@ -232,7 +252,7 @@ int main(void) {
      v3(ix * 0.242f, 0.57f + iy * 0.022f, 0.14f + iz * 0.022f) /* pull */
     };
     for (size_t part = 0; part < sizeof(locals) / sizeof(locals[0]); part++) {
-     Vec3 p = vadd(v3(side * 2.00f, -0.39f, 0.64f),
+     Vec3 p = vadd(v3(side * 2.00f, -0.39f, 0.64f - VEHICLE_COCKPIT_FORWARD),
                    rotate_y(locals[part], side * -40.0f));
      CHECK(vehicle_point_inside_envelope(p, 0.0f) && fabsf(p.x) <= hull_side_limit(p) + 1e-4f,
            "door part %zu protrudes: side=%d corner=(%f,%f,%f) skin_x=%f",
@@ -246,7 +266,7 @@ int main(void) {
     Vec3 local = v3(-0.28f + 0.56f * ix / 14.0f,
                     -0.20f + 1.10f * iy / 24.0f,
                     -0.075f + 0.15f * iz / 2.0f);
-    Vec3 p = vadd(v3(side * 2.00f, -0.39f, 0.64f), rotate_y(local, side * -40.0f));
+    Vec3 p = vadd(v3(side * 2.00f, -0.39f, 0.64f - VEHICLE_COCKPIT_FORWARD), rotate_y(local, side * -40.0f));
     CHECK(fabsf(p.x) <= hull_side_limit(p) + 1e-4f,
           "door face crosses scoop: side=%d point=(%f,%f,%f) skin_x=%f",
           side, p.x, p.y, p.z, hull_side_limit(p));
@@ -259,7 +279,7 @@ int main(void) {
     v3(0.190f * cosf(a), 0.03f + 0.190f * sinf(a), 0.09f)
    };
    for (size_t part = 0; part < 2; part++) {
-    Vec3 p = vadd(v3(side * 2.00f, -0.39f, 0.64f),
+    Vec3 p = vadd(v3(side * 2.00f, -0.39f, 0.64f - VEHICLE_COCKPIT_FORWARD),
                   rotate_y(locals[part], side * -40.0f));
     CHECK(fabsf(p.x) <= hull_side_limit(p) + 1e-4f,
           "door speaker protrudes: side=%d point=(%f,%f,%f) skin_x=%f",
@@ -281,6 +301,17 @@ int main(void) {
          "monitor %d pose %d corner outside shared body: (%f,%f,%f)",
          slot, pose, p.x, p.y, p.z);
   }
+ }
+
+ /* The live windshield HUD is a physical projection too. Its fitted corners
+  * must remain inside the lower forward windshield, not be clipped by it. */
+ Plane hud = windshield_hud_plane();Vec3 hud_right, hud_up;
+ plane_axes(hud, &hud_right, &hud_up, NULL);
+ for (int ix = -1; ix <= 1; ix += 2) for (int iy = -1; iy <= 1; iy += 2) {
+  Vec3 p = vadd(hud.center, vadd(vmul(hud_right, ix * hud.width * 0.5f),
+                                vmul(hud_up, iy * hud.height * 0.5f)));
+  CHECK(vehicle_point_inside_envelope(p, 0.0f),
+        "windshield HUD corner outside forward canopy: (%f,%f,%f)", p.x, p.y, p.z);
  }
 
  if (failures) {

@@ -1,10 +1,11 @@
 #include "math3d.h"
+#include "vehicle.h"
 #include <assert.h>
 #include <math.h>
 #include <stdio.h>
 static int near(float a,float b){return fabsf(a-b)<.001f;}
 int main(void){
- Vec3 eye=v3(0,1,2.8f);float u,v,d;Plane p=monitor_plane(0);
+ Vec3 eye=v3(0,1,2.8f-VEHICLE_COCKPIT_FORWARD);float u,v,d;Plane p=monitor_plane(0);
  assert(plane_hit(p,eye,vnorm(vsub(p.center,eye)),&u,&v,&d,true));assert(near(u,.5)&&near(v,.5));
  for(int i=0;i<9;i++){
   p=monitor_plane(i);assert(plane_hit(p,eye,vnorm(vsub(p.center,eye)),&u,&v,&d,true));assert(near(u,.5)&&near(v,.5));
@@ -60,7 +61,7 @@ int main(void){
   * exactly, stays within both base limits, and keeps the opposite corner
   * anchored even when one dimension reaches its limit first. */
  Plane aspect_base=monitor_plane(0);
- Plane start=(Plane){.center={.4f,1.2f,-1.2f},.width=3.15f,.height=1.3125f,.yaw=12,.pitch=-18};
+ Plane start=(Plane){.center={.4f,1.2f,-1.2f},.width=2.40f,.height=1.00f,.yaw=12,.pitch=-18};
  float start_aspect=start.width/start.height;
  Plane grew=plane_resize_aspect(start,aspect_base,eye,start.width*1.2f,start.height*1.2f,-1,1);
  assert(near(grew.width/start.width,1.2f)&&near(grew.height/start.height,1.2f));

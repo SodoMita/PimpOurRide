@@ -138,7 +138,7 @@ void vehicle_seats_render(void){
   * geometry around each seat centre, not around the whole cabin. */
  for(int index=0;index<2;index++){
   Vec3 anchor=vehicle_seat_anchor((VehicleSeat)index);int side=index?1:-1;
-  glPushMatrix();glTranslatef(anchor.x,0,0);glScalef(.80f,.85f,1.0f);
+  glPushMatrix();glTranslatef(anchor.x,0,anchor.z);glScalef(.80f,.85f,1.0f);
   seat(0,side);glPopMatrix();
  }
 }

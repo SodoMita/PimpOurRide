@@ -14,9 +14,11 @@ and thermal loop can be inspected in an exterior systems cutaway. Fixed-step
 garage—without pretending to simulate wheels. F7 switches the physical steering
 wheel and driving keys between Wayland-client input and hover-car control; F8
 cycles driver, smooth exterior-concept, and EV-systems cameras, while F9
-switches between properly aligned driver and passenger seats. F5 opens and
-closes real hinged door assemblies—including their glass, interior trim and
-door-mounted displays—and F6 toggles the monitor Arrange editor. Applications
+switches between properly aligned driver and passenger seats. The shared seats,
+controls and door trim sit forward beside the doorway. F5 opens and closes real
+full-height hinged door assemblies—from the sill through the side glass and
+roof rail, including interior trim and door-mounted displays—and F6 toggles
+the monitor Arrange editor. Applications
 use fixed, slide-up, slide-out, or flip-down mounts built into the windshield,
 dashboard, doors, roof, and rear deck. A separate Wayland instrument client
 lives behind the steering wheel, with a transparent live HUD on the windshield.
@@ -253,7 +255,7 @@ reverse proxy and firewall before exposing them to an untrusted network.
 | F2 | Reset to the selected seat view |
 | F3 | Toggle a tight focus zoom on the active screen |
 | F4 | Cycle underglow color (violet / ice blue / acid lime) |
-| F5 | Open or close both hinged doors (glass, trim and door displays move too) |
+| F5 | Open or close both full-height hinged doors (sill, glass, roof rail, trim and door displays move too) |
 | F6 | Toggle Arrange for the selected screen (move / rotate / roll / scale / resize) |
 | F7 | Toggle client input / hover-drive ownership |
 | F8 | Cycle driver / exterior concept / EV systems cutaway |
