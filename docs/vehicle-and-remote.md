@@ -120,6 +120,51 @@ camera ray by its exact inverse, preserving application-local UV coordinates
 while the car moves. Exterior cameras are also defined in car-local space, so
 they follow rather than drift.
 
+## Car-part window mounts, cluster, and windshield HUD
+
+The eight general application outputs are predefined pieces of cockpit hardware,
+not eight copies of a freestanding monitor:
+
+| Output | Car part | Deployment |
+|---|---|---|
+| CD-01 | Windshield | Fixed |
+| CD-02 / CD-03 | Dashboard | Slide up on rails |
+| CD-04 / CD-05 | Left / right door | Slide out on an arm |
+| CD-06 / CD-07 | Left / right roof | Flip down from a hinge |
+| CD-08 | Rear deck | Fixed |
+
+A newly mapped sliding surface starts at its mount's stowed transform and
+deploys over 0.72 seconds (0.90 seconds for roof hinges). `monitor_plane_at()`
+owns the interpolation. `scene_update_mounts()` stores that exact current plane
+in the `Monitor`, and both `draw_monitor()` and `scene_pick()` consume it, so
+pointer UV coordinates remain correct during the animation rather than snapping
+to the final position on the first frame. Camera focusing targets the deployed
+plane deliberately. Remapping a surface restarts its deployment; fixed mounts
+never perform a meaningless slide.
+
+CD-09 is a **ninth, dedicated output** for the instrument panel behind the
+steering wheel. It has a 1000×404 `wl_output` mode and a matching xdg configure,
+rather than the 1000×625 general-app mode. Only `chromedrive.cluster` can occupy
+it, and mapping this passive instrument does not steal keyboard focus from an
+application. The METERS dashboard action focuses this fixed panel.
+
+The cluster is not a compositor Cairo texture or a 2D overlay. It is the
+`cluster` mode of `clients/demo.c`, an independent native Wayland client using
+double-buffered `wl_shm`, xdg-shell, buffer releases, and `wl_surface.frame`
+pacing like any other client. `src/telemetry.c` publishes actual speed, gear,
+battery, power, motor temperature, hover height, odometer, and connected-app
+state through an inherited memfd. A sequence counter provides consistent
+snapshots; no values are synthesized in the client. The old `telemetry` mode
+still exists for explicitly launched `/proc` CPU/memory monitoring, but it is a
+different app from the EV instrument cluster.
+
+The windshield HUD is a third, separate thing: a mostly transparent 3D texture
+on the glass plane. It displays live speed, gear, pack, power, steering and hover
+state while leaving the centre clear for the fixed windshield application. It
+is not the instrument cluster, and it is distinct from the ordinary 2D
+screen-edge remote-desktop controls. `cockpit.hud` controls both the glass HUD
+and the screen-edge chrome.
+
 ## Steering and input ownership
 
 F7 changes the owner of driving input. The native HUD is authoritative.
@@ -154,9 +199,10 @@ The implemented sequence is intentionally strict:
    first real buffer. An unconfigured buffer is a protocol error, not a guess.
 4. A later `wl_surface.commit` atomically applies pending buffer, scale,
    transform, input region, subsurface state, and frame callbacks.
-5. The first textured commit maps the toplevel to one free spatial monitor and
-   emits the appropriate `wl_surface.enter`/`wl_output` and keyboard focus
-   events.
+5. The first textured commit maps the toplevel to its free car-part mount (or
+   the reserved instrument output), emits the appropriate
+   `wl_surface.enter`/`wl_output` events, starts any mechanical deployment, and
+   applies keyboard focus only if it is not the passive cluster.
 
 ### Frame callback render-loop pattern
 
@@ -233,7 +279,11 @@ make garage3d-test
 braking, steering coordinate signs, garage bounds, transform round trips,
 hover/body finiteness, and identical results under different render cadences.
 `tests/test_keymap.c` pins the exact RFB/X11-to-evdev table, including the
-non-contiguous letter codes needed by WASD. Existing math/config tests and the
-native settings selftest remain in `make test`. Runtime smoke testing uses the
-real surfaceless EGL/VNC backend and can inject standard RFB key events—the
-same path used by noVNC.
+non-contiguous letter codes needed by WASD. `tests/test_math.c` covers all nine
+output transforms plus stowed/mid-travel/deployed picking, and
+`tests/test_telemetry.c` verifies the inherited memfd, snapshot sequencing,
+live values, and cleanup. Existing config tests and the native settings
+selftest remain in `make test`. The protocol probe expects eight app outputs
+plus the cluster output. Runtime smoke testing uses the real surfaceless
+EGL/VNC backend and can inject standard RFB key events—the same path used by
+noVNC.

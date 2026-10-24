@@ -54,26 +54,28 @@ static GLuint make_button(DashButton *b){
  GLuint tex=ui_texture(im,0);cairo_destroy(c);cairo_surface_destroy(im);return tex;
 }
 void ui_refresh_buttons(Server *s){for(int i=0;i<6;i++){if(s->buttons[i].texture)glDeleteTextures(1,&s->buttons[i].texture);s->buttons[i].texture=make_button(&s->buttons[i]);}}
-static void gauges(Server *s){
- cairo_surface_t *im=cairo_image_surface_create(CAIRO_FORMAT_ARGB32,1200,484);cairo_t *c=cairo_create(im);rgb(c,.015,.021,.037);cairo_paint(c);
- int count=0;for(int i=0;i<CD_MAX_MONITORS;i++)if(s->monitors[i].surface)count++;
- for(int k=0;k<2;k++){
-  double cx=k?930:270,cy=247,r=184;rgba(c,.55,.42,.8,.13);cairo_arc(c,cx,cy,r+12,0,2*PI);cairo_set_line_width(c,16);cairo_stroke(c);rgb(c,.27,.29,.38);cairo_arc(c,cx,cy,r+6,0,2*PI);cairo_set_line_width(c,3);cairo_stroke(c);
-  cairo_set_line_width(c,9);rgb(c,.12,.16,.23);cairo_arc(c,cx,cy,r-4,.73*PI,2.27*PI);cairo_stroke(c);rgb(c,k?.67:.30,k?.34:.89,k?.98:.78);double value=k?(double)count/8:fmin(fabs(s->vehicle.speed)*3.6/240,1);cairo_arc(c,cx,cy,r-4,.73*PI,.73*PI+1.54*PI*value);cairo_stroke(c);
-  for(int i=0;i<=40;i++){double a=.73*PI+i*1.54*PI/40;rgb(c,i%5==0?.77:.3,i%5==0?.79:.36,i%5==0?.84:.43);cairo_set_line_width(c,i%5==0?3:1.4);line(c,cx+(r-19)*cos(a),cy+(r-19)*sin(a),cx+(r-(i%5==0?38:28))*cos(a),cy+(r-(i%5==0?38:28))*sin(a));}
-  char value_text[32];if(k)snprintf(value_text,sizeof(value_text),"%02d",count);else snprintf(value_text,sizeof(value_text),"%.0f",fabs(s->vehicle.speed)*3.6);
-  rgb(c,.90,.93,.98);font(c,99,true,false);cairo_text_extents_t e;cairo_text_extents(c,value_text,&e);cairo_move_to(c,cx-e.width/2-e.x_bearing,cy+28);cairo_show_text(c,value_text);rgb(c,.43,.56,.63);mono(c,cx-40,cy+74,19,k?"SCREENS":"KM/H");
-  rgb(c,.36,.90,.74);cairo_arc(c,cx,cy+115,4,0,2*PI);cairo_fill(c);
- }
- const char *gear="C",*drive_state="CLIENT INPUT";
- if(s->steering_mode==VEHICLE_STEER_DRIVE){
-  drive_state="HOVER DRIVE";
-  if(s->vehicle.speed>.25f)gear="D";else if(s->vehicle.speed<-.25f)gear="R";else gear="N";
-  if(s->drive_brake)drive_state="REGEN BRAKE";
- }
- rgb(c,.67,.72,.80);mono(c,495,153,20,"CD // EV-01");rgb(c,.35,.87,.72);text(c,529,255,58,gear,true);rgb(c,.46,.53,.65);mono(c,465,303,18,drive_state);
- char pack[64];snprintf(pack,sizeof(pack),"%.0f%% / 82 KWH",100*s->vehicle.battery_kwh/VEHICLE_BATTERY_CAPACITY_KWH);mono(c,490,381,15,pack);
- s->gauge_tex=ui_texture(im,s->gauge_tex);cairo_destroy(c);cairo_surface_destroy(im);
+static void windshield_hud(Server *s){
+ cairo_surface_t *im=cairo_image_surface_create(CAIRO_FORMAT_ARGB32,1400,460);cairo_t *c=cairo_create(im); /* transparent glass, not a panel */
+ float r,g,b;scene_neon_color(s,&r,&g,&b);char value[96];
+ rgba(c,r,g,b,.42);cairo_set_line_width(c,2);line(c,44,342,478,342);line(c,922,342,1356,342);
+ rgba(c,r,g,b,.20);line(c,44,72,44,292);line(c,1356,72,1356,292);line(c,44,72,92,72);line(c,1308,72,1356,72);
+ /* Live speed and gear at the left edge of the windshield. */
+ snprintf(value,sizeof(value),"%.0f",fabs(s->vehicle.speed)*3.6);rgba(c,.80,.95,1,.92);text(c,70,218,112,value,true);
+ rgba(c,.43,.68,.76,.85);mono(c,78,260,22,"KM/H");mono(c,78,305,14,"GROUND SPEED");
+ const char *gear=s->steering_mode==VEHICLE_STEER_CLIENT?"C":s->vehicle.speed>.25f?"D":s->vehicle.speed<-.25f?"R":"N";
+ rgba(c,.45,.95,.79,.95);text(c,358,211,72,gear,true);rgba(c,.40,.61,.69,.85);mono(c,352,260,15,s->steering_mode==VEHICLE_STEER_DRIVE?"DRIVE":"CLIENT");
+ /* Pack and instantaneous power at the right edge. */
+ snprintf(value,sizeof(value),"%.0f%%",100*s->vehicle.battery_kwh/VEHICLE_BATTERY_CAPACITY_KWH);rgba(c,.80,.95,1,.92);text(c,1070,190,72,value,true);
+ rgba(c,.43,.68,.76,.85);mono(c,1080,232,18,"82 KWH PACK");snprintf(value,sizeof(value),"%+.0f KW",s->vehicle.power_kw);mono(c,1080,278,21,value);
+ /* Centre stays mostly empty. A small live steering chevron and status line
+  * read as glass projection without covering the fixed windshield client. */
+ rgba(c,.48,.72,.80,.72);mono(c,568,62,14,"WINDSHIELD HUD / LIVE");
+ rgba(c,r,g,b,.62);cairo_set_line_width(c,4);float cx=700+s->vehicle.steering*90;
+ cairo_move_to(c,cx-34,370);cairo_line_to(c,cx,352);cairo_line_to(c,cx+34,370);cairo_stroke(c);
+ const char *mode=s->steering_mode==VEHICLE_STEER_DRIVE?(s->drive_brake?"REGEN BRAKE":"HOVER DRIVE"):"CLIENT INPUT / PARKED";
+ rgba(c,.55,.77,.82,.82);cairo_text_extents_t ex;font(c,17,false,true);cairo_text_extents(c,mode,&ex);cairo_move_to(c,700-ex.width/2,414);cairo_show_text(c,mode);
+ snprintf(value,sizeof(value),"HOVER %.2f M  /  MOTOR %.0f C",s->vehicle.hover_height,s->vehicle.motor_temp_c);font(c,13,false,true);cairo_text_extents(c,value,&ex);cairo_move_to(c,700-ex.width/2,442);cairo_show_text(c,value);
+ s->windshield_tex=ui_texture(im,s->windshield_tex);cairo_destroy(c);cairo_surface_destroy(im);
 }
 static void make_console(Server *s){
  cairo_surface_t *im=cairo_image_surface_create(CAIRO_FORMAT_ARGB32,1200,692);cairo_t *c=cairo_create(im);rgb(c,.032,.041,.061);cairo_paint(c);rgba(c,.15,.18,.26,.15);cairo_set_line_width(c,1);for(int x=-700;x<1400;x+=14)line(c,x,0,x+692,692);
@@ -91,7 +93,7 @@ void ui_monitor_label(Server *s,int i){
  cairo_surface_t *im=cairo_image_surface_create(CAIRO_FORMAT_ARGB32,1200,76);cairo_t *c=cairo_create(im);rgb(c,.025,.04,.06);cairo_paint(c);
  rgb(c,active?.40:.52,active?.93:.49,active?.76:.74);cairo_arc(c,29,38,5,0,2*PI);cairo_fill(c);
  char title[90],name[48];const char *display_name=m->surface->title;if(strstr(m->surface->app_id,"foot"))display_name="TERMINAL";else if(strstr(m->surface->app_id,"files"))display_name="FILES";else if(strstr(m->surface->app_id,"audio"))display_name="AUDIO";else if(strstr(m->surface->app_id,"telemetry"))display_name="METERS";snprintf(name,sizeof(name),"%.42s",display_name);snprintf(title,sizeof(title),"%02d  /  %s",i+1,name);
- rgb(c,.76,.82,.89);mono(c,54,48,25,title);rgb(c,.36,.49,.58);mono(c,845,47,19,active?"INPUT ACTIVE":"WAYLAND");rgb(c,.50,.59,.67);cairo_set_line_width(c,2);line(c,1150,30,1168,48);line(c,1168,30,1150,48);m->label=ui_texture(im,m->label);cairo_destroy(c);cairo_surface_destroy(im);
+ rgb(c,.76,.82,.89);mono(c,54,48,25,title);rgb(c,.36,.49,.58);mono(c,790,47,17,active?"INPUT ACTIVE":monitor_mount_name(i));rgb(c,.50,.59,.67);cairo_set_line_width(c,2);line(c,1150,30,1168,48);line(c,1168,30,1150,48);m->label=ui_texture(im,m->label);cairo_destroy(c);cairo_surface_destroy(im);
 }
 static void hud(Server *s){
  int w=s->width,h=s->height;cairo_surface_t *im=cairo_image_surface_create(CAIRO_FORMAT_ARGB32,w,h);cairo_t *c=cairo_create(im);
@@ -100,12 +102,12 @@ static void hud(Server *s){
  shade=cairo_pattern_create_linear(0,h-140,0,h);cairo_pattern_add_color_stop_rgba(shade,0,.012,.019,.029,0);cairo_pattern_add_color_stop_rgba(shade,1,.012,.019,.029,.95);cairo_set_source(c,shade);cairo_rectangle(c,0,h-140,w,140);cairo_fill(c);cairo_pattern_destroy(shade);
  rgb(c,.61,.40,.91);cairo_set_line_width(c,2);rounded(c,28,26,44,44,11);cairo_stroke(c);cairo_move_to(c,44,37);cairo_line_to(c,56,48);cairo_line_to(c,44,59);cairo_stroke(c);
  rgb(c,.93,.95,.97);cairo_select_font_face(c,"DejaVu Sans",CAIRO_FONT_SLANT_OBLIQUE,CAIRO_FONT_WEIGHT_BOLD);cairo_set_font_size(c,26);cairo_move_to(c,87,49);cairo_show_text(c,"CHROMEDRIVE");rgb(c,.47,.54,.63);mono(c,89,70,10,"THE DESKTOP. REBUILT.");
- int count=0;for(int i=0;i<CD_MAX_MONITORS;i++)if(s->monitors[i].surface)count++;char b[128];
+ int count=0;for(int i=0;i<CD_APP_BAYS;i++)if(s->monitors[i].surface)count++;char b[128];
  if(w>1050){rgb(c,.33,.43,.53);mono(c,w/2-72,43,10,"CUSTOM BUILD / 001");rgb(c,.79,.82,.88);mono(c,w/2-65,64,12,"MIDNIGHT EDITION");}
  rgba(c,.075,.12,.14,.85);rounded(c,w-210,28,182,41,20);cairo_fill(c);rgb(c,.38,.88,.70);cairo_arc(c,w-189,49,3.5,0,2*PI);cairo_fill(c);mono(c,w-174,53,11,"NATIVE SESSION");
  rgba(c,.39,.45,.56,.2);cairo_set_line_width(c,1);line(c,28,91,w-28,91);
  const char *view=s->camera_mode==VEHICLE_CAMERA_DRIVER?"DRIVER VIEW  /  FIRST PERSON":s->camera_mode==VEHICLE_CAMERA_CHASE?"EXTERIOR VIEW  /  CONCEPT SPLINE BODY":"EV SYSTEMS  /  800 V CUTAWAY";
- rgb(c,.42,.49,.6);mono(c,29,116,10,view);snprintf(b,sizeof(b),"%02d CONNECTED  /  %02d BAYS",count,CD_MAX_MONITORS);mono(c,w-237,116,10,b);
+ rgb(c,.42,.49,.6);mono(c,29,116,10,view);snprintf(b,sizeof(b),"%02d CONNECTED  /  %02d BAYS",count,CD_APP_BAYS);mono(c,w-237,116,10,b);
  if(w>1050){snprintf(b,sizeof(b),"%3.0f%% PACK  /  %+6.1f KW",100*s->vehicle.battery_kwh/VEHICLE_BATTERY_CAPACITY_KWH,s->vehicle.power_kw);mono(c,w/2-78,116,10,b);}
  /* The control hints are chrome, not fake app controls. The actual buttons are 3D. */
  if(w>=1100){int bx=w/2-438,by=h-66;rgba(c,.025,.038,.059,.88);rounded(c,bx,by,876,43,21);cairo_fill(c);rgba(c,.35,.43,.53,.30);rounded(c,bx,by,876,43,21);cairo_stroke(c);
@@ -133,8 +135,12 @@ static void make_leather(Server *s){
  for(int y=0;y<256;y++)for(int x=0;x<256;x++){seed=1664525u*seed+1013904223u;int n=198+((seed>>24)&31);if((x+y)%6==0)n-=12;data[y*256+x]=0xff000000u|(n<<16)|(n<<8)|n;}
  cairo_surface_mark_dirty(im);s->carbon_tex=ui_texture(im,0);glBindTexture(GL_TEXTURE_2D,s->carbon_tex);glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_WRAP_S,GL_REPEAT);glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_WRAP_T,GL_REPEAT);cairo_surface_destroy(im);
 }
-void ui_init(Server *s){make_leather(s);ui_refresh_buttons(s);make_console(s);make_plate(s);make_hub(s);gauges(s);help(s);hud(s);}
-void ui_update(Server *s){static int old_w,old_h;if(s->time-s->last_ui_time>.24||old_w!=s->width||old_h!=s->height){gauges(s);hud(s);s->last_ui_time=s->time;old_w=s->width;old_h=s->height;}}
+void ui_init(Server *s){make_leather(s);ui_refresh_buttons(s);make_console(s);make_plate(s);make_hub(s);windshield_hud(s);help(s);hud(s);}
+void ui_update(Server *s){
+ static int old_w,old_h;
+ if(s->time-s->last_windshield_time>.10){windshield_hud(s);s->last_windshield_time=s->time;}
+ if(s->time-s->last_ui_time>.24||old_w!=s->width||old_h!=s->height){hud(s);s->last_ui_time=s->time;old_w=s->width;old_h=s->height;}
+}
 static void overlay_texture(GLuint tex,float x,float y,float w,float h){glBindTexture(GL_TEXTURE_2D,tex);glBegin(GL_QUADS);glTexCoord2f(0,0);glVertex2f(x,y);glTexCoord2f(1,0);glVertex2f(x+w,y);glTexCoord2f(1,1);glVertex2f(x+w,y+h);glTexCoord2f(0,1);glVertex2f(x,y+h);glEnd();}
 /* Custom neon reticle, drawn into the framebuffer itself rather than relying
  * on a host cursor. There is no OS cursor at all in --headless mode (no X,

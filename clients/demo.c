@@ -1,9 +1,11 @@
 /* Small, independent native Wayland clients for the cockpit's launch buttons.
- * Files is a read-only browser; Meters reads /proc; Audio is explicitly a UI demo.
- * All three submit real double-buffered wl_shm surfaces, not captured images. */
+ * Files is read-only, host Meters reads /proc, Audio is a UI demo, and Cluster
+ * renders the compositor's shared EV state inside the instrument binnacle.
+ * Every mode submits real double-buffered wl_shm surfaces, not captured images. */
 #define _GNU_SOURCE
 #include <wayland-client.h>
 #include "xdg-shell-client.h"
+#include "telemetry.h"
 #include <cairo/cairo.h>
 #include <xkbcommon/xkbcommon.h>
 #include <dirent.h>
@@ -33,6 +35,7 @@ typedef struct {
  char directory[4096],workspace[4096],preview_name[256],preview[16000];bool preview_open;
  FileEntry files[MAX_FILES];int file_count,scroll;
  double cpu,mem_used,mem_total,cpu_history[80];int history_head;unsigned long long last_total,last_idle;
+ CdTelemetry *telemetry;
  uint64_t frames;
 } App;
 static double now(void){struct timespec t;clock_gettime(CLOCK_MONOTONIC,&t);return t.tv_sec+t.tv_nsec/1e9;}
@@ -98,6 +101,31 @@ static void meters_draw(App *a,cairo_t *c,double t){
  for(int i=0;i<3;i++){int x=43+i*315;rgb(c,.053,.076,.103);rr(c,x,174,288,132,12);cairo_fill(c);rgb(c,.44,.57,.65);mono(c,x+20,208,12,i==0?"CPU UTILIZATION":i==1?"MEMORY IN USE":"LOGICAL CORES");char val[40];if(i==0)snprintf(val,sizeof(val),"%.1f%%",a->cpu);else if(i==1)snprintf(val,sizeof(val),"%.1f GB",a->mem_used);else snprintf(val,sizeof(val),"%ld",sysconf(_SC_NPROCESSORS_ONLN));rgb(c,.74,.93,.87);text(c,x+20,269,39,val,true);}
  rgb(c,.055,.076,.106);rr(c,43,331,918,220,12);cairo_fill(c);rgb(c,.45,.58,.67);mono(c,64,365,12,"CPU HISTORY / 40 SECONDS");cairo_set_line_width(c,1);for(int i=0;i<4;i++){rgba(c,.30,.42,.51,.25);line(c,65,396+i*43,939,396+i*43);}rgb(c,.40,.90,.76);cairo_set_line_width(c,2.5);for(int i=0;i<80;i++){int index=(a->history_head+i)%80;double x=65+i*874.0/79,y=531-a->cpu_history[index]*1.33;if(i==0)cairo_move_to(c,x,y);else cairo_line_to(c,x,y);}cairo_stroke(c);rgb(c,.34,.48,.59);mono(c,45,593,11,"LINUX / PROCFS / READ ONLY");char up[60];snprintf(up,sizeof(up),"SESSION UPTIME  %02d:%02d",(int)t/60,(int)t%60);mono(c,704,593,11,up);
 }
+static void cluster_gauge(cairo_t *c,double cx,double cy,double r,double value,const char *label,const char *unit,bool power){
+ rgba(c,.26,.31,.42,.35);cairo_set_line_width(c,12);cairo_arc(c,cx,cy,r,.73*PI,2.27*PI);cairo_stroke(c);
+ double fraction=power?fmin(fmax((value+60)/420,0),1):fmin(fmax(value/240,0),1);
+ rgb(c,power?.67:.30,power?.34:.89,power?.98:.78);cairo_set_line_width(c,7);cairo_arc(c,cx,cy,r,.73*PI,.73*PI+1.54*PI*fraction);cairo_stroke(c);
+ for(int i=0;i<=40;i++){double a=.73*PI+i*1.54*PI/40;rgb(c,i%5==0?.68:.27,i%5==0?.74:.33,i%5==0?.80:.40);cairo_set_line_width(c,i%5==0?2.4:1);line(c,cx+(r-14)*cos(a),cy+(r-14)*sin(a),cx+(r-(i%5==0?29:21))*cos(a),cy+(r-(i%5==0?29:21))*sin(a));}
+ char text_value[32];if(power)snprintf(text_value,sizeof(text_value),"%+.0f",value);else snprintf(text_value,sizeof(text_value),"%.0f",value);
+ rgb(c,.90,.94,.98);font(c,power?57:68,true,false);cairo_text_extents_t ex;cairo_text_extents(c,text_value,&ex);cairo_move_to(c,cx-ex.width/2-ex.x_bearing,cy+22);cairo_show_text(c,text_value);
+ rgb(c,.43,.57,.65);font(c,13,false,true);cairo_text_extents(c,unit,&ex);cairo_move_to(c,cx-ex.width/2,cy+53);cairo_show_text(c,unit);
+ rgb(c,.40,.51,.60);font(c,11,false,true);cairo_text_extents(c,label,&ex);cairo_move_to(c,cx-ex.width/2,cy+r+23);cairo_show_text(c,label);
+}
+static void cluster_draw(App *a,cairo_t *c){
+ rgb(c,.010,.018,.030);cairo_paint(c);rgba(c,.18,.25,.34,.45);cairo_set_line_width(c,1);rr(c,2,2,996,400,18);cairo_stroke(c);
+ CdTelemetry t;bool online=cd_telemetry_snapshot(a->telemetry,&t);
+ if(!online){rgb(c,.65,.74,.82);text(c,290,190,26,"TELEMETRY LINK OFFLINE",true);rgb(c,.40,.51,.60);mono(c,285,232,14,"WAITING FOR COMPOSITOR SHARED STATE");return;}
+ rgb(c,.40,.89,.76);mono(c,25,28,11,"EV-01 / INSTRUMENT CLUSTER");rgb(c,.34,.45,.55);mono(c,738,28,11,"NATIVE WAYLAND");
+ cluster_gauge(c,205,202,137,fabs(t.speed_mps)*3.6,"GROUND SPEED","KM/H",false);
+ cluster_gauge(c,795,202,137,t.power_kw,"800 V DRIVE / REGEN","KW",true);
+ char gear[2]={(char)t.gear,0};rgb(c,.38,.90,.75);font(c,62,true,false);cairo_text_extents_t ex;cairo_text_extents(c,gear,&ex);cairo_move_to(c,500-ex.width/2,179);cairo_show_text(c,gear);
+ const char *mode=t.drive_mode?(t.braking?"REGEN BRAKE":"HOVER DRIVE"):"CLIENT / PARKED";rgb(c,.48,.59,.68);font(c,12,false,true);cairo_text_extents(c,mode,&ex);cairo_move_to(c,500-ex.width/2,210);cairo_show_text(c,mode);
+ double pack=t.battery_capacity_kwh>0?t.battery_kwh/t.battery_capacity_kwh:0;char value[80];snprintf(value,sizeof(value),"%.0f%% / %.1f KWH",pack*100,t.battery_kwh);rgb(c,.78,.86,.91);font(c,17,true,true);cairo_text_extents(c,value,&ex);cairo_move_to(c,500-ex.width/2,253);cairo_show_text(c,value);
+ rgba(c,.20,.28,.36,.6);rr(c,413,270,174,7,3);cairo_fill(c);rgb(c,.34,.87,.72);rr(c,413,270,174*fmin(fmax(pack,0),1),7,3);cairo_fill(c);
+ snprintf(value,sizeof(value),"MOTOR %.0f C",t.motor_temp_c);rgb(c,.43,.55,.63);mono(c,394,310,12,value);snprintf(value,sizeof(value),"ODO %.1f KM",t.distance_m/1000);mono(c,394,333,12,value);
+ snprintf(value,sizeof(value),"%02d APPS",t.connected_screens);mono(c,394,365,11,value);rgb(c,.34,.87,.72);cairo_arc(c,386,360,3,0,2*PI);cairo_fill(c);
+}
+
 static void release_buffer(void *data,struct wl_buffer *wl){((Buffer*)data)->busy=false;}
 static const struct wl_buffer_listener buffer_listener={.release=release_buffer};
 static bool make_buffer(App *a,Buffer *b){
@@ -109,8 +137,8 @@ static void frame_done(void *data,struct wl_callback *cb,uint32_t time){App *a=d
 static const struct wl_callback_listener frame_listener={.done=frame_done};
 static void draw(App *a,double t){
  Buffer *b=NULL;for(int i=0;i<2;i++)if(!a->buffers[i].busy){b=&a->buffers[i];break;}if(!b)return;if(!b->wl||b->w!=a->w||b->h!=a->h)if(!make_buffer(a,b)){a->running=false;return;}
- cairo_surface_t *surface=cairo_image_surface_create_for_data(b->pixels,CAIRO_FORMAT_ARGB32,a->w,a->h,a->w*4);cairo_t *c=cairo_create(surface);cairo_scale(c,a->w/1000.0,a->h/625.0);
- if(a->mode==0)files_draw(a,c);else if(a->mode==1)audio_draw(a,c,t);else meters_draw(a,c,t);cairo_destroy(c);cairo_surface_flush(surface);cairo_surface_destroy(surface);
+ cairo_surface_t *surface=cairo_image_surface_create_for_data(b->pixels,CAIRO_FORMAT_ARGB32,a->w,a->h,a->w*4);cairo_t *c=cairo_create(surface);cairo_scale(c,a->w/1000.0,a->h/(a->mode==3?404.0:625.0));
+ if(a->mode==0)files_draw(a,c);else if(a->mode==1)audio_draw(a,c,t);else if(a->mode==2)meters_draw(a,c,t);else cluster_draw(a,c);cairo_destroy(c);cairo_surface_flush(surface);cairo_surface_destroy(surface);
  wl_surface_attach(a->surface,b->wl,0,0);wl_surface_damage_buffer(a->surface,0,0,a->w,a->h);struct wl_callback *cb=wl_surface_frame(a->surface);wl_callback_add_listener(cb,&frame_listener,a);wl_surface_commit(a->surface);b->busy=true;a->frame_ready=false;a->dirty=false;a->frames++;a->last_draw=now();
 }
 static void wm_ping(void *data,struct xdg_wm_base *wm,uint32_t serial){xdg_wm_base_pong(wm,serial);}
@@ -150,20 +178,30 @@ static void registry_global(void *data,struct wl_registry *reg,uint32_t name,con
 static void registry_remove(void *data,struct wl_registry *r,uint32_t name){}
 static const struct wl_registry_listener registry_listener={.global=registry_global,.global_remove=registry_remove};
 int main(int argc,char **argv){
- App a={.w=1000,.h=625,.running=true,.frame_ready=true,.dirty=true,.playing=true,.progress=24};const char *mode=argc>1?argv[1]:"files";if(!strcmp(mode,"audio"))a.mode=1;else if(!strcmp(mode,"telemetry"))a.mode=2;else if(strcmp(mode,"files")){fprintf(stderr,"Usage: %s files|audio|telemetry\n",argv[0]);return 2;}
- signal(SIGINT,sig);signal(SIGTERM,sig);a.xkb_context=xkb_context_new(0);if(!getcwd(a.directory,sizeof(a.directory)))strcpy(a.directory,"/");snprintf(a.workspace,sizeof(a.workspace),"%s",a.directory);if(a.mode==0)read_dir(&a);a.started=now();a.last_draw=a.started;
+ App a={.w=1000,.h=625,.running=true,.frame_ready=true,.dirty=true,.playing=true,.progress=24};const char *mode=argc>1?argv[1]:"files";
+ if(!strcmp(mode,"audio"))a.mode=1;else if(!strcmp(mode,"telemetry"))a.mode=2;else if(!strcmp(mode,"cluster")){a.mode=3;a.h=404;}else if(strcmp(mode,"files")){fprintf(stderr,"Usage: %s files|audio|telemetry|cluster\n",argv[0]);return 2;}
+ signal(SIGINT,sig);signal(SIGTERM,sig);
+ if(a.mode==3){
+  const char *fd_text=getenv("CHROMEDRIVE_TELEMETRY_FD");int fd=fd_text?atoi(fd_text):-1;struct stat st;
+  if(fd>=0&&fstat(fd,&st)==0&&(size_t)st.st_size>=sizeof(CdTelemetry)){
+   void *map=mmap(NULL,sizeof(CdTelemetry),PROT_READ,MAP_SHARED,fd,0);if(map!=MAP_FAILED)a.telemetry=map;
+  }
+  if(!a.telemetry)fprintf(stderr,"[client:cluster] no shared EV telemetry; displaying offline state\n");
+ }
+ a.xkb_context=xkb_context_new(0);if(!getcwd(a.directory,sizeof(a.directory)))strcpy(a.directory,"/");snprintf(a.workspace,sizeof(a.workspace),"%s",a.directory);if(a.mode==0)read_dir(&a);a.started=now();a.last_draw=a.started;
  a.display=wl_display_connect(NULL);if(!a.display){fprintf(stderr,"Connect to a Wayland display: %s\n",strerror(errno));return 1;}a.registry=wl_display_get_registry(a.display);wl_registry_add_listener(a.registry,&registry_listener,&a);wl_display_roundtrip(a.display);
  if(!a.compositor||!a.shm||!a.wm){fprintf(stderr,"Missing wl_compositor, wl_shm or xdg-shell\n");return 1;}
- a.surface=wl_compositor_create_surface(a.compositor);a.xdg=xdg_wm_base_get_xdg_surface(a.wm,a.surface);xdg_surface_add_listener(a.xdg,&xdg_listener,&a);a.top=xdg_surface_get_toplevel(a.xdg);xdg_toplevel_add_listener(a.top,&top_listener,&a);char app_id[100];snprintf(app_id,sizeof(app_id),"chromedrive.%s",mode);xdg_toplevel_set_app_id(a.top,app_id);xdg_toplevel_set_title(a.top,a.mode==0?"Files":a.mode==1?"Audio / UI demo":"Meters");wl_surface_commit(a.surface);wl_display_roundtrip(a.display);
+ a.surface=wl_compositor_create_surface(a.compositor);a.xdg=xdg_wm_base_get_xdg_surface(a.wm,a.surface);xdg_surface_add_listener(a.xdg,&xdg_listener,&a);a.top=xdg_surface_get_toplevel(a.xdg);xdg_toplevel_add_listener(a.top,&top_listener,&a);char app_id[100];snprintf(app_id,sizeof(app_id),"chromedrive.%s",mode);xdg_toplevel_set_app_id(a.top,app_id);xdg_toplevel_set_title(a.top,a.mode==0?"Files":a.mode==1?"Audio / UI demo":a.mode==2?"Meters":"EV Instrument Cluster");wl_surface_commit(a.surface);wl_display_roundtrip(a.display);
  double last=now();while(a.running&&!stop){
   while(wl_display_prepare_read(a.display)!=0)if(wl_display_dispatch_pending(a.display)<0)goto done;
   wl_display_flush(a.display);struct pollfd fd={.fd=wl_display_get_fd(a.display),.events=POLLIN};int ret=poll(&fd,1,25);if(ret>0&&(fd.revents&POLLIN)){if(wl_display_read_events(a.display)<0)break;}else wl_display_cancel_read(a.display);if(ret<0&&errno!=EINTR)break;if(wl_display_dispatch_pending(a.display)<0)break;
   double current=now(),dt=current-last;last=current;if(a.mode==1&&a.playing){a.progress+=dt;if(a.progress>195){a.progress=0;a.track=(a.track+1)%4;}}
   if(a.mode==2&&current-a.last_metric>.5){read_metrics(&a);a.last_metric=current;a.dirty=true;}
-  if(a.configured&&a.frame_ready&&(a.dirty||(a.mode==1&&current-a.last_draw>.09)))draw(&a,current-a.started);
+  if(a.configured&&a.frame_ready&&(a.dirty||(a.mode==1&&current-a.last_draw>.09)||(a.mode==3&&current-a.last_draw>.06)))draw(&a,current-a.started);
  }
  done:
  fprintf(stderr,"[client:%s] %llu frames submitted\n",mode,(unsigned long long)a.frames);
+ if(a.telemetry)munmap(a.telemetry,sizeof(CdTelemetry));
  if(a.top)xdg_toplevel_destroy(a.top);if(a.xdg)xdg_surface_destroy(a.xdg);if(a.surface)wl_surface_destroy(a.surface);
  for(int i=0;i<2;i++)if(a.buffers[i].wl){wl_buffer_destroy(a.buffers[i].wl);munmap(a.buffers[i].pixels,a.buffers[i].bytes);}if(a.pointer)wl_pointer_release(a.pointer);if(a.keyboard)wl_keyboard_release(a.keyboard);if(a.seat)wl_seat_release(a.seat);if(a.wm)xdg_wm_base_destroy(a.wm);if(a.shm)wl_shm_destroy(a.shm);if(a.compositor)wl_compositor_destroy(a.compositor);if(a.registry)wl_registry_destroy(a.registry);wl_display_flush(a.display);wl_display_disconnect(a.display);if(a.xkb_state)xkb_state_unref(a.xkb_state);if(a.keymap)xkb_keymap_unref(a.keymap);xkb_context_unref(a.xkb_context);return 0;
 }

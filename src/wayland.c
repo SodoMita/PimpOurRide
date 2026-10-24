@@ -31,7 +31,8 @@ static void surface_unmap(Surface *p){
  if(s->pointer_grab==p){s->pointer_grab=NULL;s->held_buttons=0;}
  if(p->slot>=0&&s->monitors[p->slot].surface==p){
   Resource *r;wl_list_for_each(r,&s->outputs,link)if(r->slot==p->slot&&wl_resource_get_client(r->resource)==wl_resource_get_client(p->resource))wl_surface_send_leave(p->resource,r->resource);
-  s->monitors[p->slot].surface=NULL;
+  s->monitors[p->slot].surface=NULL;s->monitors[p->slot].reveal=0;s->monitors[p->slot].target_reveal=0;
+  s->monitors[p->slot].plane=monitor_plane(p->slot);
  }
  p->mapped=false;p->slot=-1;
 }
@@ -87,13 +88,21 @@ static void surface_scale(struct wl_client *c,struct wl_resource *r,int32_t scal
 static void send_surface_enter(Surface *p){Resource *o;Server *s=p->server;wl_list_for_each(o,&s->outputs,link)if(o->slot==p->slot&&wl_resource_get_client(o->resource)==wl_resource_get_client(p->resource))wl_surface_send_enter(p->resource,o->resource);}
 static void surface_map(Surface *p){
  Server *s=p->server;if(p->parent){p->mapped=true;return;}if(!p->toplevel)return;
- int preferred=-1;if(strstr(p->app_id,"files"))preferred=1;else if(strstr(p->app_id,"audio"))preferred=2;else if(strstr(p->app_id,"telemetry"))preferred=3;else if(strstr(p->app_id,"foot"))preferred=0;
- int slot=-1;if(preferred>=0&&!s->monitors[preferred].surface)slot=preferred;
- if(slot<0)for(int i=0;i<CD_MAX_MONITORS;i++)if(!s->monitors[i].surface){slot=i;break;}
- if(slot<0){app_notice(s,"All eight display bays are occupied");xdg_toplevel_send_close(p->toplevel);return;}
- p->slot=slot;p->mapped=true;s->monitors[slot].surface=p;send_surface_enter(p);server_focus(s,p);
- fprintf(stderr,"[wayland] mapped %s [%s] -> CD-%02d (%dx%d)\n",p->title,p->app_id,slot+1,p->width,p->height);
- if(s->time>3.5){scene_focus_monitor(s,slot,false);app_notice(s,"CD-%02d connected / %s",slot+1,p->title);}
+ bool cluster=strstr(p->app_id,"chromedrive.cluster")!=NULL;int slot=-1;
+ if(cluster){if(!s->monitors[CD_CLUSTER_SLOT].surface)slot=CD_CLUSTER_SLOT;}
+ else{
+  int preferred=-1;if(strstr(p->app_id,"files"))preferred=1;else if(strstr(p->app_id,"audio"))preferred=2;else if(strstr(p->app_id,"telemetry"))preferred=3;else if(strstr(p->app_id,"foot"))preferred=0;
+  if(preferred>=0&&!s->monitors[preferred].surface)slot=preferred;
+  if(slot<0)for(int i=0;i<CD_APP_BAYS;i++)if(!s->monitors[i].surface){slot=i;break;}
+ }
+ if(slot<0){app_notice(s,cluster?"The instrument cluster is already occupied":"All eight car-part display mounts are occupied");xdg_toplevel_send_close(p->toplevel);return;}
+ p->slot=slot;p->mapped=true;Monitor *m=&s->monitors[slot];m->surface=p;
+ m->reveal=(slot==CD_CLUSTER_SLOT||monitor_mount(slot)==MOUNT_WINDSHIELD||monitor_mount(slot)==MOUNT_REAR_FIXED)?1:0;
+ m->target_reveal=1;m->plane=monitor_plane_at(slot,m->reveal);
+ send_surface_enter(p);send_configure(p);
+ fprintf(stderr,"[wayland] mapped %s [%s] -> CD-%02d / %s (%dx%d)\n",p->title,p->app_id,slot+1,monitor_mount_name(slot),p->width,p->height);
+ /* A passive instrument must never steal app focus merely by starting up. */
+ if(!cluster){server_focus(s,p);if(s->time>3.5){scene_focus_monitor(s,slot,false);app_notice(s,"CD-%02d / %s / %s",slot+1,monitor_mount_name(slot),p->title);}}
 }
 static bool effective_sync(Surface *p){for(int i=0;p&&p->parent&&i<32;i++,p=p->parent)if(p->subsurface&&p->sub_sync)return true;return false;}
 static void surface_apply(Surface *p){
@@ -177,7 +186,7 @@ static const struct xdg_positioner_interface positioner_impl={.destroy=resource_
 static void wm_positioner(struct wl_client *c,struct wl_resource *r,uint32_t id){struct wl_resource *out=wl_resource_create(c,&xdg_positioner_interface,wl_resource_get_version(r),id);Positioner *p=calloc(1,sizeof(*p));if(!out||!p){wl_client_post_no_memory(c);free(p);return;}wl_resource_set_implementation(out,&positioner_impl,p,positioner_destroyed);}
 static void send_configure(Surface *p){
  if(!p->xdg)return;Server *s=p->server;
- if(p->toplevel){struct wl_array states;wl_array_init(&states);if(s->keyboard_focus==p){uint32_t *a=wl_array_add(&states,4);if(a)*a=XDG_TOPLEVEL_STATE_ACTIVATED;}xdg_toplevel_send_configure(p->toplevel,CD_APP_W,CD_APP_H,&states);wl_array_release(&states);}
+ if(p->toplevel){struct wl_array states;wl_array_init(&states);if(s->keyboard_focus==p){uint32_t *a=wl_array_add(&states,4);if(a)*a=XDG_TOPLEVEL_STATE_ACTIVATED;}bool cluster=p->slot==CD_CLUSTER_SLOT||strstr(p->app_id,"chromedrive.cluster");xdg_toplevel_send_configure(p->toplevel,cluster?CD_CLUSTER_W:CD_APP_W,cluster?CD_CLUSTER_H:CD_APP_H,&states);wl_array_release(&states);}
  else if(p->popup)xdg_popup_send_configure(p->popup,p->x,p->y,p->popup_w,p->popup_h);
  else return;
  p->configure_serial=wl_display_next_serial(s->display);xdg_surface_send_configure(p->xdg,p->configure_serial);p->configure_sent=true;
@@ -185,7 +194,7 @@ static void send_configure(Surface *p){
 static void top_destroyed(struct wl_resource *r){Surface *p=wl_resource_get_user_data(r);if(p){surface_unmap(p);p->toplevel=NULL;}}
 static void top_parent(struct wl_client *c,struct wl_resource *r,struct wl_resource *parent){}
 static void top_title(struct wl_client *c,struct wl_resource *r,const char *title){Surface *p=wl_resource_get_user_data(r);if(p)snprintf(p->title,sizeof(p->title),"%s",title);}
-static void top_app_id(struct wl_client *c,struct wl_resource *r,const char *id){Surface *p=wl_resource_get_user_data(r);if(p)snprintf(p->app_id,sizeof(p->app_id),"%s",id);}
+static void top_app_id(struct wl_client *c,struct wl_resource *r,const char *id){Surface *p=wl_resource_get_user_data(r);if(p){snprintf(p->app_id,sizeof(p->app_id),"%s",id);if(strstr(p->app_id,"chromedrive.cluster"))send_configure(p);}}
 static void top_menu(struct wl_client *c,struct wl_resource *r,struct wl_resource *seat,uint32_t serial,int32_t x,int32_t y){}
 static void top_move(struct wl_client *c,struct wl_resource *r,struct wl_resource *seat,uint32_t serial){}
 static void top_resize(struct wl_client *c,struct wl_resource *r,struct wl_resource *seat,uint32_t serial,uint32_t edges){}
@@ -244,14 +253,15 @@ static void decoration_get(struct wl_client *c,struct wl_resource *r,uint32_t id
 static const struct zxdg_decoration_manager_v1_interface decoration_mgr_impl={.destroy=resource_destroy_request,.get_toplevel_decoration=decoration_get};
 static void bind_decoration(struct wl_client *c,void *data,uint32_t v,uint32_t id){struct wl_resource *r=wl_resource_create(c,&zxdg_decoration_manager_v1_interface,1,id);wl_resource_set_implementation(r,&decoration_mgr_impl,data,NULL);}
 
-/* One real wl_output global for each of the eight virtual display bays. */
+/* Eight app mounts plus the dedicated real wl_output for the EV cluster. */
 static const struct wl_output_interface output_impl={.release=resource_destroy_request};
 static void bind_output(struct wl_client *c,void *data,uint32_t v,uint32_t id){
  __typeof__(((Server*)0)->output_info[0]) *info=data;Server *s=info->server;Resource *r=resource_new(c,&wl_output_interface,v<4?v:4,id,&s->outputs);if(!r)return;r->slot=info->index;
- wl_resource_set_implementation(r->resource,&output_impl,r,free_resource);wl_output_send_geometry(r->resource,r->slot*CD_APP_W,0,320,200,WL_OUTPUT_SUBPIXEL_UNKNOWN,"ChromeDrive","Spatial display",WL_OUTPUT_TRANSFORM_NORMAL);
- wl_output_send_mode(r->resource,WL_OUTPUT_MODE_CURRENT|WL_OUTPUT_MODE_PREFERRED,CD_APP_W,CD_APP_H,60000);
+ wl_resource_set_implementation(r->resource,&output_impl,r,free_resource);bool cluster=r->slot==CD_CLUSTER_SLOT;
+ wl_output_send_geometry(r->resource,r->slot*CD_APP_W,0,cluster?250:320,cluster?101:200,WL_OUTPUT_SUBPIXEL_UNKNOWN,"ChromeDrive",cluster?"Instrument cluster":"Car-part display",WL_OUTPUT_TRANSFORM_NORMAL);
+ wl_output_send_mode(r->resource,WL_OUTPUT_MODE_CURRENT|WL_OUTPUT_MODE_PREFERRED,cluster?CD_CLUSTER_W:CD_APP_W,cluster?CD_CLUSTER_H:CD_APP_H,60000);
  int ver=wl_resource_get_version(r->resource);if(ver>=2)wl_output_send_scale(r->resource,1);
- if(ver>=4){char name[32],desc[80];snprintf(name,sizeof(name),"CD-%02d",r->slot+1);snprintf(desc,sizeof(desc),"ChromeDrive virtual monitor %02d",r->slot+1);wl_output_send_name(r->resource,name);wl_output_send_description(r->resource,desc);}
+ if(ver>=4){char name[32],desc[80];snprintf(name,sizeof(name),"CD-%02d",r->slot+1);snprintf(desc,sizeof(desc),"ChromeDrive %02d / %s",r->slot+1,monitor_mount_name(r->slot));wl_output_send_name(r->resource,name);wl_output_send_description(r->resource,desc);}
  if(ver>=2)wl_output_send_done(r->resource);
  Surface *p;wl_list_for_each(p,&s->surfaces,link)if(p->mapped&&p->slot==r->slot&&wl_resource_get_client(p->resource)==c)wl_surface_send_enter(p->resource,r->resource);
 }
@@ -360,7 +370,11 @@ bool server_init(Server *s,const char *socket_name){
  wl_global_create(s->display,&xdg_wm_base_interface,3,s,bind_wm);wl_global_create(s->display,&zxdg_decoration_manager_v1_interface,1,s,bind_decoration);
  wl_global_create(s->display,&wl_seat_interface,7,s,bind_seat);wl_global_create(s->display,&wl_data_device_manager_interface,3,s,bind_data);
  dmabuf_register_global(s); /* no-op (skipped) unless dmabuf_probe() already found a usable EGL dma-buf import path */
- for(int i=0;i<CD_MAX_MONITORS;i++){s->output_info[i].server=s;s->output_info[i].index=i;s->output_globals[i]=wl_global_create(s->display,&wl_output_interface,4,&s->output_info[i],bind_output);s->monitors[i].plane=monitor_plane(i);}
+ for(int i=0;i<CD_MAX_MONITORS;i++){
+  s->output_info[i].server=s;s->output_info[i].index=i;s->output_globals[i]=wl_global_create(s->display,&wl_output_interface,4,&s->output_info[i],bind_output);
+  MonitorMount mount=monitor_mount(i);bool sliding=mount==MOUNT_DASH_SLIDE||mount==MOUNT_DOOR_SLIDE||mount==MOUNT_ROOF_FLIP;
+  s->monitors[i].plane=monitor_plane(i);s->monitors[i].reveal=s->monitors[i].target_reveal=sliding?0:1;
+ }
  s->xkb_context=xkb_context_new(XKB_CONTEXT_NO_FLAGS);struct xkb_rule_names names={.layout=getenv("XKB_DEFAULT_LAYOUT"),.variant=getenv("XKB_DEFAULT_VARIANT"),.options=getenv("XKB_DEFAULT_OPTIONS")};
  s->keymap=xkb_keymap_new_from_names(s->xkb_context,&names,XKB_KEYMAP_COMPILE_NO_FLAGS);if(!s->keymap)return false;s->xkb_state=xkb_state_new(s->keymap);
  char *keymap=xkb_keymap_get_as_string(s->keymap,XKB_KEYMAP_FORMAT_TEXT_V1);if(!keymap)return false;s->keymap_size=strlen(keymap)+1;s->keymap_fd=memfd_create("chromedrive-keymap",MFD_CLOEXEC);if(s->keymap_fd<0||write(s->keymap_fd,keymap,s->keymap_size)!=(ssize_t)s->keymap_size){free(keymap);return false;}free(keymap);

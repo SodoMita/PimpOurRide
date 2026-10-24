@@ -25,7 +25,30 @@ bool plane_hit(Plane p,Vec3 origin,Vec3 ray,float *u,float *v,float *distance,bo
  *u=vdot(q,right)/p.width+.5f;*v=.5f-vdot(q,up)/p.height;*distance=t;
  return !clip||(*u>=0&&*u<=1&&*v>=0&&*v<=1);
 }
+MonitorMount monitor_mount(int index){
+ if(index==8)return MOUNT_CLUSTER;
+ static const MonitorMount mounts[8]={MOUNT_WINDSHIELD,MOUNT_DASH_SLIDE,MOUNT_DASH_SLIDE,MOUNT_DOOR_SLIDE,MOUNT_DOOR_SLIDE,MOUNT_ROOF_FLIP,MOUNT_ROOF_FLIP,MOUNT_REAR_FIXED};
+ return mounts[index&7];
+}
+const char *monitor_mount_name(int index){
+ static const char *names[]={"WINDSHIELD / FIXED","DASH / SLIDE-UP","DOOR / SLIDE-OUT","ROOF / FLIP-DOWN","REAR DECK / FIXED","INSTRUMENT PANEL"};
+ return names[monitor_mount(index)];
+}
 Plane monitor_plane(int index){
- static const float angles[]={0,-30,30,-62,62,-94,94,180};float a=angles[index%8];
+ if(index==8)return (Plane){.center={-.94f,.43f,.28f},.width=1.46f,.height=.59f,.pitch=-12};
+ if(index==5)return (Plane){.center={-3.0f,1.75f,.20f},.width=2.10f,.height=1.3125f,.yaw=45};
+ if(index==6)return (Plane){.center={ 3.0f,1.75f,.20f},.width=2.10f,.height=1.3125f,.yaw=-45};
+ static const float angles[]={0,-30,30,-62,62,0,0,180};float a=angles[index&7];
  return (Plane){.center={4.4f*sinf(a*RAD),1.32f,2.8f-4.4f*cosf(a*RAD)},.width=2.10f,.height=1.3125f,.yaw=-a,.pitch=0};
+}
+Plane monitor_plane_at(int index,float reveal){
+ Plane deployed=monitor_plane(index),stowed=deployed;MonitorMount mount=monitor_mount(index);
+ if(mount==MOUNT_WINDSHIELD||mount==MOUNT_REAR_FIXED||mount==MOUNT_CLUSTER)return deployed;
+ if(mount==MOUNT_DASH_SLIDE){stowed.center.y-=.95f;stowed.center.z+=.18f;}
+ else if(mount==MOUNT_DOOR_SLIDE){stowed.center.x+=index==3?-.85f:.85f;stowed.center.y-=.15f;stowed.center.z+=.25f;}
+ else if(mount==MOUNT_ROOF_FLIP){stowed.center.y+=.50f;stowed.pitch=78;}
+ float t=clampf(reveal,0,1);t=t*t*(3-2*t); /* smooth mechanical travel, not a linear pop */
+ deployed.center=vadd(stowed.center,vmul(vsub(deployed.center,stowed.center),t));
+ deployed.pitch=stowed.pitch+(deployed.pitch-stowed.pitch)*t;
+ return deployed;
 }

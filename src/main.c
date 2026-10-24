@@ -131,6 +131,7 @@ void app_exec(Server *s,const char *command){
 }
 void app_launch(Server *s,int action,bool force_new){
  if(action>=0&&action<6&&!s->buttons[action].enabled){app_notice(s,"%s is disabled in the menu configuration",s->buttons[action].name);return;}
+ if(action==3&&strstr(s->app_ids[3],"chromedrive.cluster")&&s->monitors[CD_CLUSTER_SLOT].surface){server_focus(s,s->monitors[CD_CLUSTER_SLOT].surface);scene_focus_monitor(s,CD_CLUSTER_SLOT,true);app_notice(s,"Fixed instrument panel / live EV Wayland client");return;}
  if(action==4){s->theme=(s->theme+1)%3;s->rebuild_scene=true;app_notice(s,"Underglow / %s",s->theme==0?"ULTRAVIOLET":s->theme==1?"ICE BLUE":"ACID LIME");return;}
  if(action==5){scene_reset_camera(s);app_notice(s,"Driver view restored");return;}
  if(action<0||action>3)return;
@@ -198,7 +199,7 @@ bool app_global_key(Server *s,uint32_t evdev,bool down){
 }
 static void usage(const char *name){printf("ChromeDrive " CD_VERSION " — native, first-person Wayland cockpit\n\nUsage: %s [options]\n  --demo                Start a real terminal + Files + Audio clients\n  --socket NAME         Wayland socket (default: automatic)\n  --exec COMMAND        Launch an extra Wayland client (repeatable)\n  --size WIDTHxHEIGHT   Framebuffer/host window size (default 1600x1000)\n  --fps N               Frame cap, 1..120 (default 60)\n  --headless            Run with no X server: surfaceless EGL + built-in VNC server (default)\n  --windowed            Dev/debug mode: open a real SDL2/GLX window on an X server instead\n  --vnc-port N          VNC port for --headless mode (default 5900)\n  --fullscreen          --windowed only: start fullscreen, F11 to leave\n  --exit-after SECONDS   Useful for automated checks\n  --screenshot PATH     Capture a WebP after 3 seconds\n  --config PATH         Config file (default: ~/.config/chromedrive/chromedrive.conf)\n  --no-config           Ignore the config file entirely\n  --help                Show this help\n\nF1 help | F2 cockpit | F3 focus | F4 neon | F5 driver/exterior/systems | F6 next display\nF7 client/drive input | F8 recover car | Drive: WASD/arrows + Space + drag wheel\nMiddle-drag/VNC-drag to look | Click a screen to focus | Ctrl+Alt+Enter new terminal\n",name);}
 int main(int argc,char **argv){
- Server s={.width=1600,.height=1000,.fps_limit=60,.running=true,.hud_visible=true,.hover_button=-1,.keymap_fd=-1,.fov=65,.target_fov=65,.eye={0,1.0f,2.8f},.headless=true,.vnc_port=5900};
+ Server s={.width=1600,.height=1000,.fps_limit=60,.running=true,.hud_visible=true,.hover_button=-1,.keymap_fd=-1,.fov=65,.target_fov=65,.eye={0,1.0f,2.8f},.headless=true,.vnc_port=5900,.telemetry_fd=-1};
  vehicle_init(&s.vehicle);
  const char *socket_name=NULL;double exit_after=0;bool auto_screenshot=false;
  /* Config pre-scan: --config/--no-config must be known before the file is
@@ -236,18 +237,21 @@ int main(int argc,char **argv){
  if(!backend_ok){fprintf(stderr,"Backend init failed (%s)\n",s.headless?"headless/EGL/VNC":"windowed/SDL/GLX");SDL_Quit();return 1;}
  dmabuf_probe(&s);
  if(!server_init(&s,socket_name)){fprintf(stderr,"Could not start Wayland server: %s\n",strerror(errno));server_finish(&s);SDL_Quit();return 1;}
+ telemetry_init(&s);
  /* Only after opening the host window/backend do we replace WAYLAND_DISPLAY. */
  /* Built-in menu defaults (%root% templates - the same strings the config
   * GUI shows as the editable starting point) + per-slot app_id/autostart.
   * [app.*] config (applied after ui_init below) overrides; env vars win. */
- const char *templates[4]={"foot --config='%root%/assets/foot.ini' --title='Terminal' /bin/sh '%root%/assets/terminal-welcome.sh'","'%root%/bin/chromedrive-demo' files","'%root%/bin/chromedrive-demo' audio","'%root%/bin/chromedrive-demo' telemetry"};
- const char *def_ids[4]={"foot","chromedrive.files","chromedrive.audio","chromedrive.telemetry"};
+ const char *templates[4]={"foot --config='%root%/assets/foot.ini' --title='Terminal' /bin/sh '%root%/assets/terminal-welcome.sh'","'%root%/bin/chromedrive-demo' files","'%root%/bin/chromedrive-demo' audio","'%root%/bin/chromedrive-demo' cluster"};
+ const char *def_ids[4]={"foot","chromedrive.files","chromedrive.audio","chromedrive.cluster"};
  const bool def_autostart[4]={true,true,true,false};
  const char *envnames[]={"CHROMEDRIVE_TERMINAL","CHROMEDRIVE_FILES","CHROMEDRIVE_AUDIO","CHROMEDRIVE_METERS"};
  for(int i=0;i<4;i++){s.launch_commands[i]=getenv(envnames[i])?strdup(getenv(envnames[i])):expand_root(templates[i],s.root);snprintf(s.app_ids[i],sizeof(s.app_ids[i]),"%s",def_ids[i]);s.app_autostart[i]=def_autostart[i];}
  scene_init(&s);ui_init(&s);
  if(config_enabled){CdConfig *cfg=cd_config_load(config_path);if(cfg){apply_app_config(&s,cfg);cd_config_free(cfg);}} /* needs buttons+GL: after ui_init */
  s.start_time=clock_now();double last=s.start_time,fps_start=last;uint64_t fps_frames=0;bool initial_focus=false;
+ /* The instrument cluster is part of the car, not an optional floating app. */
+ char cluster_command[4400];snprintf(cluster_command,sizeof(cluster_command),"'%s/bin/chromedrive-demo' cluster",s.root);app_exec(&s,cluster_command);
  if(s.demo){for(int i=0;i<4;i++)if(s.buttons[i].enabled&&s.app_autostart[i])app_exec(&s,s.launch_commands[i]);}for(int i=0;i<s.exec_count;i++)app_exec(&s,s.exec_commands[i]);
  app_notice(&s,"Welcome to the driver's seat. F1 for controls.");
  while(s.running&&!interrupted){
@@ -267,6 +271,9 @@ int main(int argc,char **argv){
    vehicle_input.brake=s.drive_brake?1.f:0.f;
   }
   vehicle_update(&s.vehicle,vehicle_input,s.dt);
+  /* Publish the new physics state before presentation wakes frame-callback
+   * clients; the cluster then draws one coherent, current snapshot. */
+  telemetry_update(&s);scene_update_mounts(&s);
   static bool collision_seen;if(s.vehicle.collision&&!collision_seen)app_notice(&s,"Hover bumper absorbed a garage wall contact");collision_seen=s.vehicle.collision;
   if(!s.wheel_drag)s.wheel_client_angle+=(0-s.wheel_client_angle)*(1.f-expf(-(float)s.dt*9.f));
   float blend=1.f-expf(-(float)s.dt*12.f);s.yaw+=(s.target_yaw-s.yaw)*blend;s.pitch+=(s.target_pitch-s.pitch)*blend;s.fov+=(s.target_fov-s.fov)*blend;
@@ -285,7 +292,7 @@ int main(int argc,char **argv){
   double remain=1.0/s.fps_limit-(clock_now()-frame_start);if(remain>0)SDL_Delay((uint32_t)(remain*1000));
  }
  for(int i=0;i<s.child_count;i++)kill(-s.children[i],SIGTERM);
- server_finish(&s);scene_finish(&s);
+ telemetry_finish(&s);server_finish(&s);scene_finish(&s);
  if(s.headless)backend_headless_shutdown(&s);else backend_sdl_shutdown(&s);
  SDL_Quit();for(int i=0;i<4;i++)free(s.launch_commands[i]);return 0;
 }

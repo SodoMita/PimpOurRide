@@ -17,15 +17,20 @@
 #include <xkbcommon/xkbcommon.h>
 #include "math3d.h"
 #include "vehicle.h"
+#include "telemetry.h"
 /* Cockpit backdrop (src/scene.c environment()), selectable in
  * chromedrive.conf / the config GUI: the real 3D garage (default), the
  * original flat garage.webp poster, or nothing at all. */
 #define CD_BG_3D 0
 #define CD_BG_TEXTURE 1
 #define CD_BG_NONE 2
-#define CD_MAX_MONITORS 8
+#define CD_APP_BAYS 8
+#define CD_CLUSTER_SLOT 8
+#define CD_MAX_MONITORS 9 /* eight app mounts + one fixed instrument cluster */
 #define CD_APP_W 1000
 #define CD_APP_H 625
+#define CD_CLUSTER_W 1000
+#define CD_CLUSTER_H 404
 #define CD_VERSION "0.3.0"
 #define CD_DMABUF_MAX_FORMATS 8
 #define CD_DMABUF_MAX_MODIFIERS 16
@@ -70,7 +75,7 @@ struct Surface {
  bool input_changed;
  char title[256],app_id[256];
 };
-typedef struct { Plane plane;Surface *surface;GLuint label;char label_text[300]; } Monitor;
+typedef struct { Plane plane;Surface *surface;GLuint label;char label_text[300];float reveal,target_reveal; } Monitor;
 /* One Launch Control entry. name/sub/icon/enabled are user-configurable
  * (chromedrive.conf [app.*], edited by bin/chromedrive-config) and applied
  * live: DashButton owns copies, ui_refresh_buttons() re-renders textures. */
@@ -116,7 +121,8 @@ struct Server {
  bool drive_forward,drive_reverse,drive_left,drive_right,drive_brake;
  bool wheel_drag;
  float wheel_steer,wheel_client_angle,wheel_axis_accum,wheel_last_x,wheel_last_y;
- double time,dt,fps,start_time,last_ui_time,notice_until;
+ double time,dt,fps,start_time,last_ui_time,last_windshield_time,notice_until;
+ int telemetry_fd;CdTelemetry *telemetry;
  uint64_t frames,commits;
  char socket[128],root[4096],runtime[4096],notice[256];
  char *launch_commands[4];char *exec_commands[16];int exec_count;
@@ -125,7 +131,7 @@ struct Server {
   * re-clicking focuses the running app; app_autostart[s] joins the --demo set. */
  char app_ids[4][128];bool app_autostart[4];
  pid_t children[128];int child_count;
- GLuint garage_tex,carbon_tex,gauge_tex,console_tex,hub_tex,hud_tex,help_tex,plate_tex;
+ GLuint garage_tex,carbon_tex,console_tex,hub_tex,hud_tex,windshield_tex,help_tex,plate_tex;
  GLuint scene_list;bool rebuild_scene;
  bool screenshot_requested;char screenshot_path[4096];
 };
@@ -146,6 +152,7 @@ void server_each_surface(Surface *root,void (*fn)(Surface*,int,int,void*),void *
 uint32_t sdl_to_evdev(SDL_Scancode code);
 void scene_init(Server *s);
 void scene_render(Server *s);
+void scene_update_mounts(Server *s);
 void scene_finish(Server *s);
 Hit scene_pick(Server *s,float x,float y,bool grab);
 void scene_focus_monitor(Server *s,int slot,bool zoom);
@@ -172,6 +179,10 @@ void app_open_settings(Server *s);
 void app_exec(Server *s,const char *command);
 void app_notice(Server *s,const char *fmt,...);
 bool app_global_key(Server *s,uint32_t evdev,bool down);
+/* telemetry.c: shared live EV state for the real Wayland instrument client. */
+bool telemetry_init(Server *s);
+void telemetry_update(Server *s);
+void telemetry_finish(Server *s);
 /* dmabuf.c: zwp_linux_dmabuf_v1, real EGLImage-backed zero-copy GPU import. */
 void dmabuf_probe(Server *s);
 void dmabuf_register_global(Server *s);

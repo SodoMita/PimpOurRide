@@ -14,7 +14,7 @@ static struct zwp_linux_dmabuf_v1 *dmabuf;static int dmabuf_formats,dmabuf_modif
 static int outputs,configured,frames,releases,enters,keymaps,keyboard_enters;static int running=1;
 static void timeout_handler(int sig){_exit(124);}
 static void geom(void *d,struct wl_output *o,int32_t x,int32_t y,int32_t pw,int32_t ph,int32_t sub,const char *make,const char *model,int32_t tr){}
-static void mode(void *d,struct wl_output *o,uint32_t f,int32_t w,int32_t h,int32_t hz){assert(w==1000&&h==625);}
+static void mode(void *d,struct wl_output *o,uint32_t f,int32_t w,int32_t h,int32_t hz){assert((w==1000&&h==625)||(w==1000&&h==404));}
 static void done(void *d,struct wl_output *o){}
 static void scale(void *d,struct wl_output *o,int32_t s){assert(s==1);}
 static void name(void *d,struct wl_output *o,const char *s){assert(strncmp(s,"CD-",3)==0);}
@@ -65,7 +65,7 @@ static const struct xdg_popup_listener popup_listener={.configure=popupconf,.pop
 static void commit(struct wl_surface *s,struct wl_buffer *b){wl_surface_attach(s,b,0,0);wl_surface_damage_buffer(s,0,0,1000,625);struct wl_callback *cb=wl_surface_frame(s);wl_callback_add_listener(cb,&frame_listener,NULL);wl_surface_commit(s);}
 static void wait_frames(int target){while(running&&frames<target)assert(wl_display_dispatch(display)>=0);assert(running);}
 int main(void){
- signal(SIGALRM,timeout_handler);alarm(10);display=wl_display_connect(NULL);assert(display);struct wl_registry *registry=wl_display_get_registry(display);wl_registry_add_listener(registry,&registry_listener,NULL);assert(wl_display_roundtrip(display)>=0);assert(compositor&&shm&&wm&&subcomp&&seat);assert(wl_display_roundtrip(display)>=0);assert(wl_display_roundtrip(display)>=0);assert(outputs==8&&keymaps==1);
+ signal(SIGALRM,timeout_handler);alarm(10);display=wl_display_connect(NULL);assert(display);struct wl_registry *registry=wl_display_get_registry(display);wl_registry_add_listener(registry,&registry_listener,NULL);assert(wl_display_roundtrip(display)>=0);assert(compositor&&shm&&wm&&subcomp&&seat);assert(wl_display_roundtrip(display)>=0);assert(wl_display_roundtrip(display)>=0);assert(outputs==9&&keymaps==1);
  struct wl_surface *surface=wl_compositor_create_surface(compositor);wl_surface_add_listener(surface,&surface_listener,NULL);struct xdg_surface *xdg=xdg_wm_base_get_xdg_surface(wm,surface);xdg_surface_add_listener(xdg,&xdg_listener,NULL);struct xdg_toplevel *top=xdg_surface_get_toplevel(xdg);xdg_toplevel_add_listener(top,&top_listener,NULL);xdg_toplevel_set_title(top,"Protocol probe");xdg_toplevel_set_app_id(top,"chromedrive.probe");wl_surface_commit(surface);assert(wl_display_roundtrip(display)>=0);assert(configured>0);
  size_t size=1000*625*4;int fd=memfd_create("probe",MFD_CLOEXEC);assert(fd>=0&&ftruncate(fd,size)==0);uint32_t *pixels=mmap(NULL,size,PROT_READ|PROT_WRITE,MAP_SHARED,fd,0);assert(pixels!=MAP_FAILED);struct wl_shm_pool *pool=wl_shm_create_pool(shm,fd,size);struct wl_buffer *buffer=wl_shm_pool_create_buffer(pool,0,1000,625,4000,WL_SHM_FORMAT_XRGB8888);wl_buffer_add_listener(buffer,&buffer_listener,NULL);
  for(int n=0;n<3;n++){for(int i=0;i<1000*625;i++)pixels[i]=0xff204050u+n*0x000c1003;commit(surface,buffer);wait_frames(n+1);}assert(enters==1&&keyboard_enters>=1&&releases>=3);

@@ -13,8 +13,11 @@ and thermal loop can be inspected in an exterior systems cutaway. Fixed-step
 120 Hz dynamics make the whole car/cockpit/monitor rig drive through the 3D
 garage—without pretending to simulate wheels. F7 switches the physical steering
 wheel and driving keys between Wayland-client input and hover-car control; F5
-cycles driver, smooth exterior-concept, and EV-systems cameras. See
-[`docs/vehicle-and-remote.md`](docs/vehicle-and-remote.md).
+cycles driver, smooth exterior-concept, and EV-systems cameras. Applications
+use fixed, slide-up, slide-out, or flip-down mounts built into the windshield,
+dashboard, doors, roof, and rear deck. A separate Wayland instrument client
+lives behind the steering wheel, with a transparent live HUD on the windshield.
+See [`docs/vehicle-and-remote.md`](docs/vehicle-and-remote.md).
 
 This is a real compositor: it implements `wl_compositor`, `wl_subcompositor`,
 `xdg-shell` (toplevels + popups), `wl_seat` (pointer + xkbcommon keyboard),
@@ -39,21 +42,23 @@ It runs two ways:
 
 - **Real**: the Wayland protocol implementation, OpenGL scene, 3D raycast
   picking for buttons/screens, input routing to actual client processes, the
-  terminal (`foot`) and the three bundled demo apps (Files, Audio UI, Meters —
-  all genuine `wl_shm` clients speaking real Wayland, source in
-  `clients/demo.c`), the headless EGL+VNC pipeline, and the
+  terminal (`foot`) and the bundled demo modes (Files, Audio UI, host Meters,
+  and the live EV instrument cluster — all genuine `wl_shm` clients speaking
+  real Wayland, source in `clients/demo.c`), the headless EGL+VNC pipeline, and the
   `zwp_linux_dmabuf_v1` GPU-import code path (real EGLImage calls — see
   caveat below). The garage beyond the windshield is real 3D geometry now,
   not the flat `assets/garage.webp` backdrop quad it used to be — see
   “Garage3D” below.
 - **Limitations in this build**: no layer-shell, Xwayland, or DRM/KMS backend
   — it never owns real display hardware directly, it's always either nested
-  (`--windowed`) or headless-with-VNC-output (`--headless`); 8 virtual
-  monitors max; buffers capped at 16 MiB/64 MiB total per surface for safety;
+  (`--windowed`) or headless-with-VNC-output (`--headless`); eight general app
+  mounts plus one dedicated instrument-cluster output; buffers capped at
+  16 MiB/64 MiB total per surface for safety;
   single input seat, no touch/tablet.
 - The "Audio" app is explicitly a UI/interaction demo — it does not play audio.
-  "Meters" reads real `/proc/stat` and `/proc/meminfo` for CPU/memory, it is
-  not simulated vehicle telemetry.
+  The fixed instrument cluster is a real Wayland client showing shared EV
+  telemetry. The separately launched `telemetry` demo mode reads real
+  `/proc/stat` and `/proc/meminfo` for host CPU/memory instead.
 
 ## GPU / dma-buf
 
@@ -273,19 +278,20 @@ Launch commands for the dashboard buttons can be overridden with the
 ## Layout
 
 ```
-include/chrome.h, math3d.h, vehicle.h, cdconfig.h  shared types, math, vehicle and config APIs
-src/math3d.c                 camera rays, plane intersection, monitor layout
+include/chrome.h, math3d.h, vehicle.h, telemetry.h, cdconfig.h  shared compositor APIs/types
+src/math3d.c                 camera rays, plane intersection, animated car-part mounts
 src/vehicle.c                fixed-step hover EV dynamics, splines, exact rig transforms
 src/vehicle_scene.c          spline body/glass/cables + complete electric systems renderer
+src/telemetry.c              shared live EV state for the native instrument client
 src/keymap.c                 exact RFB/X11 keysym to Linux evdev translation
 src/wayland.c                the actual compositor protocol implementation
 src/dmabuf.c                 zwp_linux_dmabuf_v1: real EGLImage GPU buffer import
 src/scene.c                  OpenGL cockpit, monitors, picking, camera rig, 3D garage backdrop
-src/ui.c                     cairo-rendered textures: EV gauges, HUD, labels
+src/ui.c                     cairo textures: windshield HUD, chrome, labels
 src/main.c                    CLI parsing, event loop, process spawn (backend-agnostic)
 src/backend_sdl.c             --windowed: SDL2 window + GLX context + SDL input
 src/backend_headless.c        --headless (default): surfaceless EGL + embedded VNC + RFB input
-clients/demo.c                 three independent real Wayland clients
+clients/demo.c                 native Wayland Files/Audio/host-Meters/EV-cluster modes
 clients/config.c               chromedrive-config: launch-menu editor + settings GUI
 clients/garage3d/              Garage3D: native Wayland + GLES 3.1 client (the garage in 3D)
 src/cdconfig.c                 shared INI config store (compositor + GUI; Garage3D has its own loader)
@@ -295,6 +301,7 @@ docs/vehicle-and-remote.md    EV physics/model, browser stack, Wayland/EGL/frame
 tests/test_math.c             raycast/picking unit tests
 tests/test_config.c           INI store round-trip tests
 tests/test_vehicle.c          spline, EV dynamics, transform and fixed-step tests
+tests/test_telemetry.c        shared cluster telemetry and seqlock tests
 tests/test_keymap.c           RFB typing/WASD/function-key mapping regressions
 tests/protocol_probe.c        end-to-end Wayland protocol conformance test (incl. dma-buf)
 tools/run-web.sh              one-command native backend + browser bridge
@@ -311,4 +318,5 @@ tools/viewer/                 static noVNC remote desktop + safe hold-to-drive c
 - Single input seat, no touch, no tablet *in the compositor* (the Garage3D
   client implements `wl_touch` gestures, but ChromeDrive does not yet
   advertise/forward touch to clients — see “Garage3D” above).
-- 8-monitor cap is fixed at compile time (`CD_MAX_MONITORS`).
+- Eight app mounts plus one cluster output are fixed at compile time
+  (`CD_APP_BAYS`, `CD_MAX_MONITORS`).

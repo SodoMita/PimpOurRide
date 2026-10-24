@@ -239,7 +239,10 @@ static void dashboard(Server *s){
  /* Air vents in a machined surround. */
  for(int side=-1;side<=1;side+=2){glPushMatrix();glTranslatef(side*2.15,.19,-.46);glRotatef(-22,1,0,0);color(.24,.27,.33);rbox(0,0,0,.62,.23,.05,.045);color(.022,.027,.037);rbox(0,0,.031,.55,.16,.014,.023);for(int i=-3;i<=3;i++){color(.19,.22,.28);box(i*.068,0,.055,.012,.14,.025);}glPopMatrix();}
  /* Instrument binnacle. */
- Plane gauge={.center={-.94,.43,.28},.width=1.46,.height=.59,.pitch=-12};plane_begin(gauge);color(.025,.03,.043);rbox(0,0,-.05,1.62,.76,.14,.18);color(.32,.34,.44);rbox(0,0,.005,1.51,.63,.035,.10);texture(s->gauge_tex,-.73,-.295,1.46,.59,.03);glPopMatrix();
+ Plane gauge=monitor_plane(CD_CLUSTER_SLOT);plane_begin(gauge);color(.025,.03,.043);rbox(0,0,-.05,1.62,.76,.14,.18);color(.32,.34,.44);rbox(0,0,.005,1.51,.63,.035,.10);
+ /* Empty dark substrate only. The visible gauges are the real Wayland
+  * cluster client's committed surface, drawn by draw_monitor below. */
+ glDisable(GL_LIGHTING);color(.010,.016,.026);quad(-gauge.width/2,-gauge.height/2,gauge.width,gauge.height,.023);glEnable(GL_LIGHTING);glPopMatrix();
  /* Passenger-side brushed plate, cut into the dash. */
  Plane plate={.center={2.04,-.015,.13},.width=.82,.height=.30,.yaw=-8,.pitch=-24};plane_begin(plate);color(.26,.29,.38);rbox(0,0,0,.91,.37,.028,.025);texture(s->plate_tex,-.41,-.15,.82,.30,.02);glPopMatrix();
  /* Sloped touch-and-switch center console; each key has its own pick plane. */
@@ -311,24 +314,42 @@ static void draw_app_surface(Surface *p,int sx,int sy,void *data){
  float coords[4][2]={{0,0},{1,0},{1,1},{0,1}},vx[]={x,x+w,x+w,x},vy[]={y,y,y-h,y-h};glBegin(GL_QUADS);for(int i=0;i<4;i++){float u,v;transformed_uv(p->transform,coords[i][0],coords[i][1],&u,&v);glTexCoord2f(u,v);glVertex3f(vx[i],vy[i],z);}glEnd();glDisable(GL_BLEND);glDisable(GL_TEXTURE_2D);glEnable(GL_LIGHTING);
 }
 static void draw_monitor(Server *s,int i){
- Monitor *m=&s->monitors[i];if(!m->surface)return;Plane p=m->plane;float w=p.width,h=p.height;bool active=s->keyboard_focus==m->surface;
+ Monitor *m=&s->monitors[i];if(!m->surface)return;Plane p=m->plane;float w=p.width,h=p.height;bool active=s->keyboard_focus==m->surface,cluster=i==CD_CLUSTER_SLOT;
  plane_begin(p);
- color(.08,.095,.13);cylinder(v3(0,-h/2-.03,-.065),v3(0,-.90,-.065),.045,16);color(.16,.18,.23);box(0,-.88,-.085,.48,.06,.25);
- color(.34,.39,.46);rbox(0,.075,-.056,w+.12,h+.25,.10,.065);
- color(.018,.027,.038);rbox(0,.075,-.003,w+.086,h+.219,.038,.055);
- glDisable(GL_LIGHTING);color(.010,.016,.026);quad(-w/2,-h/2,w,h,.019);glEnable(GL_LIGHTING);
- float nr,ng,nb;neon(s,&nr,&ng,&nb);
- if(active)glow_line(v3(-w/2,-h/2-.022,.025),v3(w/2,-h/2-.022,.025),.004,.35,.92,.74);else glow_line(v3(-w/2,-h/2-.022,.025),v3(w/2,-h/2-.022,.025),.003,nr*.65,ng*.7,nb*.7);
- ui_monitor_label(s,i);texture(m->label,-w/2,h/2+.011,w,.137,.024);
- glEnable(GL_STENCIL_TEST);glClear(GL_STENCIL_BUFFER_BIT);glStencilMask(0xff);glStencilFunc(GL_ALWAYS,1,0xff);glStencilOp(GL_KEEP,GL_KEEP,GL_REPLACE);glColorMask(GL_FALSE,GL_FALSE,GL_FALSE,GL_FALSE);glDepthMask(GL_FALSE);quad(-w/2,-h/2,w,h,.021);glColorMask(GL_TRUE,GL_TRUE,GL_TRUE,GL_TRUE);glDepthMask(GL_TRUE);glStencilFunc(GL_EQUAL,1,0xff);glStencilOp(GL_KEEP,GL_KEEP,GL_KEEP);glStencilMask(0);
+ if(!cluster){
+  /* Hardware belongs to the named car part, not a generic floor stand. */
+  MonitorMount mount=monitor_mount(i);color(.24,.28,.35);
+  if(mount==MOUNT_DASH_SLIDE){
+   for(int side=-1;side<=1;side+=2){cylinder(v3(side*w*.32,-h/2,-.075),v3(side*w*.32,-h/2-.58,-.075),.028,12);color(.40,.43,.50);box(side*w*.32,-h/2-.58,-.075,.15,.045,.16);color(.24,.28,.35);}
+  }else if(mount==MOUNT_DOOR_SLIDE){
+   float side=i==3?-1:1;cylinder(v3(side*w*.43,0,-.08),v3(side*(w*.5+.42),0,-.08),.045,14);box(side*(w*.5+.42),0,-.08,.12,.34,.18);
+  }else if(mount==MOUNT_ROOF_FLIP){
+   cylinder(v3(-w*.34,h/2+.08,-.07),v3(w*.34,h/2+.08,-.07),.045,16);cylinder(v3(0,h/2+.08,-.07),v3(0,h/2+.43,-.07),.035,12);
+  }
+  color(.30,.35,.43);rbox(0,.075,-.056,w+.12,h+.25,.10,.065);
+  color(.018,.027,.038);rbox(0,.075,-.003,w+.086,h+.219,.038,.055);
+  glDisable(GL_LIGHTING);color(.010,.016,.026);quad(-w/2,-h/2,w,h,.019);glEnable(GL_LIGHTING);
+  float nr,ng,nb;neon(s,&nr,&ng,&nb);
+  if(active)glow_line(v3(-w/2,-h/2-.022,.025),v3(w/2,-h/2-.022,.025),.004,.35,.92,.74);else glow_line(v3(-w/2,-h/2-.022,.025),v3(w/2,-h/2-.022,.025),.003,nr*.65,ng*.7,nb*.7);
+  ui_monitor_label(s,i);texture(m->label,-w/2,h/2+.011,w,.137,.024);
+ }
+ glEnable(GL_STENCIL_TEST);glClear(GL_STENCIL_BUFFER_BIT);glStencilMask(0xff);glStencilFunc(GL_ALWAYS,1,0xff);glStencilOp(GL_KEEP,GL_KEEP,GL_REPLACE);glColorMask(GL_FALSE,GL_FALSE,GL_FALSE,GL_FALSE);glDepthMask(GL_FALSE);glDisable(GL_DEPTH_TEST);quad(-w/2,-h/2,w,h,.021);glEnable(GL_DEPTH_TEST);glColorMask(GL_TRUE,GL_TRUE,GL_TRUE,GL_TRUE);glDepthMask(GL_TRUE);glStencilFunc(GL_EQUAL,1,0xff);glStencilOp(GL_KEEP,GL_KEEP,GL_KEEP);glStencilMask(0);
  float scale=fminf(w/m->surface->width,h/m->surface->height);DrawSurface d={.scale=scale,.w=m->surface->width*scale,.h=m->surface->height*scale};server_each_surface(m->surface,draw_app_surface,&d);
  glStencilMask(0xff);glDisable(GL_STENCIL_TEST);glPopMatrix();
+}
+static void draw_windshield_hud(Server *s){
+ if(!s->hud_visible||!s->windshield_tex)return;
+ /* A transparent projection on the actual glass plane, not framebuffer
+  * chrome. Its centre is intentionally quiet so the windshield app remains
+  * readable; speed, pack and drive state sit around the edges. */
+ Plane p={.center={0,1.42f,-1.08f},.width=2.75f,.height=.90f,.pitch=-4};
+ glDepthMask(GL_FALSE);plane_begin(p);texture(s->windshield_tex,-p.width/2,-p.height/2,p.width,p.height,0);glPopMatrix();glDepthMask(GL_TRUE);
 }
 void scene_init(Server *s){
  char path[4200];snprintf(path,sizeof(path),"%s/assets/garage.webp",s->root);s->garage_tex=ui_load_webp(path);
  glEnable(GL_DEPTH_TEST);glDepthFunc(GL_LEQUAL);glEnable(GL_MULTISAMPLE);glShadeModel(GL_SMOOTH);glClearColor(.013,.015,.031,1);s->pitch=s->target_pitch=-6;
  Plane panel={.center={.78,.33,.48},.width=1.56,.height=.9,.yaw=-5,.pitch=-28};Vec3 right=rotate_y(v3(1,0,0),panel.yaw),up=rotate_y(rotate_x(v3(0,1,0),panel.pitch),panel.yaw),normal=vcross(right,up);
- const char *names[]={"TERMINAL","FILES","AUDIO","METERS","NEON","COCKPIT"};const char *subs[]={"01 / SHELL","02 / EXPLORE","03 / SESSION","04 / LIVE","05 / COLOR","06 / HOME"};
+ const char *names[]={"TERMINAL","FILES","AUDIO","METERS","NEON","COCKPIT"};const char *subs[]={"01 / SHELL","02 / EXPLORE","03 / SESSION","04 / EV","05 / COLOR","06 / HOME"};
  /* Built-in menu defaults; [app.*] config (applied in main.c after ui_init)
   * may relabel/re-icon/disable any of these live. */
  for(int i=0;i<6;i++){float x=(i%3-1)*.48f,y=i<3?.095f:-.22f;s->buttons[i].plane=(Plane){.center=vadd(panel.center,vadd(vadd(vmul(right,x),vmul(up,y)),vmul(normal,.084f))),.width=.426,.height=.248,.yaw=panel.yaw,.pitch=panel.pitch};snprintf(s->buttons[i].name,sizeof(s->buttons[i].name),"%s",names[i]);snprintf(s->buttons[i].sub,sizeof(s->buttons[i].sub),"%s",subs[i]);s->buttons[i].action=i;s->buttons[i].icon=i;s->buttons[i].enabled=true;s->buttons[i].texture=0;}
@@ -378,6 +399,15 @@ static void vehicle_model_transform(Server *s){
  Vehicle *v=&s->vehicle;glTranslatef(v->position.x,v->position.y,v->position.z);
  glRotatef(v->yaw,0,1,0);glRotatef(v->pitch,1,0,0);glRotatef(v->roll,0,0,1);
 }
+void scene_update_mounts(Server *s){
+ for(int i=0;i<CD_MAX_MONITORS;i++){
+  Monitor *m=&s->monitors[i];if(!m->surface)continue;
+  if(m->reveal<m->target_reveal){float duration=monitor_mount(i)==MOUNT_ROOF_FLIP?.90f:.72f;m->reveal=fminf(m->target_reveal,m->reveal+(float)s->dt/duration);}
+  /* This exact plane is also consumed by scene_pick below: a client never
+   * renders at one position while its pointer coordinates use another. */
+  m->plane=monitor_plane_at(i,m->reveal);
+ }
+}
 void scene_render(Server *s){
  glViewport(0,0,s->width,s->height);glClear(GL_COLOR_BUFFER_BIT|GL_DEPTH_BUFFER_BIT|GL_STENCIL_BUFFER_BIT);glEnable(GL_DEPTH_TEST);
  glMatrixMode(GL_PROJECTION);glLoadIdentity();double t=tan(s->fov*RAD/2)*.05;glFrustum(-t*s->width/s->height,t*s->width/s->height,-t,t,.05,150);
@@ -386,7 +416,7 @@ void scene_render(Server *s){
  glPushMatrix();vehicle_model_transform(s);lighting();
  bool driver=s->camera_mode==VEHICLE_CAMERA_DRIVER;
  vehicle_render(s,s->camera_mode==VEHICLE_CAMERA_SYSTEMS);
- if(driver){dashboard(s);draw_buttons(s);draw_cog(s);for(int i=0;i<CD_MAX_MONITORS;i++)draw_monitor(s,i);steering_wheel(s);}
+ if(driver){dashboard(s);draw_buttons(s);draw_cog(s);for(int i=0;i<CD_MAX_MONITORS;i++)draw_monitor(s,i);draw_windshield_hud(s);steering_wheel(s);}
  vehicle_render_glass(s);glPopMatrix();
 }
 Hit scene_pick(Server *s,float x,float y,bool grab){
@@ -398,7 +428,7 @@ Hit scene_pick(Server *s,float x,float y,bool grab){
  SceneCamera camera=scene_camera(s);Vec3 ray=vehicle_world_direction(&s->vehicle,scene_camera_ray(s,camera,x,y));float u,v,d;
  if(grab&&s->pointer_grab){Surface *root=surface_root(s->pointer_grab);if(root&&root->slot>=0){Plane p=s->monitors[root->slot].plane;if(plane_hit(p,s->eye,ray,&u,&v,&d,false)){float scale=fminf(p.width/root->width,p.height/root->height);float sx=(u-.5f)*p.width/scale+root->width/2.f,sy=(v-.5f)*p.height/scale+root->height/2.f;Surface *child=s->pointer_grab;while(child!=root&&child){sx-=child->x;sy-=child->y;child=child->parent;}return (Hit){.kind=HIT_APP,.surface=s->pointer_grab,.slot=root->slot,.x=sx,.y=sy,.distance=d};}}return best;}
  for(int i=0;i<CD_MAX_MONITORS;i++){Monitor *m=&s->monitors[i];if(!m->surface)continue;Plane p=m->plane;if(!plane_hit(p,s->eye,ray,&u,&v,&d,false)||d>=best.distance)continue;
-  if(u>.92&&u<1.01&&v<0&&v>-.12){best=(Hit){.kind=HIT_CLOSE,.surface=m->surface,.slot=i,.distance=d};continue;}
+  if(i!=CD_CLUSTER_SLOT&&u>.92&&u<1.01&&v<0&&v>-.12){best=(Hit){.kind=HIT_CLOSE,.surface=m->surface,.slot=i,.distance=d};continue;}
   if(u<0||u>1||v<0||v>1)continue;float scale=fminf(p.width/m->surface->width,p.height/m->surface->height);float sx=(u-.5f)*p.width/scale+m->surface->width/2.f,sy=(v-.5f)*p.height/scale+m->surface->height/2.f,px,py;
   Surface *surface=surface_at(m->surface,sx,sy,&px,&py);if(surface)best=(Hit){.kind=HIT_APP,.surface=surface,.slot=i,.x=px,.y=py,.distance=d};
  }
@@ -454,8 +484,8 @@ void scene_wheel_motion(Server *s,int x,int y,uint32_t time){
 }
 void scene_focus_monitor(Server *s,int slot,bool zoom){
  s->camera_mode=VEHICLE_CAMERA_DRIVER;
- if(slot<0||slot>=CD_MAX_MONITORS)return;Plane p=s->monitors[slot].plane;float desired=atan2f(-p.center.x,s->eye.z-p.center.z)/RAD;
- while(desired-s->yaw>180)desired-=360;while(desired-s->yaw<-180)desired+=360;s->target_yaw=desired;s->target_pitch=atan2f(p.center.y-s->eye.y,4.4f)/RAD;s->target_fov=zoom?32:65;s->focus_view=zoom;
+ if(slot<0||slot>=CD_MAX_MONITORS)return;Plane p=monitor_plane(slot);float desired=atan2f(-p.center.x,s->eye.z-p.center.z)/RAD;
+ while(desired-s->yaw>180)desired-=360;while(desired-s->yaw<-180)desired+=360;s->target_yaw=desired;float dx=p.center.x-s->eye.x,dz=p.center.z-s->eye.z;s->target_pitch=atan2f(p.center.y-s->eye.y,sqrtf(dx*dx+dz*dz))/RAD;s->target_fov=zoom?32:65;s->focus_view=zoom;
 }
 void scene_reset_camera(Server *s){s->camera_mode=VEHICLE_CAMERA_DRIVER;s->target_yaw=roundf(s->yaw/360)*360;s->target_pitch=-6;s->target_fov=65;s->focus_view=false;}
 void scene_save_screenshot(Server *s,const char *path){
@@ -471,5 +501,5 @@ void scene_save_screenshot(Server *s,const char *path){
  free(flipped);free(pixels);
 }
 void scene_finish(Server *s){
- GLuint textures[]={s->garage_tex,s->carbon_tex,s->gauge_tex,s->console_tex,s->hub_tex,s->hud_tex,s->help_tex,s->plate_tex};glDeleteTextures(sizeof(textures)/sizeof(textures[0]),textures);for(int i=0;i<6;i++)glDeleteTextures(1,&s->buttons[i].texture);for(int i=0;i<CD_MAX_MONITORS;i++)glDeleteTextures(1,&s->monitors[i].label);
+ GLuint textures[]={s->garage_tex,s->carbon_tex,s->console_tex,s->hub_tex,s->hud_tex,s->windshield_tex,s->help_tex,s->plate_tex};glDeleteTextures(sizeof(textures)/sizeof(textures[0]),textures);for(int i=0;i<6;i++)glDeleteTextures(1,&s->buttons[i].texture);for(int i=0;i<CD_MAX_MONITORS;i++)glDeleteTextures(1,&s->monitors[i].label);
 }
