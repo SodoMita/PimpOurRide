@@ -14,7 +14,9 @@ and thermal loop can be inspected in an exterior systems cutaway. Fixed-step
 garage—without pretending to simulate wheels. F7 switches the physical steering
 wheel and driving keys between Wayland-client input and hover-car control; F8
 cycles driver, smooth exterior-concept, and EV-systems cameras, while F9
-switches between properly aligned driver and passenger seats. Applications
+switches between properly aligned driver and passenger seats. F5 opens and
+closes real hinged door assemblies—including their glass, interior trim and
+door-mounted displays—and F6 toggles the monitor Arrange editor. Applications
 use fixed, slide-up, slide-out, or flip-down mounts built into the windshield,
 dashboard, doors, roof, and rear deck. A separate Wayland instrument client
 lives behind the steering wheel, with a transparent live HUD on the windshield.
@@ -251,12 +253,12 @@ reverse proxy and firewall before exposing them to an untrusted network.
 | F2 | Reset to the selected seat view |
 | F3 | Toggle a tight focus zoom on the active screen |
 | F4 | Cycle underglow color (violet / ice blue / acid lime) |
-| F5 | Arrange the selected screen (move / rotate / roll / scale / resize) |
-| F6 | Cycle to the next connected screen |
+| F5 | Open or close both hinged doors (glass, trim and door displays move too) |
+| F6 | Toggle Arrange for the selected screen (move / rotate / roll / scale / resize) |
 | F7 | Toggle client input / hover-drive ownership |
 | F8 | Cycle driver / exterior concept / EV systems cutaway |
 | F9 | Switch between driver and passenger seats |
-| F10 | Recover the car pose (battery and odometer are preserved) |
+| F10 | Recover the car pose and close the doors (battery and odometer are preserved) |
 | W/A/S/D or arrows, Space | Drive mode: throttle/steer/reverse and regenerative brake |
 | Left-drag steering wheel | Client mode: scroll focused app; drive mode: steer |
 | F11 | `--windowed` only: toggle fullscreen |
@@ -264,14 +266,14 @@ reverse proxy and firewall before exposing them to an untrusted network.
 | Ctrl+Alt+Enter | Open a new terminal (even if slot 1 was reassigned) |
 | Ctrl+Alt+Q | Quit |
 
-#### Arrange mode (F5)
+#### Arrange mode (F6)
 
 You do not need Arrange mode just to move a window: **drag its titlebar or
 frame** and the whole monitor follows in its own plane, like dragging a
-normal window frame. For the full transform editor, press **F5** or click the
+normal window frame. For the full transform editor, press **F6** or click the
 **HANDLES** button in a monitor's titlebar. The selected monitor gets an amber
 outline and local red/green/blue axes; click another occupied monitor, or use
-**Tab/F6**, to choose a different one. Click **HANDLES** again (or press **H**)
+**Tab**, to choose a different one. Click **HANDLES** again (or press **H**)
 to show/hide the larger gizmo handles. Pointer and keyboard input are captured
 by the compositor while Arrange mode is on, so dragging a window cannot also
 click through to the app underneath.
@@ -291,7 +293,7 @@ click through to the app underneath.
 | A/D, W/S, Q/E | Yaw, pitch, and roll |
 | `-` / `=`, or keypad `+` / `-` | Uniform scale down/up |
 | R or 0 | Reset this screen to its default bay transform |
-| Esc or F5 | Leave Arrange mode |
+| Esc or F6 | Leave Arrange mode |
 
 When the gizmo is shown, its handles are ray-picked in 3D just like the
 dashboard buttons:
@@ -310,8 +312,11 @@ modifier still leaves Ctrl-drag available for roll). F3 can focus the Arrange
 target without leaving the mode.
 
 The transform moves the whole physical monitor assembly — screen, frame,
-stand, label and glow — and 3D ray picking uses the same transformed plane, so
-clicks stay aligned after you leave Arrange mode. Corner/edge resizing changes
+car-part mount hardware, label and glow — and 3D ray picking uses the same
+transformed plane, so clicks stay aligned after you leave Arrange mode. A
+custom transform also overrides the slot's deployment and door-hinge motion
+until reset; otherwise door-mounted screens follow their physical door.
+Corner/edge resizing changes
 the physical monitor's width/height (and therefore its aspect); the client's
 Wayland buffer is not resized, so its image is letterboxed on the resized
 screen. The magenta uniform-scale handle and mouse wheel instead scale both
@@ -324,7 +329,7 @@ window starts from its slot's default transform.
 
 Over VNC, keyboard input covers typing (letters use an explicit physical
 evdev table, as do keypad digits/Enter/Space), navigation keys, function keys
-and modifiers (see `keysym_to_evdev` in `src/backend_headless.c`); key
+and modifiers (see `keysym_to_evdev` in `src/keymap.c`); key
 auto-repeat is handled client-side (by each app's own xkb repeat timer), same
 as a real compositor — holding a key sends one press/release pair, not a flood
 of events.

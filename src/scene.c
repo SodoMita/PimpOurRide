@@ -257,11 +257,8 @@ static void dashboard(Server *s){
  color(.30,.34,.42);cylinder(v3(0,header.y-.025f,header.z),v3(0,header.y-.15f,header.z+.09f),.035,16);
  color(.24,.28,.36);cylinder(v3(0,header.y-.15f,header.z+.09f),v3(0,header.y-.21f,header.z+.12f),.024,14);
  glPushMatrix();glTranslatef(0,header.y-.23f,header.z+.12f);glRotatef(-5,1,0,0);color(.40,.44,.52);rbox(0,0,0,.85,.26,.07,.06);color(.015,.028,.04);rbox(0,0,.043,.78,.20,.025,.04);texture(s->garage_tex,-.37,-.08,.74,.16,.06);glPopMatrix();
- /* Quilted doors and visible subwoofers. */
- for(int side=-1;side<=1;side+=2){glPushMatrix();glTranslatef(side*2.00,-.39,.64);glRotatef(side*-40,0,1,0);color(.13,.058,.21);rbox(0,.35,0,.56,1.10,.15,.12);glDisable(GL_LIGHTING);color(.36,.19,.46);glBegin(GL_LINES);for(float x=-.05;x<.75;x+=.12){glVertex3f(-.24,x,.081);glVertex3f(.24,x+.45,.081);glVertex3f(-.24,x+.45,.082);glVertex3f(.24,x,.082);}glEnd();glEnable(GL_LIGHTING);
- /* The interior pull and armrest belong to this same door model in every view. */
- color(.46f,.50f,.59f);cylinder(v3(-.22,.57,.14),v3(.22,.57,.14),.022,16);for(int end=-1;end<=1;end+=2)cylinder(v3(end*.22,.57,.08),v3(end*.22,.57,.14),.018,12);color(.18f,.10f,.25f);rbox(0,.29,.12,.56,.10,.12,.04);
- glTranslatef(0,.03,.15);color(.45,.48,.56);torus(.21,.024,48,10);color(.018,.023,.037);cylinder(v3(0,0,-.06),v3(0,0,.005),.19,48);color(.075,.085,.115);torus(.15,.024,48,10);color(.14,.15,.21);cylinder(v3(0,0,.008),v3(0,0,.045),.055,32);glPopMatrix();}
+ /* Door upholstery, handles, shells and glass are one rigid assembly in
+  * vehicle_scene.c; nothing door-shaped remains statically in the cabin. */
  /* Polished shifter on the transmission tunnel. */
  color(.045,.04,.072);rbox(.66,-.62,1.02,.70,.36,.29,.10);color(.28,.32,.40);cylinder(v3(.66,-.65,.96),v3(.66,-.30,.96),.025,20);glPushMatrix();glTranslatef(.66,-.28,.96);color(.65,.64,.74);torus(.054,.049,28,16);glPopMatrix();
 }
@@ -519,7 +516,15 @@ void scene_update_mounts(Server *s){
    * renders at one position while its pointer coordinates use another.
    * Arrange/frame transforms are session overrides; mount animation must not
    * stomp them on the next frame. Reset or remapping clears the override. */
-  if(!m->custom_transform)m->plane=monitor_plane_at(i,m->reveal);
+  if(!m->custom_transform){
+   Plane p=monitor_plane_at(i,m->reveal);
+   if(i==3||i==4){
+    int side=i==3?-1:1;
+    p.center=vehicle_door_point(&s->vehicle,side,p.center);
+    p.yaw+=vehicle_door_angle(&s->vehicle,side);
+   }
+   m->plane=p;
+  }
  }
 }
 void scene_render(Server *s){

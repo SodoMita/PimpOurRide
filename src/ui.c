@@ -73,6 +73,8 @@ static void windshield_hud(Server *s){
  rgba(c,r,g,b,.62);cairo_set_line_width(c,4);float cx=700+s->vehicle.steering*90;
  cairo_move_to(c,cx-34,370);cairo_line_to(c,cx,352);cairo_line_to(c,cx+34,370);cairo_stroke(c);
  const char *mode=s->steering_mode==VEHICLE_STEER_DRIVE?(s->drive_brake?"REGEN BRAKE":"HOVER DRIVE"):"CLIENT INPUT / PARKED";
+ if(s->vehicle.door_target[0]>.5f||s->vehicle.door_target[1]>.5f)mode=s->vehicle.door_open[0]>.995f&&s->vehicle.door_open[1]>.995f?"DOORS OPEN / F5 TO CLOSE":"DOORS OPENING";
+ else if(s->vehicle.door_open[0]>.001f||s->vehicle.door_open[1]>.001f)mode="DOORS CLOSING";
  rgba(c,.55,.77,.82,.82);cairo_text_extents_t ex;font(c,17,false,true);cairo_text_extents(c,mode,&ex);cairo_move_to(c,700-ex.width/2,414);cairo_show_text(c,mode);
  snprintf(value,sizeof(value),"HOVER %.2f M  /  MOTOR %.0f C",s->vehicle.hover_height,s->vehicle.motor_temp_c);font(c,13,false,true);cairo_text_extents(c,value,&ex);cairo_move_to(c,700-ex.width/2,442);cairo_show_text(c,value);
  s->windshield_tex=ui_texture(im,s->windshield_tex);cairo_destroy(c);cairo_surface_destroy(im);

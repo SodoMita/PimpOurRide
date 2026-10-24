@@ -95,6 +95,24 @@ static void ev_box(float x, float y, float z, float w, float h, float d) {
  glEnd();
 }
 
+static void ev_rbox(float x, float y, float z, float w, float h, float d, float r) {
+ const int n = 48;float px[48], py[48];r = fminf(r, fminf(w, h) * 0.48f);
+ for (int i = 0; i < n; i++) {
+  int corner = i / 12;float angle = (-90 + corner * 90 + (i % 12) * 90.0f / 11.0f) * EV_PI / 180.0f;
+  float cx = (corner == 0 || corner == 1) ? w / 2 - r : -w / 2 + r;
+  float cy = (corner == 0 || corner == 3) ? -h / 2 + r : h / 2 - r;
+  px[i] = x + cx + r * cosf(angle);py[i] = y + cy + r * sinf(angle);
+ }
+ glBegin(GL_TRIANGLE_FAN);glNormal3f(0, 0, 1);glVertex3f(x, y, z + d / 2);
+ for (int i = 0; i <= n; i++) glVertex3f(px[i % n], py[i % n], z + d / 2);glEnd();
+ glBegin(GL_QUAD_STRIP);
+ for (int i = 0; i <= n; i++) {
+  int j = i % n;float nx = px[j] - x, ny = py[j] - y, len = sqrtf(nx * nx + ny * ny);
+  glNormal3f(nx / len, ny / len, 0);glVertex3f(px[j], py[j], z - d / 2);glVertex3f(px[j], py[j], z + d / 2);
+ }
+ glEnd();
+}
+
 static void ev_cylinder(Vec3 a, Vec3 b, float radius, int slices) {
  Vec3 diff = vsub(b, a);
  if (vdot(diff, diff) < 1e-8f) return;
@@ -369,47 +387,47 @@ static void render_fascia_cap(Server *s, bool front) {
  }
 }
 
-static void render_exterior_hull(void) {
- const int u_steps = 80, v_steps = 36;
- for (int side = -1; side <= 1; side += 2) {
-  for (int iv = 0; iv < v_steps; iv++) {
-   float v0 = (float)iv / (float)v_steps;
-   float v1 = (float)(iv + 1) / (float)v_steps;
-   float vm = 0.5f * (v0 + v1);
-
-   if (vm < 0.24f) {
-    /* Flat Venturi undertray and lower carbon aero rocker skirt. */
-    ev_set_material(EV_MAT_MATTE_CARBON);
-    ev_color(0.050f, 0.058f, 0.078f);
-   } else if (vm < 0.30f) {
-    /* Satin titanium lower rocker molding. */
-    ev_set_material(EV_MAT_SATIN_METAL);
-    ev_color(0.14f, 0.16f, 0.22f);
-   } else {
-    /* Metallic clearcoat body panels, subtly richer on the upper deck. */
-    ev_set_material(EV_MAT_BODY_PAINT);
+static void render_hull_patch(int side, float u_from, float u_to,
+                              float v_from, float v_to, int u_steps, int v_steps) {
+ for (int iv = 0; iv < v_steps; iv++) {
+  float v0 = v_from + (v_to - v_from) * (float)iv / (float)v_steps;
+  float v1 = v_from + (v_to - v_from) * (float)(iv + 1) / (float)v_steps;
+  float vm = 0.5f * (v0 + v1);
+  if (vm < 0.24f) {
+   ev_set_material(EV_MAT_MATTE_CARBON);ev_color(0.050f, 0.058f, 0.078f);
+  } else if (vm < 0.30f) {
+   ev_set_material(EV_MAT_SATIN_METAL);ev_color(0.14f, 0.16f, 0.22f);
+  } else {
+   ev_set_material(EV_MAT_BODY_PAINT);
+   float shade = 0.88f + 0.18f * ((vm - 0.30f) / 0.70f);
+   ev_color(0.21f * shade, 0.24f * shade, 0.34f * shade);
+  }
+  glBegin(GL_QUAD_STRIP);
+  for (int iu = 0; iu <= u_steps; iu++) {
+   float u = u_from + (u_to - u_from) * (float)iu / (float)u_steps;
+   if (vm >= 0.32f && vm <= 0.50f && u >= 0.33f && u <= 0.66f) ev_color(0.13f, 0.15f, 0.22f);
+   else if (vm >= 0.30f) {
     float shade = 0.88f + 0.18f * ((vm - 0.30f) / 0.70f);
     ev_color(0.21f * shade, 0.24f * shade, 0.34f * shade);
    }
-
-   glBegin(GL_QUAD_STRIP);
-   for (int iu = 0; iu <= u_steps; iu++) {
-    float u = (float)iu / (float)u_steps;
-    /* Darken the recessed side-scoop cove along the doors for visual depth. */
-    if (vm >= 0.32f && vm <= 0.50f && u >= 0.33f && u <= 0.66f) {
-     ev_color(0.13f, 0.15f, 0.22f);
-    } else if (vm >= 0.30f) {
-     float shade = 0.88f + 0.18f * ((vm - 0.30f) / 0.70f);
-     ev_color(0.21f * shade, 0.24f * shade, 0.34f * shade);
-    }
-    Vec3 n0, n1;
-    Vec3 p0 = vehicle_hull_point(u, v0, side, &n0);
-    Vec3 p1 = vehicle_hull_point(u, v1, side, &n1);
-    glNormal3f(n0.x, n0.y, n0.z); glVertex3f(p0.x, p0.y, p0.z);
-    glNormal3f(n1.x, n1.y, n1.z); glVertex3f(p1.x, p1.y, p1.z);
-   }
-   glEnd();
+   Vec3 n0, n1;
+  Vec3 p0 = vehicle_hull_point(u, v0, side, &n0);
+   Vec3 p1 = vehicle_hull_point(u, v1, side, &n1);
+   glNormal3f(n0.x, n0.y, n0.z); glVertex3f(p0.x, p0.y, p0.z);
+   glNormal3f(n1.x, n1.y, n1.z); glVertex3f(p1.x, p1.y, p1.z);
   }
+  glEnd();
+ }
+}
+
+static void render_exterior_hull(void) {
+ /* Four exact patches leave a real rectangular parameter-space aperture.
+  * The separate rigid door fills it when closed and exposes it when open. */
+ for (int side = -1; side <= 1; side += 2) {
+  render_hull_patch(side, 0.0f, VEHICLE_DOOR_U0, 0.0f, 1.0f, 28, 36);
+  render_hull_patch(side, VEHICLE_DOOR_U1, 1.0f, 0.0f, 1.0f, 38, 36);
+  render_hull_patch(side, VEHICLE_DOOR_U0, VEHICLE_DOOR_U1, 0.0f, VEHICLE_DOOR_V0, 18, 10);
+  render_hull_patch(side, VEHICLE_DOOR_U0, VEHICLE_DOOR_U1, VEHICLE_DOOR_V1, 1.0f, 18, 8);
  }
 }
 
@@ -432,29 +450,149 @@ static void hull_seam(float u0, float v0, float u1, float v1, int side) {
  glEnd();
 }
 
+static void door_gl_transform(const Vehicle *v, int side) {
+ Vec3 pivot = vehicle_door_pivot(side);
+ glTranslatef(pivot.x, pivot.y, pivot.z);
+ glRotatef(vehicle_door_angle(v, side), 0, 1, 0);
+ glTranslatef(-pivot.x, -pivot.y, -pivot.z);
+}
+
+static void door_edge(int side, float u0, float v0, float u1, float v1) {
+ glBegin(GL_QUAD_STRIP);
+ for (int i = 0; i <= 20; i++) {
+  float t = (float)i / 20.0f, u = u0 + (u1 - u0) * t, v = v0 + (v1 - v0) * t;
+  Vec3 n, outer = hull_offset_point(u, v, side, 0.004f, &n);
+  Vec3 inner = hull_offset_point(u, v, side, -0.045f, NULL);
+  glNormal3f(n.x, n.y, n.z);glVertex3f(outer.x, outer.y, outer.z);
+  glVertex3f(inner.x, inner.y, inner.z);
+ }
+ glEnd();
+}
+
+static void render_door_shell(int side, bool open) {
+ const float u0 = VEHICLE_DOOR_U0 + 0.0015f, u1 = VEHICLE_DOOR_U1 - 0.0015f;
+ const float v0 = VEHICLE_DOOR_V0 + 0.002f, v1 = VEHICLE_DOOR_V1 - 0.002f;
+ const int u_steps = 16, v_steps = 18;
+ /* The inner face is fully occluded at the closed detent; do not rasterize it
+  * until the swing makes it visible. Edge thickness remains in every pose. */
+ for (int layer = 0; layer < (open ? 2 : 1); layer++) {
+  float offset = layer ? -0.045f : 0.004f;
+  if (layer) { ev_set_material(EV_MAT_MATTE_CARBON);ev_color(0.045f, 0.040f, 0.060f); }
+  for (int iv = 0; iv < v_steps; iv++) {
+   float va = v0 + (v1 - v0) * (float)iv / v_steps;
+   float vb = v0 + (v1 - v0) * (float)(iv + 1) / v_steps;
+   float vm = 0.5f * (va + vb);
+   if (!layer) {
+    if (vm < 0.30f) { ev_set_material(EV_MAT_SATIN_METAL);ev_color(0.14f, 0.16f, 0.22f); }
+    else {
+     ev_set_material(EV_MAT_BODY_PAINT);float shade = 0.88f + 0.18f * ((vm - 0.30f) / 0.70f);
+     ev_color(0.21f * shade, 0.24f * shade, 0.34f * shade);
+    }
+   }
+   glBegin(GL_QUAD_STRIP);
+   for (int iu = 0; iu <= u_steps; iu++) {
+    float u = u0 + (u1 - u0) * (float)iu / u_steps;
+    if (!layer && vm >= 0.32f && vm <= 0.50f) ev_color(0.13f, 0.15f, 0.22f);
+    Vec3 na, nb, pa = hull_offset_point(u, va, side, offset, &na);
+    Vec3 pb = hull_offset_point(u, vb, side, offset, &nb);
+    float sign = layer ? -1.0f : 1.0f;
+    glNormal3f(sign * na.x, sign * na.y, sign * na.z);glVertex3f(pa.x, pa.y, pa.z);
+    glNormal3f(sign * nb.x, sign * nb.y, sign * nb.z);glVertex3f(pb.x, pb.y, pb.z);
+   }
+   glEnd();
+  }
+ }
+ ev_set_material(EV_MAT_MATTE_CARBON);ev_color(0.035f, 0.040f, 0.055f);
+ door_edge(side, u0, v0, u0, v1);door_edge(side, u1, v0, u1, v1);
+ door_edge(side, u0, v0, u1, v0);door_edge(side, u0, v1, u1, v1);
+
+ /* Two visible metal hinge knuckles travel with the door-side hinge leaf. */
+ ev_set_material(EV_MAT_SATIN_METAL);ev_color(0.42f, 0.46f, 0.55f);
+ for (int i = 0; i < 2; i++) {
+  Vec3 p = hull_offset_point(VEHICLE_DOOR_U0, i ? 0.69f : 0.38f, side, 0.016f, NULL);
+  ev_cylinder(vadd(p, v3(0, -0.065f, 0)), vadd(p, v3(0, 0.065f, 0)), 0.030f, 16);
+ }
+}
+
+static void render_door_handle(int side) {
+ /* Recess and raised grip are sampled from the moving door skin, not left
+  * behind on the fixed aperture when the hinge rotates. */
+ ev_set_material(EV_MAT_MATTE_CARBON);ev_color(0.012f, 0.017f, 0.026f);
+ glBegin(GL_QUAD_STRIP);
+ for (int i = 0; i <= 10; i++) {
+  float u = 0.45f + 0.060f * (float)i / 10.0f;
+  Vec3 p0 = hull_offset_point(u, 0.610f, side, 0.012f, NULL);
+  Vec3 p1 = hull_offset_point(u, 0.670f, side, 0.012f, NULL);
+  glVertex3f(p0.x, p0.y, p0.z);glVertex3f(p1.x, p1.y, p1.z);
+ }
+ glEnd();
+ ev_set_material(EV_MAT_SATIN_METAL);ev_color(0.56f, 0.61f, 0.70f);
+ glBegin(GL_QUAD_STRIP);
+ for (int i = 0; i <= 10; i++) {
+  float u = 0.457f + 0.046f * (float)i / 10.0f;Vec3 n0, n1;
+  Vec3 p0 = hull_offset_point(u, 0.634f, side, 0.029f, &n0);
+  Vec3 p1 = hull_offset_point(u, 0.654f, side, 0.029f, &n1);
+  glNormal3f(n0.x, n0.y, n0.z);glVertex3f(p0.x, p0.y, p0.z);
+  glNormal3f(n1.x, n1.y, n1.z);glVertex3f(p1.x, p1.y, p1.z);
+ }
+ glEnd();
+}
+
+static void render_door_interior(int side) {
+ /* This is the validated shared cockpit upholstery, now rigidly attached to
+  * the exterior shell. Closed-pose coordinates are unchanged. */
+ glPushMatrix();glTranslatef(side * 2.00f, -0.39f, 0.64f);glRotatef(side * -40.0f, 0, 1, 0);
+ ev_set_material(EV_MAT_MATTE_CARBON);ev_color(0.13f, 0.058f, 0.21f);ev_rbox(0, 0.35f, 0, 0.56f, 1.10f, 0.15f, 0.12f);
+ glDisable(GL_LIGHTING);ev_color(0.36f, 0.19f, 0.46f);glBegin(GL_LINES);
+ for (float x = -0.05f; x < 0.75f; x += 0.12f) {
+  glVertex3f(-0.24f, x, 0.081f);glVertex3f(0.24f, x + 0.45f, 0.081f);
+  glVertex3f(-0.24f, x + 0.45f, 0.082f);glVertex3f(0.24f, x, 0.082f);
+ }
+ glEnd();glEnable(GL_LIGHTING);
+ ev_set_material(EV_MAT_SATIN_METAL);ev_color(0.46f, 0.50f, 0.59f);
+ ev_cylinder(v3(-0.22f, 0.57f, 0.14f), v3(0.22f, 0.57f, 0.14f), 0.022f, 16);
+ for (int end = -1; end <= 1; end += 2) ev_cylinder(v3(end * 0.22f, 0.57f, 0.08f), v3(end * 0.22f, 0.57f, 0.14f), 0.018f, 12);
+ ev_set_material(EV_MAT_MATTE_CARBON);ev_color(0.18f, 0.10f, 0.25f);ev_rbox(0, 0.29f, 0.12f, 0.56f, 0.10f, 0.12f, 0.04f);
+ glTranslatef(0, 0.03f, 0.15f);ev_color(0.45f, 0.48f, 0.56f);ev_torus(0.21f, 0.024f, 48, 10);
+ ev_color(0.018f, 0.023f, 0.037f);ev_cylinder(v3(0, 0, -0.06f), v3(0, 0, 0.005f), 0.19f, 48);
+ ev_color(0.075f, 0.085f, 0.115f);ev_torus(0.15f, 0.024f, 48, 10);
+ ev_color(0.14f, 0.15f, 0.21f);ev_cylinder(v3(0, 0, 0.008f), v3(0, 0, 0.045f), 0.055f, 32);
+ glPopMatrix();
+}
+
+static void render_doors(Server *s) {
+ for (int side = -1; side <= 1; side += 2) {
+  /* Fixed dark weather seal around the actual empty aperture. */
+  glDisable(GL_LIGHTING);ev_color(0.008f, 0.011f, 0.018f);glLineWidth(3.0f);
+  hull_seam(VEHICLE_DOOR_U0, VEHICLE_DOOR_V0, VEHICLE_DOOR_U0, VEHICLE_DOOR_V1, side);
+  hull_seam(VEHICLE_DOOR_U0, VEHICLE_DOOR_V0, VEHICLE_DOOR_U1, VEHICLE_DOOR_V0, side);
+  hull_seam(VEHICLE_DOOR_U1, VEHICLE_DOOR_V0, VEHICLE_DOOR_U1, VEHICLE_DOOR_V1, side);
+  hull_seam(VEHICLE_DOOR_U0, VEHICLE_DOOR_V1, VEHICLE_DOOR_U1, VEHICLE_DOOR_V1, side);
+  glLineWidth(1.0f);glEnable(GL_LIGHTING);
+  glPushMatrix();door_gl_transform(&s->vehicle, side);
+  render_door_shell(side,vehicle_door_open(&s->vehicle,side)>0.001f);render_door_handle(side);render_door_interior(side);
+  glPopMatrix();
+ }
+}
+
+static int door_glass_cell(float u, float v) {
+ float hull_u = 0.26f + 0.64f * u;
+ return hull_u >= VEHICLE_DOOR_U0 && hull_u <= VEHICLE_DOOR_U1
+     && v >= 0.06f && v < 0.675f && !canopy_zone(u, v);
+}
+
 static void render_driver_hull(void) {
  /* From the first-person driver's seat, only the outer side flanks (v <= 0.78,
   * outside the cabin beltline), the front hood (u <= 0.41, ahead of the z=-1.0
   * dashboard), and the rear deck (u >= 0.82) are drawn. Keeping the front hood
   * and rear deck as separate quad strips prevents bridging across the cockpit. */
  ev_set_material(EV_MAT_BODY_PAINT);
- const int u_steps = 72;
  for (int side = -1; side <= 1; side += 2) {
-  for (int iv = 4; iv < 19; iv++) {
-   float v0 = (float)iv / 24.0f;
-   float v1 = (float)(iv + 1) / 24.0f;
-   ev_color(iv < 15 ? 0.19f : 0.22f, iv < 15 ? 0.22f : 0.25f, iv < 15 ? 0.30f : 0.34f);
-   glBegin(GL_QUAD_STRIP);
-   for (int iu = 0; iu <= u_steps; iu++) {
-    float u = (float)iu / (float)u_steps;
-    Vec3 n0, n1;
-    Vec3 p0 = vehicle_hull_point(u, v0, side, &n0);
-    Vec3 p1 = vehicle_hull_point(u, v1, side, &n1);
-    glNormal3f(n0.x, n0.y, n0.z); glVertex3f(p0.x, p0.y, p0.z);
-    glNormal3f(n1.x, n1.y, n1.z); glVertex3f(p1.x, p1.y, p1.z);
-   }
-   glEnd();
-  }
+  float flank_lo = 4.0f / 24.0f, flank_hi = 19.0f / 24.0f;
+  render_hull_patch(side, 0.0f, VEHICLE_DOOR_U0, flank_lo, flank_hi, 24, 15);
+  render_hull_patch(side, VEHICLE_DOOR_U1, 1.0f, flank_lo, flank_hi, 34, 15);
+  render_hull_patch(side, VEHICLE_DOOR_U0, VEHICLE_DOOR_U1, flank_lo, VEHICLE_DOOR_V0, 16, 4);
+  render_hull_patch(side, VEHICLE_DOOR_U0, VEHICLE_DOOR_U1, VEHICLE_DOOR_V1, flank_hi, 16, 1);
  }
  /* Front hood (ahead of the windshield/dashboard) and rear deck center panels. */
  for (int part = 0; part < 2; part++) {
@@ -650,8 +788,8 @@ static void render_exterior_details(Server *s) {
   glEnable(GL_LIGHTING);
 
   /* 2. Aerodynamic Side Camera-Mirrors:
-   * Rooted inside the upper door shoulder at u = 0.34, v = 0.76 (right at the
-   * base of the A-pillar) so the strut emerges directly from the bodywork. */
+   * Rooted in the fixed A-pillar shoulder at u = 0.34, v = 0.76;
+   * the camera mirror stays on the body when the adjacent door opens. */
   Vec3 m_norm;
   Vec3 m_base = vehicle_hull_point(0.34f, 0.76f, side, &m_norm);
   Vec3 m_root = vsub(m_base, vmul(m_norm, 0.03f)); /* anchored inside hull */
@@ -670,39 +808,6 @@ static void render_exterior_details(Server *s) {
   glColor3f(nr, ng, nb);
   ev_box(m_tip.x + (float)side * 0.05f, m_tip.y, m_tip.z - 0.112f, 0.15f, 0.014f, 0.012f);
   glEnable(GL_LIGHTING);
-
-  /* 3. A real framed door aperture and a visible flush pull handle. The
-   * panel gap follows the hull instead of floating in world space. */
-  glDisable(GL_LIGHTING);
-  ev_color(0.012f, 0.016f, 0.024f); glLineWidth(2.0f);
-  hull_seam(0.36f, 0.79f, 0.33f, 0.27f, side); /* leading edge */
-  hull_seam(0.33f, 0.27f, 0.62f, 0.27f, side); /* lower edge */
-  hull_seam(0.62f, 0.27f, 0.60f, 0.79f, side); /* trailing edge */
-  hull_seam(0.60f, 0.79f, 0.36f, 0.79f, side); /* beltline */
-  glLineWidth(1.0f); glEnable(GL_LIGHTING);
-
-  /* Dark recessed pocket plus a raised satin grip, both sampled from the
-   * same door skin. This remains subtle but is legible in side/exterior view. */
-  ev_set_material(EV_MAT_MATTE_CARBON); ev_color(0.012f, 0.017f, 0.026f);
-  glBegin(GL_QUAD_STRIP);
-  for (int i = 0; i <= 10; i++) {
-   float u = 0.48f + 0.060f * (float)i / 10.0f;
-   Vec3 p0 = hull_offset_point(u, 0.610f, side, 0.008f, NULL);
-   Vec3 p1 = hull_offset_point(u, 0.670f, side, 0.008f, NULL);
-   glVertex3f(p0.x, p0.y, p0.z); glVertex3f(p1.x, p1.y, p1.z);
-  }
-  glEnd();
-  ev_set_material(EV_MAT_SATIN_METAL); ev_color(0.56f, 0.61f, 0.70f);
-  glBegin(GL_QUAD_STRIP);
-  for (int i = 0; i <= 10; i++) {
-   float u = 0.487f + 0.046f * (float)i / 10.0f;
-   Vec3 n0, n1;
-   Vec3 p0 = hull_offset_point(u, 0.634f, side, 0.025f, &n0);
-   Vec3 p1 = hull_offset_point(u, 0.654f, side, 0.025f, &n1);
-   glNormal3f(n0.x, n0.y, n0.z); glVertex3f(p0.x, p0.y, p0.z);
-   glNormal3f(n1.x, n1.y, n1.z); glVertex3f(p1.x, p1.y, p1.z);
-  }
-  glEnd();
 
   /* 4. Side Rocker Neon Underglow Blade:
    * Follows the exact plan-view coke-bottle curve along v = 0.25. */
@@ -1087,6 +1192,7 @@ void vehicle_render(Server *s, bool cutaway) {
   render_exterior_details(s);
  }
 
+ render_doors(s);
  glDisable(GL_LIGHT3);
  ev_restore_scene_material();
 }
@@ -1106,7 +1212,8 @@ void vehicle_render_glass(Server *s) {
    float v0 = (float)iv / v_steps, v1 = (float)(iv + 1) / v_steps;
    for (int iu = 0; iu < u_steps; iu++) {
     float u0 = (float)iu / u_steps, u1 = (float)(iu + 1) / u_steps;
-    if (canopy_zone(0.5f * (u0 + u1), 0.5f * (v0 + v1))) continue;
+    float um = 0.5f * (u0 + u1), vm = 0.5f * (v0 + v1);
+    if (canopy_zone(um, vm) || door_glass_cell(um, vm)) continue;
     Vec3 p00 = vehicle_canopy_point(u0, v0, side, NULL);
     Vec3 p01 = vehicle_canopy_point(u0, v1, side, NULL);
     Vec3 p11 = vehicle_canopy_point(u1, v1, side, NULL);
@@ -1117,6 +1224,25 @@ void vehicle_render_glass(Server *s) {
     glEnd();
    }
   }
+ }
+ /* The frameless door lights use the exact cells removed above and the same
+  * rigid hinge as the lower shell, so no tinted glass remains in the opening. */
+ for (int side = -1; side <= 1; side += 2) {
+  glPushMatrix();door_gl_transform(&s->vehicle, side);
+  for (int iv = 0; iv < v_steps; iv++) {
+   float v0 = (float)iv / v_steps, v1 = (float)(iv + 1) / v_steps;
+   for (int iu = 0; iu < u_steps; iu++) {
+    float u0 = (float)iu / u_steps, u1 = (float)(iu + 1) / u_steps;
+    if (!door_glass_cell(0.5f * (u0 + u1), 0.5f * (v0 + v1))) continue;
+    Vec3 p00 = vehicle_canopy_point(u0, v0, side, NULL);
+    Vec3 p01 = vehicle_canopy_point(u0, v1, side, NULL);
+    Vec3 p11 = vehicle_canopy_point(u1, v1, side, NULL);
+    Vec3 p10 = vehicle_canopy_point(u1, v0, side, NULL);
+    glBegin(GL_QUADS);glVertex3f(p00.x, p00.y, p00.z);glVertex3f(p01.x, p01.y, p01.z);
+    glVertex3f(p11.x, p11.y, p11.z);glVertex3f(p10.x, p10.y, p10.z);glEnd();
+   }
+  }
+  glPopMatrix();
  }
  glDepthMask(GL_TRUE); glDisable(GL_BLEND); glEnable(GL_LIGHTING);
 }

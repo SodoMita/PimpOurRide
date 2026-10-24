@@ -51,10 +51,9 @@ an untrusted network. Do not place credentials in the repository.
 
 `src/vehicle.c` and `src/vehicle_scene.c` evaluate and render a complete
 wheel-less electric hover-car concept in car-local coordinates. Longitudinal
-body stations (`9` control stations from `z = -5.60` to `+5.50`), transverse
-cross-section profile control points (`5` control points from `v = 0` undertray
-centreline through `0.25` lower chine, `0.55` widest fender crease, `0.84`
-upper beltline shoulder, and `1.00` hood/deck spine), and `7` fastback canopy
+body stations (`9` control stations from `z = -5.85` to `+5.72`), seven
+transverse cross-section profile control points (undertray spine, lower chine,
+sculpted/scooped waist, shoulder, upper deck and hood/deck spine), and `7` fastback canopy
 stations are interpolated with bicubic Catmull-Rom splines (`vehicle_hull_point`
 and `vehicle_canopy_point`). This representation was chosen because it:
 
@@ -114,8 +113,19 @@ separate driver-only roof approximation. The seats, dashboard, door panels and
 pulls, steering wheel, console, controls, and Wayland monitor geometry are also
 submitted from the same scene functions in every view, before the hull; opaque
 bodywork occludes them and the same tinted window openings reveal them outside.
-There is no simplified exterior-only cockpit. Surface-following door cutlines
-and recessed satin exterior pulls use the exact hull as well.
+There is no simplified exterior-only cockpit.
+
+The doors are actual assemblies, not cutlines: exact parametric apertures are
+removed from the surrounding hull, then filled by a separate outer skin, inner
+shell, edge thickness, hinge knuckles, weather seals, recessed satin pulls,
+quilted interior panels, armrests and speakers. Their frameless side-glass cells
+are removed from the fixed canopy pass and submitted with the same front-edge
+hinge transform. F5 reversibly opens/closes both sides through 68 degrees in
+1.15 seconds of fixed-step travel; door-mounted Wayland displays follow too.
+The closed-pose upholstery coordinates are unchanged, and F10 recovery closes
+both doors. Collision extents include the moving lower panels, glass and trim,
+so an open door cannot pass through a garage wall outside the closed-hull box.
+
 `render_ev_systems()` is omitted in first person so internal HV cables never
 poke through the dashboard pad, and the exterior camera
 (`VEHICLE_CAMERA_CHASE`) supports middle-drag / right-drag orbit inspection

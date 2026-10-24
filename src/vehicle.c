@@ -22,6 +22,25 @@ static int clamp_idx(int i, int count) {
  return i < 0 ? 0 : (i >= count ? count - 1 : i);
 }
 
+static int door_index(int side) { return side < 0 ? 0 : 1; }
+
+void vehicle_toggle_doors(Vehicle *v) {
+ /* If either side is closed or closing, the first press opens both. A second
+  * press closes both; reversing a half-travel door never jumps its pose. */
+ bool open = !(v->door_target[0] > 0.5f && v->door_target[1] > 0.5f);
+ for (int i = 0; i < 2; i++) v->door_target[i] = open ? 1.0f : 0.0f;
+}
+
+float vehicle_door_open(const Vehicle *v, int side) {
+ return v->door_open[door_index(side)];
+}
+
+float vehicle_door_angle(const Vehicle *v, int side) {
+ float t = clampf(vehicle_door_open(v, side), 0.0f, 1.0f);
+ t = t * t * (3.0f - 2.0f * t); /* soft start/stop at the hinge detents */
+ return (side < 0 ? -1.0f : 1.0f) * t * VEHICLE_DOOR_MAX_ANGLE;
+}
+
 void vehicle_reset_pose(Vehicle *v) {
  /* Reset is a recovery action, not a magical battery refill or odometer
   * rollback. Energy and distance deliberately survive an F10 recovery. */
@@ -44,6 +63,16 @@ void vehicle_init(Vehicle *v) {
 
 void vehicle_step(Vehicle *v, VehicleInput input, float dt) {
  if (dt <= 0.0f) return;
+
+ /* Door actuators share the same fixed clock as hover dynamics. Linear target
+  * travel plus smoothstep hinge angle is deterministic and reversible without
+  * the asymptotic "never quite closed" behavior of an exponential filter. */
+ for (int i = 0; i < 2; i++) {
+  float travel = dt / VEHICLE_DOOR_TRAVEL_SECONDS;
+  float delta = v->door_target[i] - v->door_open[i];
+  v->door_open[i] += clampf(delta, -travel, travel);
+  v->door_open[i] = clampf(v->door_open[i], 0.0f, 1.0f);
+ }
 
  const float mass = 2200.0f;
  const float wheelbase = 3.25f;
@@ -107,7 +136,7 @@ void vehicle_step(Vehicle *v, VehicleInput input, float dt) {
   * This makes the nose, tail and mirrors contact before crossing the wall. */
  v->collision = false;
  float old_x = v->position.x, old_z = v->position.z;
- Vec3 extent = vehicle_collision_extents(v->yaw);
+ Vec3 extent = vehicle_collision_extents_for_vehicle(v);
  float x_limit = 14.70f - extent.x;
  v->position.x = clampf(v->position.x, -x_limit, x_limit);
  v->position.z = clampf(v->position.z, -39.70f + extent.z, 15.70f - extent.z);
@@ -154,6 +183,43 @@ Vec3 vehicle_collision_extents(float yaw_degrees) {
  return v3(c * VEHICLE_COLLISION_HALF_WIDTH + s * VEHICLE_COLLISION_HALF_LENGTH,
            0.0f,
            s * VEHICLE_COLLISION_HALF_WIDTH + c * VEHICLE_COLLISION_HALF_LENGTH);
+}
+
+static float door_collision_width(const Vehicle *v, int side, Vec3 closed, float width) {
+ Vec3 p = vehicle_door_point(v, side, closed);
+ /* Covers the outer offset, flush grip and inner-shell thickness between
+  * samples. The closed hull proxy already includes fixed mirror clearance. */
+ return fmaxf(width, fabsf(p.x) + 0.04f);
+}
+
+Vec3 vehicle_collision_extents_for_vehicle(const Vehicle *v) {
+ if (v->door_open[0] < 1e-6f && v->door_open[1] < 1e-6f)
+  return vehicle_collision_extents(v->yaw);
+ float half_width = VEHICLE_COLLISION_HALF_WIDTH;
+ for (int side = -1; side <= 1; side += 2) {
+  /* Dense lower-skin sampling follows the sculpted waist through the swing. */
+  for (int iu = 0; iu <= 8; iu++) for (int iv = 0; iv <= 6; iv++) {
+   float u = VEHICLE_DOOR_U0 + (VEHICLE_DOOR_U1 - VEHICLE_DOOR_U0) * iu / 8.0f;
+   float h = VEHICLE_DOOR_V0 + (VEHICLE_DOOR_V1 - VEHICLE_DOOR_V0) * iv / 6.0f;
+   half_width = door_collision_width(v, side, vehicle_hull_point(u, h, side, NULL), half_width);
+  }
+  /* Frameless glass belongs to the same moving collision silhouette. */
+  for (int iu = 0; iu <= 6; iu++) for (int iv = 0; iv <= 4; iv++) {
+   float hu = VEHICLE_DOOR_U0 + (VEHICLE_DOOR_U1 - VEHICLE_DOOR_U0) * iu / 6.0f;
+   float uc = (hu - 0.26f) / 0.64f, vc = 0.06f + 0.615f * iv / 4.0f;
+   half_width = door_collision_width(v, side, vehicle_canopy_point(uc, vc, side, NULL), half_width);
+  }
+  /* The upholstered panel is the farthest interior trim from the hinge. */
+  for (int ix = -1; ix <= 1; ix += 2) for (int iy = -1; iy <= 1; iy += 2)
+   for (int iz = -1; iz <= 1; iz += 2) {
+    Vec3 local = v3(ix * 0.28f, 0.35f + iy * 0.55f, iz * 0.075f);
+    Vec3 closed = vadd(v3(side * 2.00f, -0.39f, 0.64f), rotate_y(local, side * -40.0f));
+    half_width = door_collision_width(v, side, closed, half_width);
+   }
+ }
+ float yaw = v->yaw * CD_RAD, c = fabsf(cosf(yaw)), s = fabsf(sinf(yaw));
+ return v3(c * half_width + s * VEHICLE_COLLISION_HALF_LENGTH, 0.0f,
+           s * half_width + c * VEHICLE_COLLISION_HALF_LENGTH);
 }
 
 void vehicle_update(Vehicle *v, VehicleInput input, double frame_dt) {
@@ -280,6 +346,23 @@ Vec3 vehicle_hull_point(float u, float v, int side, Vec3 *normal) {
   *normal = vnorm(n);
  }
  return p;
+}
+
+bool vehicle_door_aperture(float u, float v) {
+ return u >= VEHICLE_DOOR_U0 && u <= VEHICLE_DOOR_U1
+     && v >= VEHICLE_DOOR_V0 && v <= VEHICLE_DOOR_V1;
+}
+
+Vec3 vehicle_door_pivot(int side) {
+ /* A vertical front-edge hinge on the actual sculpted skin. All closed door
+  * points, including the interior trim and frameless glass, rotate about this
+  * exact axis; there is no separate open-door approximation. */
+ return vehicle_hull_point(VEHICLE_DOOR_U0, 0.52f, side, NULL);
+}
+
+Vec3 vehicle_door_point(const Vehicle *v, int side, Vec3 closed_point) {
+ Vec3 pivot = vehicle_door_pivot(side);
+ return vadd(pivot, rotate_y(vsub(closed_point, pivot), vehicle_door_angle(v, side)));
 }
 
 /* Seven longitudinal canopy stations parameterize the fastback greenhouse relative

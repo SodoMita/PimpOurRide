@@ -200,7 +200,7 @@ void app_open_settings_slot(Server *s,int slot,bool choose_app){
  app_exec(s,cmd);app_notice(s,choose_app?"Opening app picker...":"Opening Settings...");
 }
 void app_open_settings(Server *s){app_open_settings_slot(s,-1,false);}
-/* ---- F5 Arrange mode ---------------------------------------------------
+/* ---- F6 Arrange mode ---------------------------------------------------
  * A modal, session-only transform editor for whole spatial monitors. The
  * selected monitor's Plane is translated along its own right/up axes (and
  * toward/away from the eye), rotated in yaw/pitch/roll, and uniformly
@@ -488,6 +488,10 @@ bool app_global_key(Server *s,uint32_t evdev,bool down){
  case KEY_F2:scene_reset_camera(s);break;
  case KEY_F3:if(s->keyboard_focus)scene_focus_monitor(s,s->keyboard_focus->slot,!s->focus_view);else next_monitor(s);break;
  case KEY_F4:action_cycle_neon(s);break;
+ case KEY_F5:
+  vehicle_toggle_doors(&s->vehicle);
+  app_notice(s,"%s",s->vehicle.door_target[0]>.5f?"Doors opening / F5 closes both":"Doors closing / F5 opens both");
+  break;
  case KEY_F7:
   /* Release app keys before changing ownership. Otherwise a key held during
    * the transition could remain pressed in the client even after its release

@@ -182,7 +182,7 @@ last until the next file edit, then the file wins for the keys it sets.
 - **Compositor, live:** `display.fps`, `display.fov`, `cockpit.*`
   (neon/hud/background), all `[app.*]` menu keys.
   **Restart:** `display.width/height/fullscreen`, `session.*`.
-- **Spatial window transforms:** titlebar/frame dragging and F5 Arrange
+- **Spatial window transforms:** titlebar/frame dragging and F6 Arrange
   position, yaw/pitch/roll, uniform scale and corner/edge resize dimensions
   are intentionally session-only. They have no config keys and are not saved
   by the GUI; restarting ChromeDrive, or mapping a new window into a bay,

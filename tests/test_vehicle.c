@@ -113,6 +113,57 @@ int main(void) {
  CHECK(nearf(a.position.x, b.position.x, 1e-3f) && nearf(a.position.z, b.position.z, 1e-3f)
        && nearf(a.speed, b.speed, 1e-3f), "fixed-step result depends on render cadence");
 
+ /* Real door assemblies: fixed-step travel, reversible targets and one rigid
+  * hinge transform shared by exterior skin, interior trim and side glass. */
+ vehicle_reset_pose(&v);
+ CHECK(vehicle_door_aperture(0.40f, 0.50f) && !vehicle_door_aperture(0.20f, 0.50f)
+       && !vehicle_door_aperture(0.40f, 0.10f), "door aperture bounds are inconsistent");
+ for (int side = -1; side <= 1; side += 2) {
+  Vec3 pivot = vehicle_door_pivot(side);
+  Vec3 closed = vehicle_hull_point(VEHICLE_DOOR_U1, 0.55f, side, NULL);
+  Vec3 identity = vehicle_door_point(&v, side, closed);
+  CHECK(nearf(identity.x, closed.x, 1e-5f) && nearf(identity.z, closed.z, 1e-5f),
+        "closed door is not an identity pose");
+  Vec3 pivot_moved = vehicle_door_point(&v, side, pivot);
+  CHECK(nearf(pivot_moved.x, pivot.x, 1e-5f) && nearf(pivot_moved.z, pivot.z, 1e-5f),
+        "door hinge pivot moved in the closed pose");
+ }
+ vehicle_toggle_doors(&v);
+ run_steps(&v, (VehicleInput){0}, 60);
+ CHECK(v.door_open[0] > 0.2f && v.door_open[0] < 0.8f
+       && nearf(v.door_open[0], v.door_open[1], 1e-6f), "doors did not begin synchronized travel");
+ float reversing = v.door_open[0];
+ vehicle_toggle_doors(&v);
+ run_steps(&v, (VehicleInput){0}, 30);
+ CHECK(v.door_open[0] < reversing, "second F5 did not reverse half-travel doors");
+ vehicle_toggle_doors(&v);
+ run_steps(&v, (VehicleInput){0}, 240);
+ CHECK(nearf(v.door_open[0], 1.0f, 1e-6f) && nearf(v.door_open[1], 1.0f, 1e-6f),
+       "doors never reached the fully open detent");
+ for (int side = -1; side <= 1; side += 2) {
+  Vec3 pivot = vehicle_door_pivot(side);
+  Vec3 closed = vehicle_canopy_point(0.30f, 0.35f, side, NULL);
+  Vec3 opened = vehicle_door_point(&v, side, closed);
+  float closed_radius = sqrtf(vdot(vsub(closed, pivot), vsub(closed, pivot)));
+  float opened_radius = sqrtf(vdot(vsub(opened, pivot), vsub(opened, pivot)));
+  CHECK(nearf(closed_radius, opened_radius, 2e-4f), "door glass did not rotate rigidly");
+  CHECK(nearf(vehicle_door_angle(&v, side), side * VEHICLE_DOOR_MAX_ANGLE, 1e-4f),
+        "fully open hinge angle is wrong on side %d", side);
+  CHECK(side < 0 ? opened.x < closed.x : opened.x > closed.x,
+        "door opened into the body instead of outward on side %d", side);
+ }
+ Vec3 closed_extent = vehicle_collision_extents(v.yaw);
+ Vec3 open_extent = vehicle_collision_extents_for_vehicle(&v);
+ CHECK(open_extent.x > closed_extent.x + 0.25f && open_extent.z >= closed_extent.z,
+       "open door assemblies were not included in collision bounds");
+ vehicle_toggle_doors(&v);
+ run_steps(&v, (VehicleInput){0}, 240);
+ CHECK(v.door_open[0] == 0.0f && v.door_open[1] == 0.0f, "doors did not close exactly");
+ vehicle_toggle_doors(&v);run_steps(&v, (VehicleInput){0}, 240);vehicle_reset_pose(&v);
+ CHECK(v.door_open[0] == 0.0f && v.door_target[0] == 0.0f
+       && v.door_open[1] == 0.0f && v.door_target[1] == 0.0f,
+       "F10 recovery did not close and latch both doors");
+
  /* Verify bicubic Catmull-Rom hull & fastback canopy watertightness, symmetry,
   * and that all cutaway EV systems sit strictly inside the hull envelope. */
  for (int i = 0; i <= 20; i++) {
@@ -236,6 +287,6 @@ int main(void) {
   fprintf(stderr, "%d vehicle checks failed\n", failures);
   return 1;
  }
- puts("PASS: Catmull-Rom splines, hover EV dynamics, braking/reverse, bounds, rig transforms, fixed-step determinism");
+ puts("PASS: Catmull-Rom splines, hover EV dynamics, reversible rigid doors, collision bounds, seat/rig transforms, fixed-step determinism");
  return 0;
 }

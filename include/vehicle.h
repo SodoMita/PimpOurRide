@@ -14,6 +14,14 @@
  * clearance, not just the skateboard. Yaw rotates this box with the car. */
 #define VEHICLE_COLLISION_HALF_WIDTH 3.42f
 #define VEHICLE_COLLISION_HALF_LENGTH 5.90f
+/* Real front-hinged door assemblies. The same parametric aperture is removed
+ * from the lower hull and filled by a rigid outer/inner door + side glass. */
+#define VEHICLE_DOOR_U0 0.34f
+#define VEHICLE_DOOR_U1 0.54f
+#define VEHICLE_DOOR_V0 0.27f
+#define VEHICLE_DOOR_V1 0.79f
+#define VEHICLE_DOOR_MAX_ANGLE 68.0f
+#define VEHICLE_DOOR_TRAVEL_SECONDS 1.15f
 
 typedef enum {
  VEHICLE_STEER_CLIENT = 0, /* wheel is a scroll/input controller for a Wayland app */
@@ -50,6 +58,10 @@ typedef struct {
  float steering;       /* smoothed normalized steering position */
  float wheel_angle;    /* visual steering-wheel angle in degrees */
  float throttle, brake;/* smoothed controls, useful for diagnostics */
+
+ /* Index 0 is the left/driver side (-X), index 1 the right/passenger side.
+  * Targets permit immediate, deterministic reversal while a door is moving. */
+ float door_open[2], door_target[2];
 
  /* A single heave degree of freedom is intentional: the request explicitly
   * excludes wheel simulation. Four visual hover pods therefore share this
@@ -99,11 +111,18 @@ VehicleHullSection vehicle_hull_section(float u);
 Vec3 vehicle_hull_point(float u, float v, int side, Vec3 *normal);
 Vec3 vehicle_canopy_point(float u, float v, int side, Vec3 *normal);
 bool vehicle_point_inside_envelope(Vec3 p, float margin);
+bool vehicle_door_aperture(float u, float v);
+void vehicle_toggle_doors(Vehicle *v);
+float vehicle_door_open(const Vehicle *v, int side);
+float vehicle_door_angle(const Vehicle *v, int side); /* signed GL/Y degrees */
+Vec3 vehicle_door_pivot(int side);
+Vec3 vehicle_door_point(const Vehicle *v, int side, Vec3 closed_point);
 /* One seating layout owns both upholstered geometry and first-person eyes. */
 Vec3 vehicle_seat_anchor(VehicleSeat seat);
 Vec3 vehicle_seat_eye(VehicleSeat seat);
 /* World-XZ half extents of the visible collision box at the current yaw. */
 Vec3 vehicle_collision_extents(float yaw_degrees);
+Vec3 vehicle_collision_extents_for_vehicle(const Vehicle *v); /* includes open doors */
 
 /* Exact inverse transforms keep rendering and 3D ray picking in agreement.
  * GL applies the rig as T * Ry * Rx * Rz; these helpers use the same order. */
