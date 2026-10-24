@@ -1,4 +1,5 @@
 #include "chrome.h"
+#include "vehicle_seat.h"
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>
@@ -227,15 +228,15 @@ static void dashboard(Server *s){
  float nr,ng,nb;neon(s,&nr,&ng,&nb);
  /* Deep padded dashboard: bevelled profile, rather than a flat HUD backdrop. */
  color(.115,.075,.175);glEnable(GL_TEXTURE_2D);glBindTexture(GL_TEXTURE_2D,s->carbon_tex);
- glBegin(GL_QUAD_STRIP);float profile[][2]={{-1.0f,.18f},{-.72f,.34f},{-.36f,.31f},{.2f,.14f},{.88f,-.24f},{1.5f,-.55f},{1.7f,-1.2f}};
- for(int i=0;i<7;i++){float ny=.9f,nz=.4f;if(i>3){ny=.55;nz=.8;}glNormal3f(0,ny,nz);glTexCoord2f(0,i*.38f);glVertex3f(-3.05,profile[i][1],profile[i][0]);glTexCoord2f(5,i*.38f);glVertex3f(3.05,profile[i][1],profile[i][0]);}glEnd();glDisable(GL_TEXTURE_2D);
+ glBegin(GL_QUAD_STRIP);float profile[][2]={{-1.0f,.18f},{-.72f,.34f},{-.36f,.31f},{.2f,.14f},{.88f,-.24f},{1.5f,-.45f},{1.7f,-.72f}};
+ for(int i=0;i<7;i++){float ny=.9f,nz=.4f;if(i>3){ny=.55;nz=.8;}glNormal3f(0,ny,nz);glTexCoord2f(0,i*.38f);glVertex3f(-2.60,profile[i][1],profile[i][0]);glTexCoord2f(5,i*.38f);glVertex3f(2.60,profile[i][1],profile[i][0]);}glEnd();glDisable(GL_TEXTURE_2D);
  /* Rich violet edge insert and chrome piping. */
- color(.28,.058,.44);box(0,-.11,.37,5.7,.19,.21);
- color(.43,.48,.57);cylinder(v3(-2.95,.18,-.49),v3(2.95,.18,-.49),.018,12);
- glow_line(v3(-2.92,.195,-.465),v3(2.92,.195,-.465),.008,nr,ng,nb);
- glow_line(v3(-2.88,-.23,.56),v3(2.88,-.23,.56),.009,nr,ng,nb);
+ color(.28,.058,.44);box(0,-.11,.37,5.0,.19,.21);
+ color(.43,.48,.57);cylinder(v3(-2.50,.18,-.49),v3(2.50,.18,-.49),.018,12);
+ glow_line(v3(-2.47,.195,-.465),v3(2.47,.195,-.465),.008,nr,ng,nb);
+ glow_line(v3(-2.43,-.23,.56),v3(2.43,-.23,.56),.009,nr,ng,nb);
  /* Purple hand-stitched seams, following the hood. */
- glDisable(GL_LIGHTING);color(.56,.31,.69);glLineWidth(1.3f);glBegin(GL_LINES);for(float x=-2.9;x<2.9;x+=.07f){glVertex3f(x,.317,-.22);glVertex3f(x+.035,.317,-.22);}glEnd();glEnable(GL_LIGHTING);
+ glDisable(GL_LIGHTING);color(.56,.31,.69);glLineWidth(1.3f);glBegin(GL_LINES);for(float x=-2.45;x<2.45;x+=.07f){glVertex3f(x,.317,-.22);glVertex3f(x+.035,.317,-.22);}glEnd();glEnable(GL_LIGHTING);
  /* Air vents in a machined surround. */
  for(int side=-1;side<=1;side+=2){glPushMatrix();glTranslatef(side*2.15,.19,-.46);glRotatef(-22,1,0,0);color(.24,.27,.33);rbox(0,0,0,.62,.23,.05,.045);color(.022,.027,.037);rbox(0,0,.031,.55,.16,.014,.023);for(int i=-3;i<=3;i++){color(.19,.22,.28);box(i*.068,0,.055,.012,.14,.025);}glPopMatrix();}
  /* Instrument binnacle. */
@@ -253,14 +254,16 @@ static void dashboard(Server *s){
   * modes; no separate tall driver-only roof or straight header is needed. */
  /* Rear-view mirror and bracket anchored to that exact windshield header. */
  Vec3 header=vehicle_canopy_point(.45f,1.0f,1,NULL);
- color(.30,.34,.42);cylinder(v3(.30,header.y-.025f,header.z),v3(.30,header.y-.15f,header.z+.09f),.035,16);
- color(.24,.28,.36);cylinder(v3(.30,header.y-.15f,header.z+.09f),v3(.30,header.y-.21f,header.z+.12f),.024,14);
- glPushMatrix();glTranslatef(.30,header.y-.23f,header.z+.12f);glRotatef(-5,1,0,0);color(.40,.44,.52);rbox(0,0,0,.85,.26,.07,.06);color(.015,.028,.04);rbox(0,0,.043,.78,.20,.025,.04);texture(s->garage_tex,-.37,-.08,.74,.16,.06);glPopMatrix();
+ color(.30,.34,.42);cylinder(v3(0,header.y-.025f,header.z),v3(0,header.y-.15f,header.z+.09f),.035,16);
+ color(.24,.28,.36);cylinder(v3(0,header.y-.15f,header.z+.09f),v3(0,header.y-.21f,header.z+.12f),.024,14);
+ glPushMatrix();glTranslatef(0,header.y-.23f,header.z+.12f);glRotatef(-5,1,0,0);color(.40,.44,.52);rbox(0,0,0,.85,.26,.07,.06);color(.015,.028,.04);rbox(0,0,.043,.78,.20,.025,.04);texture(s->garage_tex,-.37,-.08,.74,.16,.06);glPopMatrix();
  /* Quilted doors and visible subwoofers. */
- for(int side=-1;side<=1;side+=2){glPushMatrix();glTranslatef(side*2.88,-.39,.64);glRotatef(side*-40,0,1,0);color(.13,.058,.21);rbox(0,-.15,0,.68,1.04,.15,.14);glDisable(GL_LIGHTING);color(.36,.19,.46);glBegin(GL_LINES);for(float x=-.8;x<.8;x+=.12){glVertex3f(-.30,x,.081);glVertex3f(.3,x+.45,.081);glVertex3f(-.30,x+.45,.082);glVertex3f(.30,x,.082);}glEnd();glEnable(GL_LIGHTING);
- glTranslatef(0,-.30,.15);color(.45,.48,.56);torus(.21,.024,48,10);color(.018,.023,.037);cylinder(v3(0,0,-.06),v3(0,0,.005),.19,48);color(.075,.085,.115);torus(.15,.024,48,10);color(.14,.15,.21);cylinder(v3(0,0,.008),v3(0,0,.045),.055,32);glPopMatrix();}
+ for(int side=-1;side<=1;side+=2){glPushMatrix();glTranslatef(side*2.00,-.39,.64);glRotatef(side*-40,0,1,0);color(.13,.058,.21);rbox(0,.35,0,.56,1.10,.15,.12);glDisable(GL_LIGHTING);color(.36,.19,.46);glBegin(GL_LINES);for(float x=-.05;x<.75;x+=.12){glVertex3f(-.24,x,.081);glVertex3f(.24,x+.45,.081);glVertex3f(-.24,x+.45,.082);glVertex3f(.24,x,.082);}glEnd();glEnable(GL_LIGHTING);
+ /* The interior pull and armrest belong to this same door model in every view. */
+ color(.46f,.50f,.59f);cylinder(v3(-.22,.57,.14),v3(.22,.57,.14),.022,16);for(int end=-1;end<=1;end+=2)cylinder(v3(end*.22,.57,.08),v3(end*.22,.57,.14),.018,12);color(.18f,.10f,.25f);rbox(0,.29,.12,.56,.10,.12,.04);
+ glTranslatef(0,.03,.15);color(.45,.48,.56);torus(.21,.024,48,10);color(.018,.023,.037);cylinder(v3(0,0,-.06),v3(0,0,.005),.19,48);color(.075,.085,.115);torus(.15,.024,48,10);color(.14,.15,.21);cylinder(v3(0,0,.008),v3(0,0,.045),.055,32);glPopMatrix();}
  /* Polished shifter on the transmission tunnel. */
- color(.045,.04,.072);rbox(.66,-.84,1.02,.70,.48,.29,.10);color(.28,.32,.40);cylinder(v3(.66,-.88,.96),v3(.66,-.49,.96),.025,20);glPushMatrix();glTranslatef(.66,-.47,.96);color(.65,.64,.74);torus(.054,.049,28,16);glPopMatrix();
+ color(.045,.04,.072);rbox(.66,-.62,1.02,.70,.36,.29,.10);color(.28,.32,.40);cylinder(v3(.66,-.65,.96),v3(.66,-.30,.96),.025,20);glPushMatrix();glTranslatef(.66,-.28,.96);color(.65,.64,.74);torus(.054,.049,28,16);glPopMatrix();
 }
 static Plane steering_plane(void){return (Plane){.center={-.84f,.28f,1.10f},.width=1.12f,.height=1.12f,.pitch=-18};}
 static void steering_wheel(Server *s){
@@ -323,11 +326,11 @@ static void draw_monitor(Server *s,int i){
   if(mount==MOUNT_DASH_SLIDE){
    for(int side=-1;side<=1;side+=2){cylinder(v3(side*w*.32,-h/2,-.075),v3(side*w*.32,-h/2-.58,-.075),.028,12);color(.40,.43,.50);box(side*w*.32,-h/2-.58,-.075,.15,.045,.16);color(.24,.28,.35);}
   }else if(mount==MOUNT_DOOR_SLIDE){
-   float side=i==3?-1:1;cylinder(v3(side*w*.43,0,-.08),v3(side*(w*.5+.42),0,-.08),.045,14);box(side*(w*.5+.42),0,-.08,.12,.34,.18);
+   float side=i==3?-1:1;cylinder(v3(side*w*.43,0,-.08),v3(side*(w*.5+.20),0,-.08),.045,14);box(side*(w*.5+.20),0,-.08,.12,.34,.18);
   }else if(mount==MOUNT_ROOF_FLIP){
-   cylinder(v3(-w*.34,h/2+.08,-.07),v3(w*.34,h/2+.08,-.07),.045,16);cylinder(v3(0,h/2+.08,-.07),v3(0,h/2+.43,-.07),.035,12);
+   cylinder(v3(-w*.34,h/2+.08,-.07),v3(w*.34,h/2+.08,-.07),.045,16);cylinder(v3(0,h/2+.08,-.07),v3(0,h/2+.20,-.07),.035,12);
   }
-  color(.30,.35,.43);rbox(0,.075,-.056,w+.12,h+.25,.10,.065);
+  color(.055,.075,.105);rbox(0,.075,-.056,w+.12,h+.25,.10,.065);
   color(.018,.027,.038);rbox(0,.075,-.003,w+.086,h+.219,.038,.055);
   glDisable(GL_LIGHTING);color(.010,.016,.026);quad(-w/2,-h/2,w,h,.019);glEnable(GL_LIGHTING);
   float nr,ng,nb;neon(s,&nr,&ng,&nb);
@@ -348,7 +351,7 @@ static void draw_windshield_hud(Server *s){
 }
 void scene_init(Server *s){
  char path[4200];snprintf(path,sizeof(path),"%s/assets/garage.webp",s->root);s->garage_tex=ui_load_webp(path);
- glEnable(GL_DEPTH_TEST);glDepthFunc(GL_LEQUAL);glEnable(GL_MULTISAMPLE);glShadeModel(GL_SMOOTH);glClearColor(.013,.015,.031,1);s->pitch=s->target_pitch=-6;
+ glEnable(GL_DEPTH_TEST);glDepthFunc(GL_LEQUAL);glEnable(GL_MULTISAMPLE);glShadeModel(GL_SMOOTH);glClearColor(.013,.015,.031,1);s->pitch=s->target_pitch=-6;s->eye=vehicle_seat_eye(s->camera_seat);
  Plane panel={.center={.78,.33,.48},.width=1.56,.height=.9,.yaw=-5,.pitch=-28};Vec3 right=rotate_y(v3(1,0,0),panel.yaw),up=rotate_y(rotate_x(v3(0,1,0),panel.pitch),panel.yaw),normal=vcross(right,up);
  const char *names[]={"TERMINAL","FILES","AUDIO","METERS","NEON","COCKPIT"};const char *subs[]={"01 / SHELL","02 / EXPLORE","03 / SESSION","04 / EV","05 / COLOR","06 / HOME"};
  /* Built-in menu defaults; [app.*] config (applied in main.c after ui_init)
@@ -419,8 +422,14 @@ void scene_render(Server *s){
  lighting();environment(s);
  glPushMatrix();vehicle_model_transform(s);lighting();
  bool driver=s->camera_mode==VEHICLE_CAMERA_DRIVER;
+ /* One physical cockpit in all views. Drawing it before the hull lets opaque
+  * bodywork occlude it naturally; cutaway and the late shared glass pass then
+  * reveal exactly the same seats, panels, controls and Wayland surfaces. */
+ vehicle_seats_render();dashboard(s);draw_buttons(s);draw_cog(s);
+ for(int i=0;i<CD_MAX_MONITORS;i++)draw_monitor(s,i);
+ steering_wheel(s);
  vehicle_render(s,s->camera_mode==VEHICLE_CAMERA_SYSTEMS);
- if(driver){dashboard(s);draw_buttons(s);draw_cog(s);for(int i=0;i<CD_MAX_MONITORS;i++)draw_monitor(s,i);draw_windshield_hud(s);steering_wheel(s);}
+ if(driver)draw_windshield_hud(s);
  vehicle_render_glass(s);glPopMatrix();
 }
 Hit scene_pick(Server *s,float x,float y,bool grab){
@@ -491,7 +500,7 @@ void scene_focus_monitor(Server *s,int slot,bool zoom){
  if(slot<0||slot>=CD_MAX_MONITORS)return;Plane p=monitor_plane(slot);float desired=atan2f(-p.center.x,s->eye.z-p.center.z)/RAD;
  while(desired-s->yaw>180)desired-=360;while(desired-s->yaw<-180)desired+=360;s->target_yaw=desired;float dx=p.center.x-s->eye.x,dz=p.center.z-s->eye.z;s->target_pitch=atan2f(p.center.y-s->eye.y,sqrtf(dx*dx+dz*dz))/RAD;s->target_fov=zoom?32:65;s->focus_view=zoom;
 }
-void scene_reset_camera(Server *s){s->camera_mode=VEHICLE_CAMERA_DRIVER;s->target_yaw=roundf(s->yaw/360)*360;s->target_pitch=-6;s->target_fov=65;s->focus_view=false;}
+void scene_reset_camera(Server *s){s->camera_mode=VEHICLE_CAMERA_DRIVER;s->eye=vehicle_seat_eye(s->camera_seat);s->target_yaw=roundf(s->yaw/360)*360;s->target_pitch=-6;s->target_fov=65;s->focus_view=false;}
 void scene_save_screenshot(Server *s,const char *path){
  int w=s->width,h=s->height;uint8_t *pixels=malloc((size_t)w*h*4);if(!pixels)return;glReadPixels(0,0,w,h,GL_BGRA,GL_UNSIGNED_BYTE,pixels);
  uint8_t *flipped=malloc((size_t)w*h*4);

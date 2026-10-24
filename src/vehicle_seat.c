@@ -1,4 +1,4 @@
-/* Detailed upholstered seating shared by driver and EV cutaway.
+/* Detailed upholstered seating shared by every vehicle camera view.
  * Sculpted lofts, separate bolsters/inserts and real small hardware replace
  * the original three-cuboid placeholders. Native GL on the scene thread only. */
 #include "vehicle_seat.h"
@@ -137,8 +137,8 @@ void vehicle_seats_render(void){
  /* Match the bounded cabin packaging in vehicle.c while scaling the detailed
   * geometry around each seat centre, not around the whole cabin. */
  for(int index=0;index<2;index++){
-  float x=index?1.25f:-0.90f;int side=index?1:-1;
-  glPushMatrix();glTranslatef(x,0,0);glScalef(.80f,.85f,1.0f);
+  Vec3 anchor=vehicle_seat_anchor((VehicleSeat)index);int side=index?1:-1;
+  glPushMatrix();glTranslatef(anchor.x,0,0);glScalef(.80f,.85f,1.0f);
   seat(0,side);glPopMatrix();
  }
 }

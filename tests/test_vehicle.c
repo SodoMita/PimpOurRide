@@ -11,6 +11,29 @@ static int failures;
 
 static int nearf(float a, float b, float epsilon) { return fabsf(a - b) <= epsilon; }
 
+/* Return the outer side-skin x coordinate at a point's z/y. The simple
+ * envelope deliberately checks overall packaging bounds; this finer test also
+ * respects the sculpted door waist, where maximum hull width is not the skin. */
+static float hull_side_limit(Vec3 p) {
+ float lo = 0.0f, hi = 1.0f;
+ for (int i = 0; i < 16; i++) {
+  float mid = 0.5f * (lo + hi);
+  if (vehicle_hull_section(mid).z < p.z) lo = mid; else hi = mid;
+ }
+ float u = 0.5f * (lo + hi), limit = 0.0f;
+ Vec3 a = vehicle_hull_point(u, 0.0f, 1, NULL);
+ for (int i = 1; i <= 240; i++) {
+  Vec3 b = vehicle_hull_point(u, i / 240.0f, 1, NULL);
+  if ((p.y >= a.y && p.y <= b.y) || (p.y >= b.y && p.y <= a.y)) {
+   float t = fabsf(b.y - a.y) > 1e-6f ? (p.y - a.y) / (b.y - a.y) : 0.0f;
+   float x = a.x + (b.x - a.x) * t;
+   if (x > limit) limit = x;
+  }
+  a = b;
+ }
+ return limit;
+}
+
 static void run_steps(Vehicle *v, VehicleInput input, int steps) {
  for (int i = 0; i < steps; i++) vehicle_step(v, input, (float)VEHICLE_FIXED_DT);
 }
@@ -66,6 +89,17 @@ int main(void) {
  CHECK(v.position.x >= -11.5001f && v.position.x <= 11.5001f
        && v.position.z >= -35.5001f && v.position.z <= 12.0001f,
        "car escaped garage bounds: %f %f", v.position.x, v.position.z);
+ Vec3 extent = vehicle_collision_extents(v.yaw);
+ CHECK(v.position.x - extent.x >= -14.7001f && v.position.x + extent.x <= 14.7001f
+       && v.position.z - extent.z >= -39.7001f && v.position.z + extent.z <= 15.7001f,
+       "visible rotated car crosses a garage wall: pos=(%f,%f) extent=(%f,%f)",
+       v.position.x, v.position.z, extent.x, extent.z);
+ Vec3 straight = vehicle_collision_extents(0), sideways = vehicle_collision_extents(90);
+ CHECK(nearf(straight.x, VEHICLE_COLLISION_HALF_WIDTH, 1e-5f)
+       && nearf(straight.z, VEHICLE_COLLISION_HALF_LENGTH, 1e-5f)
+       && nearf(sideways.x, VEHICLE_COLLISION_HALF_LENGTH, 1e-5f)
+       && nearf(sideways.z, VEHICLE_COLLISION_HALF_WIDTH, 1e-5f),
+       "collision box does not rotate with the visible car");
  CHECK(isfinite(v.hover_height) && isfinite(v.roll) && isfinite(v.pitch),
        "hover/body dynamics became non-finite");
 
@@ -102,6 +136,9 @@ int main(void) {
   CHECK(c_sill.x <= c_sec.width * 0.95f && nearf(c_peak.x, 0.0f, 1e-4f),
         "canopy overhangs hull at u=%f: sill_x=%f hull_w=%f", u, c_sill.x, c_sec.width);
   CHECK(sec.width >= 1.90f && sec.top > sec.lower, "invalid hull section at u=%f", u);
+  CHECK(sec.width <= VEHICLE_COLLISION_HALF_WIDTH
+        && sec.z >= -VEHICLE_COLLISION_HALF_LENGTH && sec.z <= VEHICLE_COLLISION_HALF_LENGTH,
+        "visible hull exceeds collision proxy at u=%f", u);
  }
 
  /* Representative bounding corners of the internal EV cutaway components:
@@ -114,12 +151,85 @@ int main(void) {
   { 0.00f, -0.30f,  2.55f}, {-1.15f, -0.30f,  4.10f}, /* 800 V junction, OBC, DC/DC */
   { 1.05f, -0.42f, -4.55f}, { 1.18f, -0.25f, -2.75f}, /* front radiator & coolant tank */
   {-1.18f, -0.25f, -2.75f}, { 1.25f,  0.74f,  2.95f}, /* 12 V battery & sport seat head */
-  { 1.50f,  1.04f,  3.02f}, {-1.15f,  1.04f,  3.02f}  /* detailed headrest outer crowns */
+  { 1.50f,  1.04f,  3.02f}, {-1.15f,  1.04f,  3.02f}, /* detailed headrest outer crowns */
+  { 0.00f, -0.72f,  1.70f}, { 0.66f, -0.80f,  1.02f}  /* lower dashboard & shifter console */
  };
  for (size_t i = 0; i < sizeof(internal_parts) / sizeof(internal_parts[0]); i++) {
   CHECK(vehicle_point_inside_envelope(internal_parts[i], 0.02f),
         "EV component %zu protrudes outside hull envelope: (%f, %f, %f)",
         i, internal_parts[i].x, internal_parts[i].y, internal_parts[i].z);
+ }
+
+ for (int seat = VEHICLE_SEAT_DRIVER; seat <= VEHICLE_SEAT_PASSENGER; seat++) {
+  Vec3 anchor = vehicle_seat_anchor((VehicleSeat)seat);
+  Vec3 eye = vehicle_seat_eye((VehicleSeat)seat);
+  CHECK(nearf(anchor.x, eye.x, 1e-5f) && eye.z < 2.82f && eye.z > 2.0f
+        && eye.y > 0.65f && eye.y < 1.04f,
+        "seat %d eye is not above/forward of its cushion/backrest", seat);
+  CHECK(vehicle_point_inside_envelope(eye, 0.02f),
+        "seat %d eye lies outside the shared canopy", seat);
+ }
+
+ /* Every part of the shared interior door assembly must fit the actual
+  * bicubic skin seen outside/cutaway, not merely the maximum-width envelope. */
+ for (int side = -1; side <= 1; side += 2) {
+  for (int ix = -1; ix <= 1; ix += 2) for (int iy = -1; iy <= 1; iy += 2)
+   for (int iz = -1; iz <= 1; iz += 2) {
+    Vec3 locals[] = {
+     v3(ix * 0.28f, 0.35f + iy * 0.55f, iz * 0.075f), /* upholstered panel */
+     v3(ix * 0.28f, 0.29f + iy * 0.05f, 0.12f + iz * 0.06f), /* armrest */
+     v3(ix * 0.242f, 0.57f + iy * 0.022f, 0.14f + iz * 0.022f) /* pull */
+    };
+    for (size_t part = 0; part < sizeof(locals) / sizeof(locals[0]); part++) {
+     Vec3 p = vadd(v3(side * 2.00f, -0.39f, 0.64f),
+                   rotate_y(locals[part], side * -40.0f));
+     CHECK(vehicle_point_inside_envelope(p, 0.0f) && fabsf(p.x) <= hull_side_limit(p) + 1e-4f,
+           "door part %zu protrudes: side=%d corner=(%f,%f,%f) skin_x=%f",
+           part, side, p.x, p.y, p.z, hull_side_limit(p));
+    }
+   }
+  /* Corners alone miss a concave scoop crossing the middle of a panel face.
+   * Sample the front, centre and back surfaces across the complete upholstery. */
+  for (int ix = 0; ix <= 14; ix++) for (int iy = 0; iy <= 24; iy++)
+   for (int iz = 0; iz <= 2; iz++) {
+    Vec3 local = v3(-0.28f + 0.56f * ix / 14.0f,
+                    -0.20f + 1.10f * iy / 24.0f,
+                    -0.075f + 0.15f * iz / 2.0f);
+    Vec3 p = vadd(v3(side * 2.00f, -0.39f, 0.64f), rotate_y(local, side * -40.0f));
+    CHECK(fabsf(p.x) <= hull_side_limit(p) + 1e-4f,
+          "door face crosses scoop: side=%d point=(%f,%f,%f) skin_x=%f",
+          side, p.x, p.y, p.z, hull_side_limit(p));
+   }
+  /* Sample the complete speaker surround and cone, including their depth. */
+  for (int i = 0; i < 32; i++) for (int iz = -1; iz <= 1; iz += 2) {
+   float a = i * 6.28318530718f / 32.0f;
+   Vec3 locals[] = {
+    v3(0.234f * cosf(a), 0.03f + 0.234f * sinf(a), 0.15f + iz * 0.024f),
+    v3(0.190f * cosf(a), 0.03f + 0.190f * sinf(a), 0.09f)
+   };
+   for (size_t part = 0; part < 2; part++) {
+    Vec3 p = vadd(v3(side * 2.00f, -0.39f, 0.64f),
+                  rotate_y(locals[part], side * -40.0f));
+    CHECK(fabsf(p.x) <= hull_side_limit(p) + 1e-4f,
+          "door speaker protrudes: side=%d point=(%f,%f,%f) skin_x=%f",
+          side, p.x, p.y, p.z, hull_side_limit(p));
+   }
+  }
+ }
+
+ /* All nine Wayland outputs are physical car-part displays, not a separate
+  * exterior monitor ring. Check deployed, stowed and mid-animation corners. */
+ for (int slot = 0; slot < 9; slot++) for (int pose = 0; pose <= 2; pose++) {
+  Plane plane = monitor_plane_at(slot, pose * 0.5f);
+  Vec3 right = rotate_y(v3(1, 0, 0), plane.yaw);
+  Vec3 up = rotate_y(rotate_x(v3(0, 1, 0), plane.pitch), plane.yaw);
+  for (int ix = -1; ix <= 1; ix += 2) for (int iy = -1; iy <= 1; iy += 2) {
+   Vec3 p = vadd(plane.center, vadd(vmul(right, ix * plane.width * 0.5f),
+                                    vmul(up, iy * plane.height * 0.5f)));
+   CHECK(vehicle_point_inside_envelope(p, 0.0f),
+         "monitor %d pose %d corner outside shared body: (%f,%f,%f)",
+         slot, pose, p.x, p.y, p.z);
+  }
  }
 
  if (failures) {

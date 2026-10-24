@@ -97,9 +97,11 @@ shell:
 than cuboids: 25-ring by 49-sample cushion/back lofts, crowned superellipsoid
 bolsters and headrests, recessed perforated inserts, continuous piping,
 stitches, recliner hardware, rails, and belt buckles. The same detailed seat
-geometry is used in the driver and EV-cutaway views. It is not submitted in the
-opaque exterior pass, where the body already hides it; envelope tests include
-the transformed outer headrest crowns as well as the EV components.
+geometry is used in every camera view; envelope tests include the transformed
+outer headrest crowns and both seating eye positions as well as the EV
+components. Driver and passenger eyes come from the same
+`vehicle_seat_anchor()` / `vehicle_seat_eye()` layout as the upholstery, so the
+camera cannot silently drift back to a point between the seats.
 
 The exterior is closed at the nose (`u = 0`) and tail (`u = 1`) by watertight
 front single-frame grille and rear Kammback diffuser fascia caps, with a
@@ -108,12 +110,21 @@ into the hull's upper beltline deck (`v = 0.84`). Exterior and driver views
 evaluate that exact same `vehicle_canopy_point()` surface; the mirror bracket
 is anchored to its front roof header. Driver mode changes only the material
 regions and draws the remaining glass in a late transparent pass—there is no
-separate driver-only roof approximation. `render_ev_systems()` is omitted in
-first person so internal HV cables never poke through the dashboard pad, and
-the exterior camera (`VEHICLE_CAMERA_CHASE`) supports middle-drag / right-drag
-orbit inspection around the vehicle.
+separate driver-only roof approximation. The seats, dashboard, door panels and
+pulls, steering wheel, console, controls, and Wayland monitor geometry are also
+submitted from the same scene functions in every view, before the hull; opaque
+bodywork occludes them and the same tinted window openings reveal them outside.
+There is no simplified exterior-only cockpit. Surface-following door cutlines
+and recessed satin exterior pulls use the exact hull as well.
+`render_ev_systems()` is omitted in first person so internal HV cables never
+poke through the dashboard pad, and the exterior camera
+(`VEHICLE_CAMERA_CHASE`) supports middle-drag / right-drag orbit inspection
+around the vehicle.
 
-F5 cycles **driver → exterior concept → EV systems cutaway**. The cutaway removes
+F8 cycles **driver → exterior concept → EV systems cutaway**, and F9 switches
+between the aligned driver and passenger seats. Returning to a seat with F8
+restores its forward camera and normal FOV rather than retaining an exterior
+orbit or app-focus zoom; F2 provides the same seat-camera reset directly. The cutaway removes
 opaque body panels and renders the full hull + fastback canopy spline wire cage
 so the electrical, thermal, and hover-thruster components can be inspected
 entirely inside the vehicle envelope.
@@ -133,7 +144,9 @@ The model uses:
 - service/regenerative braking with zero-crossing protection, plus reverse;
 - a bounded kinematic-bicycle yaw response (no tire/contact-patch pretence);
 - one spring/damper heave degree of freedom shared by the four visual pods;
-- smoothed body roll/pitch and energy-absorbing garage-boundary contacts.
+- smoothed body roll/pitch and energy-absorbing garage-boundary contacts;
+- a yaw-rotated collision box covering the complete nose, tail, body width, and
+  mirror clearance, clamped against the actual inner garage wall faces.
 
 It is an interactive concept-car model, not a validated automotive safety or
 homologation simulation. Pack energy is a `double`: at parking load, a single
@@ -170,7 +183,11 @@ in the `Monitor`, and both `draw_monitor()` and `scene_pick()` consume it, so
 pointer UV coordinates remain correct during the animation rather than snapping
 to the final position on the first frame. Camera focusing targets the deployed
 plane deliberately. Remapping a surface restarts its deployment; fixed mounts
-never perform a meaningless slide.
+never perform a meaningless slide. All nine deployed output rectangles are
+packaged inside the same hull/canopy rather than placed on a generic monitor
+ring. `tests/test_vehicle.c` checks every transformed screen corner at deployed,
+stowed, and mid-animation poses, in addition to dense interior door-panel
+surface checks against the concave bicubic door skin.
 
 CD-09 is a **ninth, dedicated output** for the instrument panel behind the
 steering wheel. It has a 1000×404 `wl_output` mode and a matching xdg configure,
@@ -206,9 +223,10 @@ F7 changes the owner of driving input. The native HUD is authoritative.
 | S/down | Sent to focused Wayland client | Brake while moving forward, reverse at rest |
 | Space | Sent to focused Wayland client | Regenerative/service brake |
 | Left-drag 3D wheel | Horizontal pointer-axis/scroll input to focused app | Steer |
-| F5 | Driver/exterior/systems camera | Same |
-| F8 | Recover pose without refilling battery/resetting odometer | Same |
-| F2 | Return to driver camera | Same |
+| F8 | Driver/exterior/systems camera | Same |
+| F9 | Switch driver/passenger seat | Same |
+| F10 | Recover pose without refilling battery/resetting odometer | Same |
+| F2 | Return to the selected seat camera | Same |
 
 Client mode also commands a parking brake so manipulating an application cannot
 leave the car accelerating. On mode changes and host focus loss, both Wayland

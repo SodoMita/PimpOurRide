@@ -133,7 +133,7 @@ void app_launch(Server *s,int action,bool force_new){
  if(action>=0&&action<6&&!s->buttons[action].enabled){app_notice(s,"%s is disabled in the menu configuration",s->buttons[action].name);return;}
  if(action==3&&strstr(s->app_ids[3],"chromedrive.cluster")&&s->monitors[CD_CLUSTER_SLOT].surface){server_focus(s,s->monitors[CD_CLUSTER_SLOT].surface);scene_focus_monitor(s,CD_CLUSTER_SLOT,true);app_notice(s,"Fixed instrument panel / live EV Wayland client");return;}
  if(action==4){s->theme=(s->theme+1)%3;s->rebuild_scene=true;app_notice(s,"Underglow / %s",s->theme==0?"ULTRAVIOLET":s->theme==1?"ICE BLUE":"ACID LIME");return;}
- if(action==5){scene_reset_camera(s);app_notice(s,"Driver view restored");return;}
+ if(action==5){scene_reset_camera(s);app_notice(s,"Selected seat view restored");return;}
  if(action<0||action>3)return;
  if(!force_new&&*s->app_ids[action]){for(int i=0;i<CD_MAX_MONITORS;i++){Surface *p=s->monitors[i].surface;if(p&&strstr(p->app_id,s->app_ids[action])){server_focus(s,p);scene_focus_monitor(s,i,true);return;}}}
  app_exec(s,s->launch_commands[action]);
@@ -167,18 +167,13 @@ bool app_global_key(Server *s,uint32_t evdev,bool down){
  bool ctrl=s->keys[KEY_LEFTCTRL]||s->keys[KEY_RIGHTCTRL];
  bool alt=s->keys[KEY_LEFTALT]||s->keys[KEY_RIGHTALT];
  if(ctrl&&alt&&(evdev==KEY_ENTER||evdev==KEY_Q)){if(down){if(evdev==KEY_Q)s->running=false;else app_launch(s,0,true);}return true;}
- bool global=evdev==KEY_F1||evdev==KEY_F2||evdev==KEY_F3||evdev==KEY_F4||evdev==KEY_F5||evdev==KEY_F6||evdev==KEY_F7||evdev==KEY_F8||evdev==KEY_F11||evdev==KEY_F12;
+ bool global=evdev==KEY_F1||evdev==KEY_F2||evdev==KEY_F3||evdev==KEY_F4||evdev==KEY_F6||evdev==KEY_F7||evdev==KEY_F8||evdev==KEY_F9||evdev==KEY_F10||evdev==KEY_F11||evdev==KEY_F12;
  if(!global)return drive_key(s,evdev,down);if(!down)return true;
  switch(evdev){
  case KEY_F1:s->show_help=!s->show_help;break;
  case KEY_F2:scene_reset_camera(s);break;
  case KEY_F3:if(s->keyboard_focus)scene_focus_monitor(s,s->keyboard_focus->slot,!s->focus_view);else next_monitor(s);break;
  case KEY_F4:app_launch(s,4,false);break;
- case KEY_F5:
-  s->camera_mode=(VehicleCameraMode)((s->camera_mode+1)%3);
-  scene_wheel_cancel(s);
-  app_notice(s,"%s",s->camera_mode==VEHICLE_CAMERA_DRIVER?"Driver camera":s->camera_mode==VEHICLE_CAMERA_CHASE?"Exterior concept camera":"EV systems cutaway");
-  break;
  case KEY_F6:next_monitor(s);break;
  case KEY_F7:
   /* Release app keys before changing ownership. Otherwise a key held during
@@ -189,6 +184,20 @@ bool app_global_key(Server *s,uint32_t evdev,bool down){
   app_notice(s,s->steering_mode==VEHICLE_STEER_DRIVE?"DRIVE / WASD + wheel; F7 returns input to apps":"CLIENT / wheel scrolls the focused Wayland app");
   break;
  case KEY_F8:
+  s->camera_mode=(VehicleCameraMode)((s->camera_mode+1)%3);
+  /* Exterior orbiting must not become the cockpit's look direction when the
+   * cycle returns to a seat. Also leave any tight app-focus FOV behind. */
+  s->focus_view=false;s->target_fov=65;
+  if(s->camera_mode==VEHICLE_CAMERA_DRIVER)scene_reset_camera(s);
+  scene_wheel_cancel(s);
+  app_notice(s,"%s",s->camera_mode==VEHICLE_CAMERA_DRIVER?(s->camera_seat==VEHICLE_SEAT_DRIVER?"Driver seat camera":"Passenger seat camera"):s->camera_mode==VEHICLE_CAMERA_CHASE?"Exterior concept camera":"EV systems cutaway");
+  break;
+ case KEY_F9:
+  s->camera_seat=s->camera_seat==VEHICLE_SEAT_DRIVER?VEHICLE_SEAT_PASSENGER:VEHICLE_SEAT_DRIVER;
+  scene_reset_camera(s);scene_wheel_cancel(s);
+  app_notice(s,"%s",s->camera_seat==VEHICLE_SEAT_DRIVER?"Driver seat / aligned with steering wheel":"Passenger seat / F9 returns to driver");
+  break;
+ case KEY_F10:
   vehicle_reset_pose(&s->vehicle);clear_drive_controls(s);scene_wheel_cancel(s);
   app_notice(s,"Vehicle recovered to the garage start pose");break;
  case KEY_F11:if(!s->headless&&s->window){s->fullscreen=!s->fullscreen;SDL_SetWindowFullscreen(s->window,s->fullscreen?SDL_WINDOW_FULLSCREEN_DESKTOP:0);}break;
@@ -197,9 +206,9 @@ bool app_global_key(Server *s,uint32_t evdev,bool down){
  }
  return true;
 }
-static void usage(const char *name){printf("ChromeDrive " CD_VERSION " — native, first-person Wayland cockpit\n\nUsage: %s [options]\n  --demo                Start a real terminal + Files + Audio clients\n  --socket NAME         Wayland socket (default: automatic)\n  --exec COMMAND        Launch an extra Wayland client (repeatable)\n  --size WIDTHxHEIGHT   Framebuffer/host window size (default 1600x1000)\n  --fps N               Frame cap, 1..120 (default 60)\n  --headless            Run with no X server: surfaceless EGL + built-in VNC server (default)\n  --windowed            Dev/debug mode: open a real SDL2/GLX window on an X server instead\n  --vnc-port N          VNC port for --headless mode (default 5900)\n  --fullscreen          --windowed only: start fullscreen, F11 to leave\n  --exit-after SECONDS   Useful for automated checks\n  --screenshot PATH     Capture a WebP after 3 seconds\n  --config PATH         Config file (default: ~/.config/chromedrive/chromedrive.conf)\n  --no-config           Ignore the config file entirely\n  --help                Show this help\n\nF1 help | F2 cockpit | F3 focus | F4 neon | F5 driver/exterior/systems | F6 next display\nF7 client/drive input | F8 recover car | Drive: WASD/arrows + Space + drag wheel\nMiddle-drag/VNC-drag to look | Click a screen to focus | Ctrl+Alt+Enter new terminal\n",name);}
+static void usage(const char *name){printf("ChromeDrive " CD_VERSION " — native, first-person Wayland cockpit\n\nUsage: %s [options]\n  --demo                Start a real terminal + Files + Audio clients\n  --socket NAME         Wayland socket (default: automatic)\n  --exec COMMAND        Launch an extra Wayland client (repeatable)\n  --size WIDTHxHEIGHT   Framebuffer/host window size (default 1600x1000)\n  --fps N               Frame cap, 1..120 (default 60)\n  --headless            Run with no X server: surfaceless EGL + built-in VNC server (default)\n  --windowed            Dev/debug mode: open a real SDL2/GLX window on an X server instead\n  --vnc-port N          VNC port for --headless mode (default 5900)\n  --fullscreen          --windowed only: start fullscreen, F11 to leave\n  --exit-after SECONDS   Useful for automated checks\n  --screenshot PATH     Capture a WebP after 3 seconds\n  --config PATH         Config file (default: ~/.config/chromedrive/chromedrive.conf)\n  --no-config           Ignore the config file entirely\n  --help                Show this help\n\nF1 help | F2 selected seat | F3 focus | F4 neon | F6 next display\nF7 client/drive input | F8 driver/exterior/systems | F9 switch seat | F10 recover car\nDrive: WASD/arrows + Space + drag wheel\nMiddle-drag/VNC-drag to look | Click a screen to focus | Ctrl+Alt+Enter new terminal\n",name);}
 int main(int argc,char **argv){
- Server s={.width=1600,.height=1000,.fps_limit=60,.running=true,.hud_visible=true,.hover_button=-1,.keymap_fd=-1,.fov=65,.target_fov=65,.eye={0,1.0f,2.8f},.headless=true,.vnc_port=5900,.telemetry_fd=-1};
+ Server s={.width=1600,.height=1000,.fps_limit=60,.running=true,.hud_visible=true,.hover_button=-1,.keymap_fd=-1,.fov=65,.target_fov=65,.headless=true,.vnc_port=5900,.telemetry_fd=-1};
  vehicle_init(&s.vehicle);
  const char *socket_name=NULL;double exit_after=0;bool auto_screenshot=false;
  /* Config pre-scan: --config/--no-config must be known before the file is

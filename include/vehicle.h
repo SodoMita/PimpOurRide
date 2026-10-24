@@ -10,6 +10,10 @@
 #define VEHICLE_FIXED_DT (1.0 / 120.0)
 #define VEHICLE_BATTERY_CAPACITY_KWH 82.0
 #define VEHICLE_HOVER_REST_HEIGHT 1.5f
+/* Collision proxy includes the complete visible nose/tail and camera-mirror
+ * clearance, not just the skateboard. Yaw rotates this box with the car. */
+#define VEHICLE_COLLISION_HALF_WIDTH 3.42f
+#define VEHICLE_COLLISION_HALF_LENGTH 5.90f
 
 typedef enum {
  VEHICLE_STEER_CLIENT = 0, /* wheel is a scroll/input controller for a Wayland app */
@@ -21,6 +25,11 @@ typedef enum {
  VEHICLE_CAMERA_CHASE = 1,
  VEHICLE_CAMERA_SYSTEMS = 2 /* exterior cutaway: body hidden, EV systems exposed */
 } VehicleCameraMode;
+
+typedef enum {
+ VEHICLE_SEAT_DRIVER = 0,
+ VEHICLE_SEAT_PASSENGER = 1
+} VehicleSeat;
 
 typedef struct {
  float throttle;  /* -1 reverse .. +1 forward; S also service-brakes while moving forward */
@@ -90,6 +99,11 @@ VehicleHullSection vehicle_hull_section(float u);
 Vec3 vehicle_hull_point(float u, float v, int side, Vec3 *normal);
 Vec3 vehicle_canopy_point(float u, float v, int side, Vec3 *normal);
 bool vehicle_point_inside_envelope(Vec3 p, float margin);
+/* One seating layout owns both upholstered geometry and first-person eyes. */
+Vec3 vehicle_seat_anchor(VehicleSeat seat);
+Vec3 vehicle_seat_eye(VehicleSeat seat);
+/* World-XZ half extents of the visible collision box at the current yaw. */
+Vec3 vehicle_collision_extents(float yaw_degrees);
 
 /* Exact inverse transforms keep rendering and 3D ray picking in agreement.
  * GL applies the rig as T * Ry * Rx * Rz; these helpers use the same order. */

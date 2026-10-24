@@ -24,11 +24,10 @@
  *     the flared front/rear undertray bays flush with s.lower, emitting a
  *     ground-effect plasma cushion without protruding legs or axles.
  *  4. Strictly bounded packaging: internal powertrain, battery, and thermal
- *     components are rendered only in VEHICLE_CAMERA_SYSTEMS; detailed seats
- *     share one renderer in driver/cutaway, and all are envelope-tested.
+ *     components are rendered only in VEHICLE_CAMERA_SYSTEMS; the shared
+ *     scene cockpit/seats are used in every view and are envelope-tested.
  */
 #include "chrome.h"
-#include "vehicle_seat.h"
 
 #include <math.h>
 #include <string.h>
@@ -43,6 +42,9 @@ typedef enum {
  EV_MAT_SATIN_METAL = 2,
  EV_MAT_MATTE_CARBON = 3
 } EvMaterial;
+
+static int canopy_zone(float u, float v);
+static void render_canopy_structure(void);
 
 static void ev_set_material(EvMaterial mat) {
  switch (mat) {
@@ -418,6 +420,18 @@ static Vec3 hull_offset_point(float u, float v, int side, float offset, Vec3 *n_
  return vadd(p, vmul(n, offset));
 }
 
+static void hull_seam(float u0, float v0, float u1, float v1, int side) {
+ /* Sample along the actual bicubic skin; a straight world-space line would
+  * cut through the curved door and make the panel gap look detached. */
+ glBegin(GL_LINE_STRIP);
+ for (int i = 0; i <= 16; i++) {
+  float t = (float)i / 16.0f;
+  Vec3 p = hull_offset_point(u0 + (u1 - u0) * t, v0 + (v1 - v0) * t, side, 0.009f, NULL);
+  glVertex3f(p.x, p.y, p.z);
+ }
+ glEnd();
+}
+
 static void render_driver_hull(void) {
  /* From the first-person driver's seat, only the outer side flanks (v <= 0.78,
   * outside the cabin beltline), the front hood (u <= 0.41, ahead of the z=-1.0
@@ -469,46 +483,8 @@ static void render_driver_hull(void) {
 static void render_exterior_canopy(Server *s) {
  float nr, ng, nb;
  scene_neon_color(s, &nr, &ng, &nb);
- const int u_steps = 64, v_steps = 28;
- for (int side = -1; side <= 1; side += 2) {
-  for (int iv = 0; iv < v_steps; iv++) {
-   float v0 = (float)iv / (float)v_steps;
-   float v1 = (float)(iv + 1) / (float)v_steps;
-   float vm = 0.5f * (v0 + v1);
-
-   glBegin(GL_QUAD_STRIP);
-   for (int iu = 0; iu <= u_steps; iu++) {
-    float u = (float)iu / (float)u_steps;
-    /* Structural body-colored A-pillars, cantrails (v in [0.64, 0.74]), and
-     * flying-buttress C-pillars frame the tinted sapphire-obsidian glass. */
-    bool cantrail = (vm >= 0.64f && vm <= 0.74f && u >= 0.08f && u <= 0.92f);
-    bool base_trim = (vm < 0.06f);
-    bool b_pillar = (vm < 0.66f && u >= 0.44f && u <= 0.47f);
-    bool rear_buttress = (vm < 0.22f && u > 0.74f);
-    bool front_pillar = (vm < 0.16f && u < 0.18f);
-
-    if (base_trim) {
-     ev_set_material(EV_MAT_SATIN_METAL);
-     ev_color(0.38f, 0.43f, 0.52f);
-    } else if (cantrail || rear_buttress || front_pillar) {
-     ev_set_material(EV_MAT_BODY_PAINT);
-     ev_color(0.22f, 0.25f, 0.35f);
-    } else if (b_pillar) {
-     ev_set_material(EV_MAT_DARK_GLASS);
-     ev_color(0.018f, 0.022f, 0.032f);
-    } else {
-     ev_set_material(EV_MAT_DARK_GLASS);
-     ev_color(0.032f, 0.052f, 0.082f);
-    }
-    Vec3 n0, n1;
-    Vec3 p0 = vehicle_canopy_point(u, v0, side, &n0);
-    Vec3 p1 = vehicle_canopy_point(u, v1, side, &n1);
-    glNormal3f(n0.x, n0.y, n0.z); glVertex3f(p0.x, p0.y, p0.z);
-    glNormal3f(n1.x, n1.y, n1.z); glVertex3f(p1.x, p1.y, p1.z);
-   }
-   glEnd();
-  }
- }
+ /* Opaque pillars/cantrails are the same zones used by the driver. */
+ render_canopy_structure();
 
  /* Flush roof LiDAR & autonomous sensor module contoured directly onto the
   * windshield header crown (u_c in [0.17, 0.26], v_c in [0.78, 1.00]). */
@@ -695,16 +671,34 @@ static void render_exterior_details(Server *s) {
   ev_box(m_tip.x + (float)side * 0.05f, m_tip.y, m_tip.z - 0.112f, 0.15f, 0.014f, 0.012f);
   glEnable(GL_LIGHTING);
 
-  /* 3. Flush Capacitive Door Handles:
-   * Evaluated directly on the door shoulder surface (u in [0.46, 0.51]). */
-  ev_set_material(EV_MAT_SATIN_METAL);
-  ev_color(0.10f, 0.12f, 0.17f);
+  /* 3. A real framed door aperture and a visible flush pull handle. The
+   * panel gap follows the hull instead of floating in world space. */
+  glDisable(GL_LIGHTING);
+  ev_color(0.012f, 0.016f, 0.024f); glLineWidth(2.0f);
+  hull_seam(0.36f, 0.79f, 0.33f, 0.27f, side); /* leading edge */
+  hull_seam(0.33f, 0.27f, 0.62f, 0.27f, side); /* lower edge */
+  hull_seam(0.62f, 0.27f, 0.60f, 0.79f, side); /* trailing edge */
+  hull_seam(0.60f, 0.79f, 0.36f, 0.79f, side); /* beltline */
+  glLineWidth(1.0f); glEnable(GL_LIGHTING);
+
+  /* Dark recessed pocket plus a raised satin grip, both sampled from the
+   * same door skin. This remains subtle but is legible in side/exterior view. */
+  ev_set_material(EV_MAT_MATTE_CARBON); ev_color(0.012f, 0.017f, 0.026f);
   glBegin(GL_QUAD_STRIP);
-  for (int i = 0; i <= 6; i++) {
-   float u = 0.455f + 0.055f * (float)i / 6.0f;
+  for (int i = 0; i <= 10; i++) {
+   float u = 0.48f + 0.060f * (float)i / 10.0f;
+   Vec3 p0 = hull_offset_point(u, 0.610f, side, 0.008f, NULL);
+   Vec3 p1 = hull_offset_point(u, 0.670f, side, 0.008f, NULL);
+   glVertex3f(p0.x, p0.y, p0.z); glVertex3f(p1.x, p1.y, p1.z);
+  }
+  glEnd();
+  ev_set_material(EV_MAT_SATIN_METAL); ev_color(0.56f, 0.61f, 0.70f);
+  glBegin(GL_QUAD_STRIP);
+  for (int i = 0; i <= 10; i++) {
+   float u = 0.487f + 0.046f * (float)i / 10.0f;
    Vec3 n0, n1;
-   Vec3 p0 = hull_offset_point(u, 0.63f, side, 0.007f, &n0);
-   Vec3 p1 = hull_offset_point(u, 0.655f, side, 0.007f, &n1);
+   Vec3 p0 = hull_offset_point(u, 0.634f, side, 0.025f, &n0);
+   Vec3 p1 = hull_offset_point(u, 0.654f, side, 0.025f, &n1);
    glNormal3f(n0.x, n0.y, n0.z); glVertex3f(p0.x, p0.y, p0.z);
    glNormal3f(n1.x, n1.y, n1.z); glVertex3f(p1.x, p1.y, p1.z);
   }
@@ -1014,9 +1008,8 @@ static void render_body_outline(float nr, float ng, float nb) {
  glLineWidth(1.0f);
 }
 
-/* The driver uses the *same* canopy parameterization as the exterior. Only
- * its material visibility differs: structural pillars/cantrails are opaque in
- * this pass, while glass is blended later without writing depth. */
+/* Driver and exterior use the same structural zones on the same canopy.
+ * Only glass is deferred to the shared late transparent pass. */
 static int canopy_zone(float u, float v) {
  if (v < 0.06f) return 1; /* satin belt trim */
  if ((v >= 0.675f && v <= 0.715f && u >= 0.08f && u <= 0.92f)
@@ -1025,7 +1018,7 @@ static int canopy_zone(float u, float v) {
  return 0;
 }
 
-static void render_driver_canopy(void) {
+static void render_canopy_structure(void) {
  const int u_steps = 64, v_steps = 28;
  for (int side = -1; side <= 1; side += 2) {
   for (int iv = 0; iv < v_steps; iv++) {
@@ -1068,9 +1061,6 @@ void vehicle_render(Server *s, bool cutaway) {
  glLightfv(GL_LIGHT3, GL_SPECULAR, l3_spec);
 
  if (cutaway) {
-  /* The same detailed seat geometry is shared by driver and cutaway. It is
-   * not wasted in the opaque exterior pass, where it cannot be seen. */
-  vehicle_seats_render();
   render_ev_systems(s);
   render_all_hover_nacelles(s, true);
   render_body_outline(nr, ng, nb);
@@ -1083,11 +1073,11 @@ void vehicle_render(Server *s, bool cutaway) {
   /* Driver mode renders only the exterior panels visible through the cockpit
    * windows; internal EV cutaway geometry is omitted so no cables or boxes
    * ever intersect the interior dashboard or waste software-rasterizer time. */
-  vehicle_seats_render();
   render_driver_hull();
   render_fascia_cap(s, true);
   render_fascia_cap(s, false);
-  render_driver_canopy();
+  render_canopy_structure();
+  render_exterior_details(s);
  } else {
   render_exterior_hull();
   render_fascia_cap(s, true);
@@ -1102,24 +1092,30 @@ void vehicle_render(Server *s, bool cutaway) {
 }
 
 void vehicle_render_glass(Server *s) {
- if (s->camera_mode != VEHICLE_CAMERA_DRIVER) return;
- /* Same exterior canopy vertices, rendered late and transparently. Depth
-  * writes stay off so Wayland surfaces behind the glass remain visible. */
+ if (s->camera_mode == VEHICLE_CAMERA_SYSTEMS) return;
+ /* The same window openings and surface in driver and exterior views. The
+  * shared cockpit has already been depth-drawn, so tinted glass reveals the
+  * actual seats/panels instead of a second exterior-only approximation. */
+ bool driver = s->camera_mode == VEHICLE_CAMERA_DRIVER;
  glDisable(GL_LIGHTING);
  glEnable(GL_BLEND); glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA); glDepthMask(GL_FALSE);
- glColor4f(0.035f, 0.075f, 0.11f, 0.13f);
+ glColor4f(0.035f, 0.075f, 0.11f, driver ? 0.13f : 0.22f);
  const int u_steps = 64, v_steps = 28;
  for (int side = -1; side <= 1; side += 2) {
   for (int iv = 0; iv < v_steps; iv++) {
    float v0 = (float)iv / v_steps, v1 = (float)(iv + 1) / v_steps;
-   glBegin(GL_QUAD_STRIP);
-   for (int iu = 0; iu <= u_steps; iu++) {
-    float u = (float)iu / u_steps;
-    Vec3 p0 = vehicle_canopy_point(u, v0, side, NULL);
-    Vec3 p1 = vehicle_canopy_point(u, v1, side, NULL);
-    glVertex3f(p0.x, p0.y, p0.z); glVertex3f(p1.x, p1.y, p1.z);
+   for (int iu = 0; iu < u_steps; iu++) {
+    float u0 = (float)iu / u_steps, u1 = (float)(iu + 1) / u_steps;
+    if (canopy_zone(0.5f * (u0 + u1), 0.5f * (v0 + v1))) continue;
+    Vec3 p00 = vehicle_canopy_point(u0, v0, side, NULL);
+    Vec3 p01 = vehicle_canopy_point(u0, v1, side, NULL);
+    Vec3 p11 = vehicle_canopy_point(u1, v1, side, NULL);
+    Vec3 p10 = vehicle_canopy_point(u1, v0, side, NULL);
+    glBegin(GL_QUADS);
+    glVertex3f(p00.x, p00.y, p00.z); glVertex3f(p01.x, p01.y, p01.z);
+    glVertex3f(p11.x, p11.y, p11.z); glVertex3f(p10.x, p10.y, p10.z);
+    glEnd();
    }
-   glEnd();
   }
  }
  glDepthMask(GL_TRUE); glDisable(GL_BLEND); glEnable(GL_LIGHTING);

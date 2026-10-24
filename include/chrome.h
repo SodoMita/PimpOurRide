@@ -118,6 +118,7 @@ struct Server {
  Vehicle vehicle;
  VehicleSteeringMode steering_mode;
  VehicleCameraMode camera_mode;
+ VehicleSeat camera_seat;
  bool drive_forward,drive_reverse,drive_left,drive_right,drive_brake;
  bool wheel_drag;
  float wheel_steer,wheel_client_angle,wheel_axis_accum,wheel_last_x,wheel_last_y;

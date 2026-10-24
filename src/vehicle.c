@@ -24,7 +24,7 @@ static int clamp_idx(int i, int count) {
 
 void vehicle_reset_pose(Vehicle *v) {
  /* Reset is a recovery action, not a magical battery refill or odometer
-  * rollback. Energy and distance deliberately survive an F8 recovery. */
+  * rollback. Energy and distance deliberately survive an F10 recovery. */
  double battery = v->battery_kwh;
  float temperature = v->motor_temp_c;
  float distance = v->distance_m;
@@ -102,13 +102,15 @@ void vehicle_step(Vehicle *v, VehicleInput input, float dt) {
  v->position = vadd(v->position, vmul(forward, v->speed * dt));
  v->distance_m += fabsf(v->speed) * dt;
 
- /* The garage is a real safety envelope. Clamping at its inner wall faces is
-  * preferable to allowing the camera rig to leave the modeled world; losing
-  * most longitudinal energy makes a remote-controlled contact recoverable. */
+ /* Collide the complete yaw-rotated visible car with the actual inner wall
+  * faces (x = +/-14.70, z = -39.70/+15.70), not a smaller skateboard box.
+  * This makes the nose, tail and mirrors contact before crossing the wall. */
  v->collision = false;
  float old_x = v->position.x, old_z = v->position.z;
- v->position.x = clampf(v->position.x, -11.5f, 11.5f);
- v->position.z = clampf(v->position.z, -35.5f, 12.0f);
+ Vec3 extent = vehicle_collision_extents(v->yaw);
+ float x_limit = 14.70f - extent.x;
+ v->position.x = clampf(v->position.x, -x_limit, x_limit);
+ v->position.z = clampf(v->position.z, -39.70f + extent.z, 15.70f - extent.z);
  if (old_x != v->position.x || old_z != v->position.z) {
   v->speed *= 0.18f;
   v->collision = true;
@@ -144,6 +146,14 @@ void vehicle_step(Vehicle *v, VehicleInput input, float dt) {
 
  float temperature_target = 24.0f + fminf(82.0f, fabsf(v->power_kw) * 0.19f);
  v->motor_temp_c = approach(v->motor_temp_c, temperature_target, 0.035f, dt);
+}
+
+Vec3 vehicle_collision_extents(float yaw_degrees) {
+ float yaw = yaw_degrees * CD_RAD;
+ float c = fabsf(cosf(yaw)), s = fabsf(sinf(yaw));
+ return v3(c * VEHICLE_COLLISION_HALF_WIDTH + s * VEHICLE_COLLISION_HALF_LENGTH,
+           0.0f,
+           s * VEHICLE_COLLISION_HALF_WIDTH + c * VEHICLE_COLLISION_HALF_LENGTH);
 }
 
 void vehicle_update(Vehicle *v, VehicleInput input, double frame_dt) {
@@ -375,6 +385,17 @@ bool vehicle_point_inside_envelope(Vec3 p, float margin) {
   }
  }
  return p.y <= y_ceiling - margin;
+}
+
+Vec3 vehicle_seat_anchor(VehicleSeat seat) {
+ return v3(seat == VEHICLE_SEAT_PASSENGER ? 1.25f : -0.90f, 0.0f, 0.0f);
+}
+
+Vec3 vehicle_seat_eye(VehicleSeat seat) {
+ Vec3 anchor = vehicle_seat_anchor(seat);
+ /* Forward of the reclined back/head restraint and directly above the
+  * cushion; the old x=0 eye sat between the seats rather than in either. */
+ return v3(anchor.x, 0.86f, 2.55f);
 }
 
 Vec3 vehicle_local_direction(const Vehicle *v, Vec3 direction) {

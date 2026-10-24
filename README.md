@@ -12,8 +12,9 @@ The cockpit now belongs to a **spline-built electric hover car**. Its modeled
 and thermal loop can be inspected in an exterior systems cutaway. Fixed-step
 120 Hz dynamics make the whole car/cockpit/monitor rig drive through the 3D
 garage—without pretending to simulate wheels. F7 switches the physical steering
-wheel and driving keys between Wayland-client input and hover-car control; F5
-cycles driver, smooth exterior-concept, and EV-systems cameras. Applications
+wheel and driving keys between Wayland-client input and hover-car control; F8
+cycles driver, smooth exterior-concept, and EV-systems cameras, while F9
+switches between properly aligned driver and passenger seats. Applications
 use fixed, slide-up, slide-out, or flip-down mounts built into the windshield,
 dashboard, doors, roof, and rear deck. A separate Wayland instrument client
 lives behind the steering wheel, with a transparent live HUD on the windshield.
@@ -239,13 +240,14 @@ reverse proxy and firewall before exposing them to an untrusted network.
 | Click the dashboard cog | Open Settings (`chromedrive-config`) |
 | Shift + dashboard button | Force a new instance |
 | F1 | Help overlay |
-| F2 | Reset to the driver's seat view |
+| F2 | Reset to the selected seat view |
 | F3 | Toggle a tight focus zoom on the active screen |
 | F4 | Cycle underglow color (violet / ice blue / acid lime) |
-| F5 | Cycle driver / exterior concept / EV systems cutaway |
 | F6 | Cycle to the next connected screen |
 | F7 | Toggle client input / hover-drive ownership |
-| F8 | Recover the car pose (battery and odometer are preserved) |
+| F8 | Cycle driver / exterior concept / EV systems cutaway |
+| F9 | Switch between driver and passenger seats |
+| F10 | Recover the car pose (battery and odometer are preserved) |
 | W/A/S/D or arrows, Space | Drive mode: throttle/steer/reverse and regenerative brake |
 | Left-drag steering wheel | Client mode: scroll focused app; drive mode: steer |
 | F11 | `--windowed` only: toggle fullscreen |
@@ -282,7 +284,7 @@ include/chrome.h, math3d.h, vehicle.h, telemetry.h, cdconfig.h  shared composito
 src/math3d.c                 camera rays, plane intersection, animated car-part mounts
 src/vehicle.c                fixed-step hover EV dynamics, splines, exact rig transforms
 src/vehicle_scene.c          electric systems, spline cables, hover pods + render orchestration
-src/vehicle_seat.c           sculpted stitched/perforated seating for driver and EV cutaway
+src/vehicle_seat.c           sculpted stitched/perforated seating shared by every camera view
 src/telemetry.c              shared live EV state for the native instrument client
 src/keymap.c                 exact RFB/X11 keysym to Linux evdev translation
 src/wayland.c                the actual compositor protocol implementation

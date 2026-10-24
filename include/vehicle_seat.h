@@ -2,6 +2,6 @@
 #define CD_VEHICLE_SEAT_H
 #include "chrome.h"
 
-/* One detailed seat renderer is shared by the driver and EV-cutaway views. */
+/* One detailed seat renderer is shared by every vehicle camera view. */
 void vehicle_seats_render(void);
 #endif
