@@ -18,6 +18,10 @@ static float sign_nonzero(float value) {
  return value < 0.0f ? -1.0f : 1.0f;
 }
 
+static int clamp_idx(int i, int count) {
+ return i < 0 ? 0 : (i >= count ? count - 1 : i);
+}
+
 void vehicle_reset_pose(Vehicle *v) {
  /* Reset is a recovery action, not a magical battery refill or odometer
   * rollback. Energy and distance deliberately survive an F8 recovery. */
@@ -169,6 +173,208 @@ Vec3 vehicle_catmull_rom_vec3(const Vec3 p[4], float t) {
  return v3(vehicle_catmull_rom(p[0].x, p[1].x, p[2].x, p[3].x, t),
            vehicle_catmull_rom(p[0].y, p[1].y, p[2].y, p[3].y, t),
            vehicle_catmull_rom(p[0].z, p[1].z, p[2].z, p[3].z, t));
+}
+
+/* Nine longitudinal design stations define the lower grand-tourer hovercar body:
+ *   - low shark-nose aero splitter & matrix-lamp fascia (z = -5.85 .. -5.15)
+ *   - muscular flared front fenders over the front mag-lev thruster bays (-3.55)
+ *   - sculpted coke-bottle waist with deep door air-channel scoops (0.15)
+ *   - broad rear haunches over the rear thruster/powertrain bay (3.55)
+ *   - Kammback ducktail spoiler & rising twin-tunnel Venturi diffuser (5.72) */
+static const VehicleHullSection hull_sections[] = {
+ /*   z      width  lower  shoulder  top    arch   scoop */
+ {-5.85f,  1.95f, -.66f,  -.32f,  -.16f,  .00f,  .00f},
+ {-5.15f,  2.56f, -.76f,  -.08f,   .14f,  .05f,  .00f},
+ {-3.55f,  2.98f, -.82f,   .18f,   .42f,  .15f,  .02f},
+ {-1.95f,  2.92f, -.82f,   .28f,   .50f,  .05f,  .11f},
+ { 0.15f,  2.80f, -.82f,   .31f,   .52f,  .00f,  .17f},
+ { 2.05f,  2.94f, -.82f,   .35f,   .56f,  .07f,  .12f},
+ { 3.55f,  3.06f, -.80f,   .38f,   .58f,  .16f,  .02f},
+ { 4.80f,  2.72f, -.73f,   .22f,   .46f,  .04f,  .00f},
+ { 5.72f,  2.18f, -.60f,   .08f,   .34f,  .00f,  .00f}
+};
+#define HULL_SECTION_COUNT ((int)(sizeof(hull_sections) / sizeof(hull_sections[0])))
+
+VehicleHullSection vehicle_hull_section(float u) {
+ float g = clampf(u, 0.0f, 1.0f) * (float)(HULL_SECTION_COUNT - 1);
+ int i = (int)floorf(g);
+ if (i >= HULL_SECTION_COUNT - 1) i = HULL_SECTION_COUNT - 2;
+ float t = g - (float)i;
+ const VehicleHullSection *a = &hull_sections[clamp_idx(i - 1, HULL_SECTION_COUNT)];
+ const VehicleHullSection *b = &hull_sections[clamp_idx(i,     HULL_SECTION_COUNT)];
+ const VehicleHullSection *c = &hull_sections[clamp_idx(i + 1, HULL_SECTION_COUNT)];
+ const VehicleHullSection *d = &hull_sections[clamp_idx(i + 2, HULL_SECTION_COUNT)];
+ VehicleHullSection out;
+ out.z        = vehicle_catmull_rom(a->z,        b->z,        c->z,        d->z,        t);
+ out.width    = fmaxf(1.50f, vehicle_catmull_rom(a->width, b->width, c->width, d->width, t));
+ out.lower    = vehicle_catmull_rom(a->lower,    b->lower,    c->lower,    d->lower,    t);
+ out.shoulder = vehicle_catmull_rom(a->shoulder, b->shoulder, c->shoulder, d->shoulder, t);
+ out.top      = vehicle_catmull_rom(a->top,      b->top,      c->top,      d->top,      t);
+ out.arch     = fmaxf(0.0f, vehicle_catmull_rom(a->arch,     b->arch,     c->arch,     d->arch,     t));
+ out.scoop    = fmaxf(0.0f, vehicle_catmull_rom(a->scoop,    b->scoop,    c->scoop,    d->scoop,    t));
+ return out;
+}
+
+static Vec3 hull_eval_raw(float u, float v, int side) {
+ VehicleHullSection s = vehicle_hull_section(u);
+ float sgn = side < 0 ? -1.0f : 1.0f;
+ float span = fmaxf(0.18f, s.shoulder - s.lower);
+ /* Seven transverse control points from undertray centreline (0) to hood/deck
+  * centreline (6). Reflecting the phantom end control points across x = 0
+  * guarantees a horizontal tangent (C1 continuity) across the symmetry plane. */
+ float rx[7] = {
+  0.00f,
+  0.74f * s.width,
+  0.96f * s.width,
+  (0.98f - s.scoop) * s.width,
+  1.00f * s.width,
+  0.82f * s.width,
+  0.00f
+ };
+ float ry[7] = {
+  s.lower - 0.015f,
+  s.lower,
+  s.lower + 0.18f * span,
+  s.lower + 0.56f * span,
+  s.shoulder,
+  s.top + s.arch,
+  s.top + 0.02f
+ };
+ float gv = clampf(v, 0.0f, 1.0f) * 6.0f;
+ int k = (int)floorf(gv);
+ if (k >= 6) k = 5;
+ float tv = gv - (float)k;
+
+ float x0 = (k - 1 < 0) ? -rx[1] : rx[k - 1];
+ float y0 = (k - 1 < 0) ?  ry[1] : ry[k - 1];
+ float x1 = rx[k],     y1 = ry[k];
+ float x2 = rx[k + 1], y2 = ry[k + 1];
+ float x3 = (k + 2 > 6) ? -rx[5] : rx[k + 2];
+ float y3 = (k + 2 > 6) ?  ry[5] : ry[k + 2];
+
+ float x = sgn * fmaxf(0.0f, vehicle_catmull_rom(x0, x1, x2, x3, tv));
+ float y = vehicle_catmull_rom(y0, y1, y2, y3, tv);
+ return v3(x, y, s.z);
+}
+
+Vec3 vehicle_hull_point(float u, float v, int side, Vec3 *normal) {
+ Vec3 p = hull_eval_raw(u, v, side);
+ if (normal) {
+  float du = 0.008f, dv = 0.008f;
+  float u0 = fmaxf(0.0f, u - du), u1 = fminf(1.0f, u + du);
+  float v0 = fmaxf(0.0f, v - dv), v1 = fminf(1.0f, v + dv);
+  Vec3 pu = vsub(hull_eval_raw(u1, v, side), hull_eval_raw(u0, v, side));
+  Vec3 pv = vsub(hull_eval_raw(u, v1, side), hull_eval_raw(u, v0, side));
+  Vec3 n = (side < 0) ? vcross(pu, pv) : vcross(pv, pu);
+  if (fabsf(v) < 1e-4f || fabsf(v - 1.0f) < 1e-4f) n.x = 0.0f;
+  *normal = vnorm(n);
+ }
+ return p;
+}
+
+/* Seven longitudinal canopy stations parameterize the fastback greenhouse relative
+ * to the hull's upper beltline deck (u_hull in [0.26, 0.90]). Because the base
+ * height and width are anchored directly to the hull deck at each z and dh = 0
+ * at both endpoints with shallow endpoint tangents, the canopy flows smoothly
+ * from the hood cowl into the rear decklid without steps, overhangs, or gaps. */
+typedef struct { float dh, width_scale; } CanopyStation;
+static const CanopyStation canopy_stations[] = {
+ {0.00f, 0.88f}, /* u_c = 0.00: windshield base flush on the hood cowl */
+ {0.65f, 0.85f}, /* u_c = 0.17: lower windshield rake */
+ {1.05f, 0.82f}, /* u_c = 0.33: windshield header / A-pillar top */
+ {1.12f, 0.80f}, /* u_c = 0.50: sleek GT roof crown over the seats */
+ {0.78f, 0.74f}, /* u_c = 0.67: B/C-pillar fastback arch */
+ {0.32f, 0.64f}, /* u_c = 0.83: shallow fastback rear glass between haunches */
+ {0.00f, 0.52f}  /* u_c = 1.00: trailing edge merged seamlessly into rear deck */
+};
+#define CANOPY_STATION_COUNT ((int)(sizeof(canopy_stations) / sizeof(canopy_stations[0])))
+
+static Vec3 canopy_eval_raw(float u_c, float v_c, int side) {
+ float uc = clampf(u_c, 0.0f, 1.0f);
+ float vc = clampf(v_c, 0.0f, 1.0f);
+ float u_hull = 0.26f + uc * 0.64f;
+ Vec3 deck_outer = hull_eval_raw(u_hull, 0.84f, 1);
+ Vec3 deck_centre = hull_eval_raw(u_hull, 1.00f, 1);
+
+ float g = uc * (float)(CANOPY_STATION_COUNT - 1);
+ int i = (int)floorf(g);
+ if (i >= CANOPY_STATION_COUNT - 1) i = CANOPY_STATION_COUNT - 2;
+ float t = g - (float)i;
+ const CanopyStation *a = &canopy_stations[clamp_idx(i - 1, CANOPY_STATION_COUNT)];
+ const CanopyStation *b = &canopy_stations[clamp_idx(i,     CANOPY_STATION_COUNT)];
+ const CanopyStation *c = &canopy_stations[clamp_idx(i + 1, CANOPY_STATION_COUNT)];
+ const CanopyStation *d = &canopy_stations[clamp_idx(i + 2, CANOPY_STATION_COUNT)];
+
+ float dh = fmaxf(0.0f, vehicle_catmull_rom(a->dh, b->dh, c->dh, d->dh, t));
+ float wf = clampf(vehicle_catmull_rom(a->width_scale, b->width_scale,
+                                       c->width_scale, d->width_scale, t), 0.40f, 0.95f);
+ /* Smooth Hermite taper at the exact cowl and rear-deck endpoints so dh = 0
+  * with a gentle slope rather than an abrupt vertical step. */
+ if (uc < 0.08f) dh *= (uc / 0.08f);
+ if (uc > 0.92f) dh *= ((1.0f - uc) / 0.08f);
+
+ float sgn = side < 0 ? -1.0f : 1.0f;
+ float base_x = deck_outer.x * wf;
+ /* Blend base_y between the outer beltline and the centre deck spine so that
+  * as vc -> 1 and dh -> 0 at the nose/tail, the canopy meets the spine flush. */
+ float deck_y = deck_outer.y * (1.0f - vc) + deck_centre.y * vc;
+ float base_y = deck_y - 0.012f;
+ float angle = vc * 0.5f * CD_PI;
+ float x = sgn * base_x * cosf(angle);
+ float arch = powf(fmaxf(0.0f, sinf(angle)), 0.78f);
+ return v3(x, base_y + dh * arch, deck_outer.z);
+}
+
+Vec3 vehicle_canopy_point(float u, float v, int side, Vec3 *normal) {
+ Vec3 p = canopy_eval_raw(u, v, side);
+ if (normal) {
+  float du = 0.01f, dv = 0.01f;
+  float u0 = fmaxf(0.0f, u - du), u1 = fminf(1.0f, u + du);
+  float v0 = fmaxf(0.0f, v - dv), v1 = fminf(1.0f, v + dv);
+  Vec3 pu = vsub(canopy_eval_raw(u1, v, side), canopy_eval_raw(u0, v, side));
+  Vec3 pv = vsub(canopy_eval_raw(u, v1, side), canopy_eval_raw(u, v0, side));
+  Vec3 n = (side < 0) ? vcross(pu, pv) : vcross(pv, pu);
+  if (fabsf(v - 1.0f) < 1e-4f) n.x = 0.0f;
+  *normal = vnorm(n);
+ }
+ return p;
+}
+
+bool vehicle_point_inside_envelope(Vec3 p, float margin) {
+ VehicleHullSection nose = vehicle_hull_section(0.0f);
+ VehicleHullSection tail = vehicle_hull_section(1.0f);
+ if (p.z < nose.z + margin || p.z > tail.z - margin) return false;
+
+ /* Binary search longitudinal parameter u in [0, 1] matching p.z. */
+ float lo = 0.0f, hi = 1.0f;
+ for (int iter = 0; iter < 16; iter++) {
+  float mid = 0.5f * (lo + hi);
+  if (vehicle_hull_section(mid).z < p.z) lo = mid;
+  else hi = mid;
+ }
+ float u = 0.5f * (lo + hi);
+ VehicleHullSection s = vehicle_hull_section(u);
+
+ float ax = fabsf(p.x);
+ if (ax > s.width - margin) return false;
+ if (p.y < s.lower - 0.04f + margin) return false;
+
+ /* Ceiling height is the hull upper deck outside the greenhouse, or the
+  * fastback canopy arch when inside the cabin footprint (u in [0.26, 0.90]). */
+ float y_ceiling = s.top + s.arch * 0.6f;
+ if (u >= 0.26f && u <= 0.90f) {
+  float u_c = (u - 0.26f) / 0.64f;
+  Vec3 c_base = canopy_eval_raw(u_c, 0.0f, 1);
+  Vec3 c_top  = canopy_eval_raw(u_c, 1.0f, 1);
+  if (c_base.x > 0.05f && ax <= c_base.x) {
+   float cos_a = clampf(ax / c_base.x, 0.0f, 1.0f);
+   float angle = acosf(cos_a);
+   float arch = powf(fmaxf(0.0f, sinf(angle)), 0.78f);
+   float y_canopy = c_base.y + (c_top.y - c_base.y) * arch;
+   if (y_canopy > y_ceiling) y_ceiling = y_canopy;
+  }
+ }
+ return p.y <= y_ceiling - margin;
 }
 
 Vec3 vehicle_local_direction(const Vehicle *v, Vec3 direction) {

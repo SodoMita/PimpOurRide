@@ -1,8 +1,40 @@
 /* Native Wayland server. No X11 window capture and no browser surfaces.
- * Core wl_shm, xdg-shell, seat, per-screen outputs, subsurfaces and selection,
- * plus optional EGLImage-backed linux-dmabuf import on the headless backend.
- * Browser clients see the finished compositor framebuffer over RFB; actual
- * applications remain ordinary Wayland clients on this libwayland display. */
+ *
+ * Architectural "Why" Behind Core Protocol Sequences:
+ * 1. Atomic Double-Buffered Surface State (wl_surface.attach / damage / frame / commit):
+ *    In Wayland, client requests such as attach, damage, set_input_region, and
+ *    frame do NOT mutate the live scene immediately. Instead, they populate
+ *    pending_* fields on Surface until wl_surface.commit atomically promotes
+ *    them: uploading SHM pixels (or binding an imported DMA-BUF EGLImage) into
+ *    the surface's OpenGL texture, splicing pending_callbacks into the active
+ *    callbacks list, and releasing the wl_shm buffer immediately after CPU-to-GL
+ *    upload so double-buffered clients can reuse their backbuffer without waiting.
+ *
+ * 2. XDG-Shell Handshake (initial bufferless commit -> configure -> ack_configure):
+ *    Per the xdg-shell specification, a newly created xdg_surface + xdg_toplevel
+ *    must first perform an initial wl_surface.commit WITH NO BUFFER ATTACHED.
+ *    Only in response to that bufferless commit does the compositor send
+ *    xdg_toplevel.configure(width, height, states) followed by
+ *    xdg_surface.configure(serial). The client must reply with
+ *    xdg_surface.ack_configure(serial) before attaching its first pixel buffer;
+ *    enforcing configured_sent && acked_configure prevents unconfigured 1x1 or
+ *    wrongly-sized flashes on the 3D cockpit monitors.
+ *
+ * 3. Spatial Monitor Assignment & Passive Instrument Cluster (CD-01 .. CD-09):
+ *    Every interactive xdg_toplevel receives its own dedicated 3D spatial monitor
+ *    slot (0..CD_APP_MONITORS-1) and a matching wl_surface.enter(wl_output) event.
+ *    The instrument cluster client (app_id "chromedrive.cluster") is routed to
+ *    slot CD_CLUSTER_MONITOR (CD-09, embedded inside the binnacle behind the
+ *    steering wheel) and mapped passively without stealing keyboard/pointer focus
+ *    or shifting the driver's camera view.
+ *
+ * 4. Frame Callback Backpressure (wl_surface.frame -> server_frame_done):
+ *    Frame callbacks queued via wl_surface.frame stay in pending_callbacks until
+ *    wl_surface.commit moves them to callbacks. Crucially, server_frame_done()
+ *    is called ONLY AFTER scene_render() and backend presentation complete,
+ *    firing wl_callback.done(compositor_ms) and destroying the one-shot callback
+ *    resource. This throttles client rendering to the compositor's actual
+ *    presentation rate and prevents background clients from spinning at 100% CPU. */
 #include "chrome.h"
 #include "xdg-shell-server.h"
 #include "xdg-decoration-server.h"

@@ -228,14 +228,14 @@ static void dashboard(Server *s){
  /* Deep padded dashboard: bevelled profile, rather than a flat HUD backdrop. */
  color(.115,.075,.175);glEnable(GL_TEXTURE_2D);glBindTexture(GL_TEXTURE_2D,s->carbon_tex);
  glBegin(GL_QUAD_STRIP);float profile[][2]={{-1.0f,.18f},{-.72f,.34f},{-.36f,.31f},{.2f,.14f},{.88f,-.24f},{1.5f,-.55f},{1.7f,-1.2f}};
- for(int i=0;i<7;i++){float ny=.9f,nz=.4f;if(i>3){ny=.55;nz=.8;}glNormal3f(0,ny,nz);glTexCoord2f(0,i*.38f);glVertex3f(-2.52,profile[i][1],profile[i][0]);glTexCoord2f(5,i*.38f);glVertex3f(2.52,profile[i][1],profile[i][0]);}glEnd();glDisable(GL_TEXTURE_2D);
+ for(int i=0;i<7;i++){float ny=.9f,nz=.4f;if(i>3){ny=.55;nz=.8;}glNormal3f(0,ny,nz);glTexCoord2f(0,i*.38f);glVertex3f(-3.05,profile[i][1],profile[i][0]);glTexCoord2f(5,i*.38f);glVertex3f(3.05,profile[i][1],profile[i][0]);}glEnd();glDisable(GL_TEXTURE_2D);
  /* Rich violet edge insert and chrome piping. */
- color(.28,.058,.44);box(0,-.11,.37,4.85,.19,.21);
- color(.43,.48,.57);cylinder(v3(-2.48,.18,-.49),v3(2.48,.18,-.49),.018,12);
- glow_line(v3(-2.46,.195,-.465),v3(2.46,.195,-.465),.008,nr,ng,nb);
- glow_line(v3(-2.44,-.23,.56),v3(2.44,-.23,.56),.009,nr,ng,nb);
+ color(.28,.058,.44);box(0,-.11,.37,5.7,.19,.21);
+ color(.43,.48,.57);cylinder(v3(-2.95,.18,-.49),v3(2.95,.18,-.49),.018,12);
+ glow_line(v3(-2.92,.195,-.465),v3(2.92,.195,-.465),.008,nr,ng,nb);
+ glow_line(v3(-2.88,-.23,.56),v3(2.88,-.23,.56),.009,nr,ng,nb);
  /* Purple hand-stitched seams, following the hood. */
- glDisable(GL_LIGHTING);color(.56,.31,.69);glLineWidth(1.3f);glBegin(GL_LINES);for(float x=-2.45;x<2.45;x+=.07f){glVertex3f(x,.317,-.22);glVertex3f(x+.035,.317,-.22);}glEnd();glEnable(GL_LIGHTING);
+ glDisable(GL_LIGHTING);color(.56,.31,.69);glLineWidth(1.3f);glBegin(GL_LINES);for(float x=-2.9;x<2.9;x+=.07f){glVertex3f(x,.317,-.22);glVertex3f(x+.035,.317,-.22);}glEnd();glEnable(GL_LIGHTING);
  /* Air vents in a machined surround. */
  for(int side=-1;side<=1;side+=2){glPushMatrix();glTranslatef(side*2.15,.19,-.46);glRotatef(-22,1,0,0);color(.24,.27,.33);rbox(0,0,0,.62,.23,.05,.045);color(.022,.027,.037);rbox(0,0,.031,.55,.16,.014,.023);for(int i=-3;i<=3;i++){color(.19,.22,.28);box(i*.068,0,.055,.012,.14,.025);}glPopMatrix();}
  /* Instrument binnacle. */
@@ -249,14 +249,15 @@ static void dashboard(Server *s){
  Plane console={.center={.78,.33,.48},.width=1.56,.height=.90,.yaw=-5,.pitch=-28};plane_begin(console);
  color(.37,.39,.49);rbox(0,0,-.028,1.64,.99,.12,.09);color(.035,.040,.059);rbox(0,0,.033,1.57,.92,.027,.065);texture(s->console_tex,-.78,-.45,1.56,.9,.05);
  glow_line(v3(-.70,-.425,.063),v3(.70,-.425,.063),.004,nr,ng,nb);glPopMatrix();
- /* A/C pillars, roof rails and the curved windshield header are painted
-  * regions of vehicle_body.c's shared shell. A second straight header here
-  * would cut across the glass and disagree with the canopy curvature. */
- /* Rear-view mirror, tiny garage reflection, mounted below the crown. */
- color(.2,.23,.3);cylinder(v3(.30,1.69,-.55),v3(.30,1.60,-.65),.018,16);
- glPushMatrix();glTranslatef(.30,1.55,-.65);glRotatef(-5,1,0,0);color(.40,.44,.52);rbox(0,0,0,.85,.26,.07,.06);color(.015,.028,.04);rbox(0,0,.043,.78,.20,.025,.04);texture(s->garage_tex,-.37,-.08,.74,.16,.06);glPopMatrix();
+ /* Canopy structure is rendered from vehicle_canopy_point() in both camera
+  * modes; no separate tall driver-only roof or straight header is needed. */
+ /* Rear-view mirror and bracket anchored to that exact windshield header. */
+ Vec3 header=vehicle_canopy_point(.45f,1.0f,1,NULL);
+ color(.30,.34,.42);cylinder(v3(.30,header.y-.025f,header.z),v3(.30,header.y-.15f,header.z+.09f),.035,16);
+ color(.24,.28,.36);cylinder(v3(.30,header.y-.15f,header.z+.09f),v3(.30,header.y-.21f,header.z+.12f),.024,14);
+ glPushMatrix();glTranslatef(.30,header.y-.23f,header.z+.12f);glRotatef(-5,1,0,0);color(.40,.44,.52);rbox(0,0,0,.85,.26,.07,.06);color(.015,.028,.04);rbox(0,0,.043,.78,.20,.025,.04);texture(s->garage_tex,-.37,-.08,.74,.16,.06);glPopMatrix();
  /* Quilted doors and visible subwoofers. */
- for(int side=-1;side<=1;side+=2){glPushMatrix();glTranslatef(side*2.55,-.39,.64);glRotatef(side*-40,0,1,0);color(.13,.058,.21);rbox(0,-.15,0,.68,1.04,.15,.14);glDisable(GL_LIGHTING);color(.36,.19,.46);glBegin(GL_LINES);for(float x=-.8;x<.8;x+=.12){glVertex3f(-.30,x,.081);glVertex3f(.3,x+.45,.081);glVertex3f(-.30,x+.45,.082);glVertex3f(.30,x,.082);}glEnd();glEnable(GL_LIGHTING);
+ for(int side=-1;side<=1;side+=2){glPushMatrix();glTranslatef(side*2.88,-.39,.64);glRotatef(side*-40,0,1,0);color(.13,.058,.21);rbox(0,-.15,0,.68,1.04,.15,.14);glDisable(GL_LIGHTING);color(.36,.19,.46);glBegin(GL_LINES);for(float x=-.8;x<.8;x+=.12){glVertex3f(-.30,x,.081);glVertex3f(.3,x+.45,.081);glVertex3f(-.30,x+.45,.082);glVertex3f(.30,x,.082);}glEnd();glEnable(GL_LIGHTING);
  glTranslatef(0,-.30,.15);color(.45,.48,.56);torus(.21,.024,48,10);color(.018,.023,.037);cylinder(v3(0,0,-.06),v3(0,0,.005),.19,48);color(.075,.085,.115);torus(.15,.024,48,10);color(.14,.15,.21);cylinder(v3(0,0,.008),v3(0,0,.045),.055,32);glPopMatrix();}
  /* Polished shifter on the transmission tunnel. */
  color(.045,.04,.072);rbox(.66,-.84,1.02,.70,.48,.29,.10);color(.28,.32,.40);cylinder(v3(.66,-.88,.96),v3(.66,-.49,.96),.025,20);glPushMatrix();glTranslatef(.66,-.47,.96);color(.65,.64,.74);torus(.054,.049,28,16);glPopMatrix();
@@ -342,7 +343,7 @@ static void draw_windshield_hud(Server *s){
  /* A transparent projection on the actual glass plane, not framebuffer
   * chrome. Its centre is intentionally quiet so the windshield app remains
   * readable; speed, pack and drive state sit around the edges. */
- Plane p={.center={0,1.15f,-1.08f},.width=2.55f,.height=.72f,.pitch=-8};
+ Plane p={.center={0,1.0f,-1.08f},.width=2.55f,.height=.62f,.pitch=-8};
  glDepthMask(GL_FALSE);plane_begin(p);texture(s->windshield_tex,-p.width/2,-p.height/2,p.width,p.height,0);glPopMatrix();glDepthMask(GL_TRUE);
 }
 void scene_init(Server *s){
@@ -375,9 +376,12 @@ static SceneCamera scene_camera(Server *s){
   /* Exterior cameras are expressed in car-local coordinates too, so they
    * follow the same rigid transform as the cockpit instead of drifting when
    * the vehicle moves. EXTERIOR uses a low front-quarter showcase angle;
-   * SYSTEMS uses a side view to expose the EV skateboard. */
- Vec3 local_eye=s->camera_mode==VEHICLE_CAMERA_CHASE?v3(7.4f,2.35f,-9.4f):v3(9.8f,3.4f,1.2f);
- Vec3 local_target=s->camera_mode==VEHICLE_CAMERA_CHASE?v3(0,.05f,-.20f):v3(0,-.15f,0);
+   * SYSTEMS uses a side view to expose the EV skateboard. Middle-drag yaw/pitch
+   * orbits smoothly around the car in both exterior inspection modes. */
+  Vec3 base_eye=s->camera_mode==VEHICLE_CAMERA_CHASE?v3(8.2f,2.3f,-10.4f):v3(9.6f,2.9f,1.2f);
+  Vec3 local_eye=rotate_y(base_eye,s->yaw);
+  local_eye.y=clampf(base_eye.y+(s->pitch+6.0f)*0.12f,0.4f,6.5f);
+  Vec3 local_target=s->camera_mode==VEHICLE_CAMERA_CHASE?v3(0,-.08f,-.20f):v3(0,-.15f,0);
   c.eye=vehicle_local_to_world(&s->vehicle,local_eye);
   Vec3 target=vehicle_local_to_world(&s->vehicle,local_target);
   c.forward=vnorm(vsub(target,c.eye));c.right=vnorm(vcross(c.forward,v3(0,1,0)));c.up=vcross(c.right,c.forward);

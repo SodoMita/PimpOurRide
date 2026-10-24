@@ -286,6 +286,12 @@ int main(int argc,char **argv){
   ui_update(&s);scene_render(&s);ui_draw_overlay(&s);
   if(auto_screenshot&&s.time>3){s.screenshot_requested=true;auto_screenshot=false;}if(s.screenshot_requested){scene_save_screenshot(&s,s.screenshot_path);s.screenshot_requested=false;app_notice(&s,"Screenshot saved");}
   if(s.headless)backend_headless_present(&s);else backend_sdl_present(&s);
+  /* Frame callback render loop pattern:
+   * Only AFTER scene_render() and backend_*_present() have sampled the newly
+   * committed Wayland textures and pushed the finished frame to RFB/SDL do we
+   * fire wl_callback.done(compositor_ms) via server_frame_done() and flush the
+   * client sockets. This paces Wayland clients to actual display consumption
+   * rather than allowing them to spin in an unthrottled render loop. */
   server_frame_done(&s,(uint32_t)(clock_now()*1000));wl_display_flush_clients(s.display);s.frames++;fps_frames++;
   if(frame_start-fps_start>.5){s.fps=fps_frames/(frame_start-fps_start);fps_frames=0;fps_start=frame_start;}
   if(exit_after>0&&s.time>=exit_after)s.running=false;

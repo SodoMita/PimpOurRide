@@ -1,11 +1,22 @@
 /* Default production backend: no X server anywhere.
  *  - GL context: surfaceless EGL (EGL_PLATFORM_SURFACELESS_MESA) rendering into
  *    our own FBO (color+depth-stencil renderbuffers), never a window.
+ *    Why: containers, CI runners, and headless servers have no host X11/Wayland
+ *    display or DRM master. EGL_PLATFORM_SURFACELESS_MESA + EGL_NO_SURFACE
+ *    (via EGL_KHR_surfaceless_context) activates a full desktop OpenGL context
+ *    (bound via eglBindAPI(EGL_OPENGL_API) before eglCreateContext) without any
+ *    window surface. Because default framebuffer 0 is incomplete on a
+ *    surfaceless context, we allocate an explicit FBO with a GL_RGBA8 color
+ *    renderbuffer and a GL_DEPTH24_STENCIL8 depth-stencil renderbuffer.
  *  - Display output: an embedded libvncserver RFB server — glReadPixels() each
- *    frame straight into the VNC framebuffer, no X11/compositor-of-compositors
- *    involved. Browsers reach it via a websockify+noVNC bridge (tools/viewer).
+ *    frame straight into the VNC framebuffer (flipping OpenGL's bottom-up rows
+ *    into RFB's top-down layout), no X11/compositor-of-compositors involved.
+ *    Browsers reach it via a websockify+noVNC bridge (tools/viewer).
  *  - Input: RFB pointer/keyboard callbacks drive the exact same server_* input
  *    API the SDL backend uses, so behavior (picking, focus, hotkeys) matches.
+ *  - Single-thread GL & teardown invariants: all GL work stays on the main
+ *    compositor thread, and FBO/renderbuffers are deleted while the context is
+ *    still current before eglMakeCurrent(..., EGL_NO_CONTEXT) / eglTerminate.
  *  This is also the only backend that supports zwp_linux_dmabuf_v1, because
  *  EGLImage only interoperates with an EGL-created GL context (see dmabuf.c).
  */

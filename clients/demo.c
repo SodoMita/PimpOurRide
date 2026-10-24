@@ -133,9 +133,24 @@ static bool make_buffer(App *a,Buffer *b){
  int fd=memfd_create("chromedrive-demo",MFD_CLOEXEC);if(fd<0||ftruncate(fd,b->bytes)<0){if(fd>=0)close(fd);return false;}
  b->pixels=mmap(NULL,b->bytes,PROT_READ|PROT_WRITE,MAP_SHARED,fd,0);if(b->pixels==MAP_FAILED){close(fd);return false;}struct wl_shm_pool *pool=wl_shm_create_pool(a->shm,fd,b->bytes);b->wl=wl_shm_pool_create_buffer(pool,0,a->w,a->h,a->w*4,WL_SHM_FORMAT_ARGB8888);wl_shm_pool_destroy(pool);close(fd);wl_buffer_add_listener(b->wl,&buffer_listener,b);return true;
 }
-static void frame_done(void *data,struct wl_callback *cb,uint32_t time){App *a=data;wl_callback_destroy(cb);a->frame_ready=true;}
+static void frame_done(void *data,struct wl_callback *cb,uint32_t time){
+ /* Why we destroy cb and flip frame_ready here:
+  * wl_surface.frame callbacks are one-shot resources fired by the compositor
+  * in server_frame_done() only AFTER the previous frame was composited into the
+  * 3D cockpit and presented. Waiting for frame_done before issuing the next
+  * draw() provides natural compositor-driven backpressure so the client never
+  * renders faster than the compositor displays frames. */
+ App *a=data;(void)time;wl_callback_destroy(cb);a->frame_ready=true;
+}
 static const struct wl_callback_listener frame_listener={.done=frame_done};
 static void draw(App *a,double t){
+ /* Double-buffered SHM submission sequence:
+  * 1. Pick an idle wl_shm buffer (released by the compositor via wl_buffer.release
+  *    as soon as surface_commit uploaded its pixels into the GL texture).
+  * 2. Rasterize with Cairo into the mmap'd memfd region and flush.
+  * 3. Stage wl_surface.attach + wl_surface.damage_buffer + wl_surface.frame,
+  *    then finalize atomically with wl_surface.commit and mark frame_ready=false
+  *    until the compositor's frame_done event arrives. */
  Buffer *b=NULL;for(int i=0;i<2;i++)if(!a->buffers[i].busy){b=&a->buffers[i];break;}if(!b)return;if(!b->wl||b->w!=a->w||b->h!=a->h)if(!make_buffer(a,b)){a->running=false;return;}
  cairo_surface_t *surface=cairo_image_surface_create_for_data(b->pixels,CAIRO_FORMAT_ARGB32,a->w,a->h,a->w*4);cairo_t *c=cairo_create(surface);cairo_scale(c,a->w/1000.0,a->h/(a->mode==3?404.0:625.0));
  if(a->mode==0)files_draw(a,c);else if(a->mode==1)audio_draw(a,c,t);else if(a->mode==2)meters_draw(a,c,t);else cluster_draw(a,c);cairo_destroy(c);cairo_surface_flush(surface);cairo_surface_destroy(surface);

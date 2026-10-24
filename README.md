@@ -282,7 +282,7 @@ include/chrome.h, math3d.h, vehicle.h, telemetry.h, cdconfig.h  shared composito
 src/math3d.c                 camera rays, plane intersection, animated car-part mounts
 src/vehicle.c                fixed-step hover EV dynamics, splines, exact rig transforms
 src/vehicle_scene.c          electric systems, spline cables, hover pods + render orchestration
-src/vehicle_body.c           shared crowned hull/canopy/glass + sculpted detailed seating
+src/vehicle_seat.c           sculpted stitched/perforated seating for driver and EV cutaway
 src/telemetry.c              shared live EV state for the native instrument client
 src/keymap.c                 exact RFB/X11 keysym to Linux evdev translation
 src/wayland.c                the actual compositor protocol implementation

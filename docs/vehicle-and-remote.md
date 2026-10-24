@@ -49,61 +49,74 @@ an untrusted network. Do not place credentials in the repository.
 
 ## Spline-built electric vehicle
 
-`src/vehicle_scene.c` renders the electric systems in car-local coordinates;
-`src/vehicle_body.c` owns the shared body, glazing, canopy structure, and seats.
-One set of longitudinal stations is interpolated with Catmull-Rom splines and
-evaluated through one closed cross-section for the hull, hood, windshield,
-roof, and rear deck. This representation was chosen because it:
+`src/vehicle.c` and `src/vehicle_scene.c` evaluate and render a complete
+wheel-less electric hover-car concept in car-local coordinates. Longitudinal
+body stations (`9` control stations from `z = -5.60` to `+5.50`), transverse
+cross-section profile control points (`5` control points from `v = 0` undertray
+centreline through `0.25` lower chine, `0.55` widest fender crease, `0.84`
+upper beltline shoulder, and `1.00` hood/deck spine), and `7` fastback canopy
+stations are interpolated with bicubic Catmull-Rom splines (`vehicle_hull_point`
+and `vehicle_canopy_point`). This representation was chosen because it:
 
 - interpolates the designer's control stations rather than merely approaching
-  them, so the nose, cabin, and deck remain anchored;
-- gives continuous tangents across panel segments without a mesh dependency;
-- keeps edits local, unlike changing a global polynomial;
-- can be evaluated by both the renderer and small native unit tests.
+  them, so the nose, cabin, haunches, and Kammback tail remain anchored;
+- computes analytical central-difference normals (`dp/dv × dp/du`) with exact
+  centreline horizontal tangent enforcement (`normal.x = 0` at `v = 0` and
+  `v = 1`) for seamless metallic paint highlights across `x = 0`;
+- anchors every exterior trim element (`hull_offset_point`)—laser-matrix
+  headlamps, full-width crimson OLED rear lightbar, camera mirror stalks, flush
+  door handles, side rocker neon blades, hover-bay side gill louvers, hood aero
+  extractors, and charge port door—directly onto the evaluated hull surface so
+  zero components float detached outside the body;
+- verifies in `tests/test_vehicle.c` via `vehicle_point_inside_envelope()` that
+  every internal EV component sits strictly inside the hull and canopy envelope.
 
 The orange high-voltage harnesses and blue coolant loop use the same spline
 routine in 3D, including duplicated endpoint control points for exact connector
-anchoring. No wheels or tire meshes are generated.
+anchoring. No wheels, tires, or wheel arches are generated.
 
-The model includes the principal production-EV systems rather than only a body
+The model includes the principal 800 V hover-EV systems rather than only a body
 shell:
 
 - structural skateboard chassis and an 82 kWh pack with twelve cell modules,
-  bus bars, contactor/fuse junction hardware, and service covers;
-- front and rear permanent-magnet drive units, reduction housings, inverters,
-  and half-shaft-like housings repurposed for the hover platform;
-- four emissive magnetic hover pods (visual geometry, not four tire solvers);
-- orange high-voltage routing, onboard charger, charge port, high-voltage to
-  12 V DC/DC converter, and a low-voltage battery;
-- front heat exchanger, coolant reservoir, and a separate thermal loop;
-- panoramic fastback glazing, flush camera mirrors and roof sensor strip, and
-  thin curved LED signatures.
+  orange 800 V busbars, contactor/fuse junction hardware, and service covers;
+- front (`160 kW`) and rear (`260 kW`) axial-flux PMSM drive units, helical
+  reduction housings, finned SiC inverters, and magnetic vector-flux conduits
+  feeding the hover bays;
+- four flush-mounted underbody magnetic-levitation / plasma-ring hover nacelles
+  recessed into the front and rear undertray aprons (with titanium stator vanes
+  and animated ground-effect plasma rings hovering above the garage floor);
+- orange high-voltage routing, onboard AC charger, flush charge port, high-voltage
+  to 12 V DC/DC converter, and a 12 V auxiliary LiFePO4 battery;
+- slanted front heat exchanger, translucent glycol reservoir, and a separate
+  thermal loop;
+- panoramic fastback electrochromic glazing, flush camera mirrors, roof LiDAR
+  pod, and thin curved LED signatures.
 
-The exterior is a closed, crowned superellipse-style loft. Its belt vertices
-are shared exactly by the lower hull and upper glazing; the centre-crown value
-also shapes the painted hood and deck when there is no cabin above them. Dark
-glass is limited to the windshield, side windows, and rear slope. Painted A/C
-pillars, roof rails, and the curved header are regions of that same surface,
-not separate approximations. The single-frame nose, emblem, camera mirrors,
-and light signatures are tessellated or anchored against the actual shell.
+`src/vehicle_seat.c` supplies both front seats as sculpted upholstery rather
+than cuboids: 25-ring by 49-sample cushion/back lofts, crowned superellipsoid
+bolsters and headrests, recessed perforated inserts, continuous piping,
+stitches, recliner hardware, rails, and belt buckles. The same detailed seat
+geometry is used in the driver and EV-cutaway views. It is not submitted in the
+opaque exterior pass, where the body already hides it; envelope tests include
+the transformed outer headrest crowns as well as the EV components.
 
-The driver view uses the identical stations with a late, transparent,
-non-depth-writing glass pass. The dashboard, doors, mirror, and windshield
-display use compatible interior hard points; there is no duplicate straight
-windshield header crossing the curved canopy. Closed-car views omit internal
-high-voltage hardware that the body should occlude, while the cutaway retains
-all of it. This also prevents orange harnesses and inverters from appearing
-inside the passenger space.
-
-Seats are sculpted 25-ring by 49-sample lofts with tapered backrests, lumbar
-and thigh profiles, separate cushions and bolsters, perforated inserts,
-double stitching, recliner hardware, headrest posts, belt buckles, and seat
-controls. They are not cuboid placeholders, and the same seat renderer is
-used in driver and systems views.
+The exterior is closed at the nose (`u = 0`) and tail (`u = 1`) by watertight
+front single-frame grille and rear Kammback diffuser fascia caps, with a
+continuous dark panoramic canopy whose sill (`v_c = 0`) is embedded directly
+into the hull's upper beltline deck (`v = 0.84`). Exterior and driver views
+evaluate that exact same `vehicle_canopy_point()` surface; the mirror bracket
+is anchored to its front roof header. Driver mode changes only the material
+regions and draws the remaining glass in a late transparent pass—there is no
+separate driver-only roof approximation. `render_ev_systems()` is omitted in
+first person so internal HV cables never poke through the dashboard pad, and
+the exterior camera (`VEHICLE_CAMERA_CHASE`) supports middle-drag / right-drag
+orbit inspection around the vehicle.
 
 F5 cycles **driver → exterior concept → EV systems cutaway**. The cutaway removes
-opaque body panels but retains the identical spline wire cage so the electrical
-and thermal components can be inspected in place.
+opaque body panels and renders the full hull + fastback canopy spline wire cage
+so the electrical, thermal, and hover-thruster components can be inspected
+entirely inside the vehicle envelope.
 
 ## Vehicle dynamics
 
