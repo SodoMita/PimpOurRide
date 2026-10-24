@@ -82,7 +82,7 @@ static bool file_exists(const char *p) { struct stat st; return p && stat(p, &st
 /* ------------------------------------------------- schema for slider tabs */
 
 enum { FILE_G3 = 0, FILE_CD = 1 };
-typedef enum { K_FLOAT, K_INT, K_BOOL, K_COLOR, K_ENUM, K_INT_INPUT } Kind;
+typedef enum { K_FLOAT, K_INT, K_BOOL, K_COLOR, K_ENUM, K_INT_INPUT, K_FLOAT_INPUT } Kind;
 
 typedef struct {
     const char *group;          /* heading drawn when it changes */
@@ -132,6 +132,9 @@ static const Def CD_DEFS[] = {
     { "Display", "display", "height", "Framebuffer height", K_INT, 400, 2160, 10, "%.0f", "1000", {0}, 0, false, true },
     { "Display", "display", "fps", "Frame cap (fps)", K_INT, 10, 120, 1, "%.0f", "60", {0}, 0, false, false },
     { "Display", "display", "fov", "Driver field of view", K_FLOAT, 40, 100, 0.5, "%.1f", "65", {0}, 0, false, false },
+    { "Display", "display", "render_scale", "Render scale (1 = 100%)", K_FLOAT_INPUT, 0.001, 100, 0, "%.6g", "1", {0}, 0, false, false },
+    { "Display", "display", "render_upscale", "Render upscale sampling", K_ENUM, 0, 1, 1, NULL, "linear", { "nearest", "linear" }, 2, true, false },
+    { "Display", "display", "render_downscale", "Render downscale sampling", K_ENUM, 0, 5, 1, NULL, "linear", { "nearest", "linear", "nearest_mipmap_nearest", "linear_mipmap_nearest", "nearest_mipmap_linear", "linear_mipmap_linear" }, 6, true, false },
     { "Display", "display", "fullscreen", "Start fullscreen (windowed)", K_BOOL, 0, 0, 0, NULL, "false", {0}, 0, false, true },
     { "Cockpit", "cockpit", "neon", "Underglow colour", K_ENUM, 0, 2, 1, NULL, "0", { "Ultraviolet", "Ice Blue", "Acid Lime" }, 3, false, false },
     { "Cockpit", "cockpit", "hud", "HUD overlay", K_BOOL, 0, 0, 0, NULL, "true", {0}, 0, false, false },
@@ -322,28 +325,38 @@ static void def_set_enum(Gui *g, int file, const Def *d, int idx) {
     touch_file(g, file);
 }
 
-/* Numeric text input for wide-range integers (the VNC port): dragging a
- * slider across 1024..65535 cannot land on an exact copied/typed port, so
- * this def is a real field. Enter/blur commits, Escape reverts; an invalid
- * or out-of-range value is never written. */
+/* Numeric text inputs. The VNC port stays whole-number-only; render_scale
+ * is a typed float accepting digits, one decimal point and a simple
+ * exponent. Enter/blur commits, Escape reverts; invalid or out-of-range text
+ * is never written. */
 static const Def *num_def(Gui *g) {
     if (g->num_idx < 0) return NULL;
     return g->num_file == FILE_G3 ? &G3_DEFS[g->num_idx] : &CD_DEFS[g->num_idx];
 }
-static bool num_parse(const char *s, long *out) {
+static bool num_parse(const Def *d, const char *s, double *out) {
     if (!s || !*s) return false;
     errno = 0;
     char *end = NULL;
+    if (d->kind == K_FLOAT_INPUT) {
+        double v = strtod(s, &end);
+        if (errno || !end || end == s || *end || !isfinite(v)) return false;
+        *out = v;
+        return true;
+    }
     long v = strtol(s, &end, 10);
-    if (errno || !end || *end) return false;
-    *out = v;
+    if (errno || !end || end == s || *end) return false;
+    *out = (double)v;
     return true;
 }
-static bool num_value_valid(Gui *g, long *out) {
+static bool num_value_valid(Gui *g, double *out) {
     const Def *d = num_def(g);
-    long v;
-    if (!d || !num_parse(g->num_field.buf, &v)) return false;
-    if (v < (long)ceil(d->min) || v > (long)floor(d->max)) return false;
+    double v;
+    if (!d || !num_parse(d, g->num_field.buf, &v)) return false;
+    if (d->kind == K_FLOAT_INPUT) {
+        if (v < d->min || v > d->max) return false;
+    } else if (v < (double)ceil(d->min) || v > (double)floor(d->max)) {
+        return false;
+    }
     if (out) *out = v;
     return true;
 }
@@ -351,8 +364,12 @@ static void num_begin(Gui *g, int file, int idx) {
     const Def *d = file == FILE_G3 ? &G3_DEFS[idx] : &CD_DEFS[idx];
     g->num_file = file;
     g->num_idx = idx;
-    snprintf(g->num_field.buf, sizeof(g->num_field.buf), "%lld",
-             llround(def_get_num(g, file, d)));
+    if (d->kind == K_FLOAT_INPUT)
+        snprintf(g->num_field.buf, sizeof(g->num_field.buf), "%.6g",
+                 def_get_num(g, file, d));
+    else
+        snprintf(g->num_field.buf, sizeof(g->num_field.buf), "%lld",
+                 llround(def_get_num(g, file, d)));
     g->num_field.caret = (int)strlen(g->num_field.buf);
     g->num_dirty = false;
     g->focus = -1;
@@ -362,17 +379,21 @@ static bool num_commit(Gui *g) {
     const Def *d = num_def(g);
     if (!d) return true;
     if (!g->num_dirty) { g->num_idx = -1; g->draw_dirty = true; return true; }
-    long v;
+    double v;
     if (!num_value_valid(g, &v)) {
-        snprintf(g->saved_note, sizeof(g->saved_note),
-                 "Enter a whole number from %.0f to %.0f", d->min, d->max);
+        if (d->kind == K_FLOAT_INPUT)
+            snprintf(g->saved_note, sizeof(g->saved_note),
+                     "Enter a number from %g to %g", d->min, d->max);
+        else
+            snprintf(g->saved_note, sizeof(g->saved_note),
+                     "Enter a whole number from %.0f to %.0f", d->min, d->max);
         g->draw_dirty = true;
         return false;
     }
     int file = g->num_file;
     g->num_idx = -1;
     g->num_dirty = false;
-    def_set_num(g, file, d, (double)v);
+    def_set_num(g, file, d, v);
     flush_saves(g, true);
     return true;
 }
@@ -1145,9 +1166,9 @@ static void draw_schema_tab(Gui *g, cairo_t *c, int file, const Def *defs, int n
                 add_box(g, H_TOGGLE, file, i, 0, vx - 4, ry, 90, 28);
                 break;
             }
-            case K_FLOAT: case K_INT: case K_INT_INPUT: {
+            case K_FLOAT: case K_INT: case K_INT_INPUT: case K_FLOAT_INPUT: {
                 double v = def_get_num(g, file, d);
-                if (d->kind == K_INT_INPUT) {
+                if (d->kind == K_INT_INPUT || d->kind == K_FLOAT_INPUT) {
                     bool active = g->num_file == file && g->num_idx == i;
                     bool invalid = active && g->num_dirty && !num_value_valid(g, NULL);
                     snprintf(val, sizeof(val), d->fmt, v);
@@ -1174,7 +1195,10 @@ static void draw_schema_tab(Gui *g, cairo_t *c, int file, const Def *defs, int n
                     }
                     font(c, 12, false, true); fg(c, invalid ? 1 : .52, invalid ? .55 : .66, invalid ? .48 : .82);
                     char range[64];
-                    snprintf(range, sizeof(range), "%.0f-%.0f  (type exact value)", d->min, d->max);
+                    if (d->kind == K_FLOAT_INPUT)
+                        snprintf(range, sizeof(range), "%g-%g  (type exact value)", d->min, d->max);
+                    else
+                        snprintf(range, sizeof(range), "%.0f-%.0f  (type exact value)", d->min, d->max);
                     txt(c, vx + 194, ry + 19, range);
                     add_box(g, H_NUM_FIELD, file, i, 0, vx, ry, 180, 30);
                 } else {
@@ -1838,12 +1862,23 @@ static void gui_key(Gui *g, xkb_keysym_t sym, const char *utf8, int utf8_len) {
         case XKB_KEY_End: f->caret = len; break;
         default: {
             const Def *d = num_def(g);
-            if (utf8 && utf8_len == 1 && len < 12 &&
-                (isdigit((unsigned char)utf8[0]) ||
-                 (utf8[0] == '-' && d && d->min < 0 && f->caret == 0 && f->buf[0] != '-'))) {
-                memmove(f->buf + f->caret + 1, f->buf + f->caret, (size_t)(len - f->caret + 1));
-                f->buf[f->caret++] = utf8[0];
-                edited = true;
+            bool is_float = d && d->kind == K_FLOAT_INPUT;
+            if (utf8 && utf8_len == 1 && len < (is_float ? 24 : 12)) {
+                char ch = utf8[0];
+                bool digit = isdigit((unsigned char)ch) != 0;
+                bool minus = ch == '-' && d && d->min < 0 && f->caret == 0 && f->buf[0] != '-';
+                bool dot = is_float && ch == '.' && !strchr(f->buf, '.') &&
+                           !strchr(f->buf, 'e') && !strchr(f->buf, 'E');
+                bool exp = is_float && (ch == 'e' || ch == 'E') &&
+                           !strchr(f->buf, 'e') && !strchr(f->buf, 'E') && f->caret > 0 &&
+                           (isdigit((unsigned char)f->buf[f->caret - 1]) || f->buf[f->caret - 1] == '.');
+                bool expsign = is_float && (ch == '+' || ch == '-') && f->caret > 0 &&
+                               (f->buf[f->caret - 1] == 'e' || f->buf[f->caret - 1] == 'E');
+                if (digit || minus || dot || exp || expsign) {
+                    memmove(f->buf + f->caret + 1, f->buf + f->caret, (size_t)(len - f->caret + 1));
+                    f->buf[f->caret++] = ch;
+                    edited = true;
+                }
             }
             break;
         }
@@ -2152,6 +2187,26 @@ static int selftest(const char *config_dir_arg) {
           "out-of-range VNC port overwrote the saved value");
     gui_key(&g, XKB_KEY_Escape, NULL, 0);
     CHECK(g.num_idx < 0, "Escape did not cancel VNC port edit");
+    /* render_scale is a typed float input (not a slider); out-of-range or
+     * malformed text is never written. */
+    int ri = -1;
+    for (int i = 0; i < N_CD_DEFS; i++) if (!strcmp(CD_DEFS[i].key, "render_scale")) ri = i;
+    CHECK(ri >= 0 && CD_DEFS[ri].kind == K_FLOAT_INPUT, "render_scale is not a float input def");
+    img = render_tab_image(&g, TAB_CD); cairo_surface_destroy(img);
+    CHECK(find_box(&g, H_NUM_FIELD, FILE_CD, ri) != NULL, "no render_scale input hitbox");
+    CHECK(find_box(&g, H_SLIDER, FILE_CD, ri) == NULL, "render_scale still has a slider hitbox");
+    CHECK(click_box(&g, H_NUM_FIELD, FILE_CD, ri), "cannot focus render_scale input");
+    clear_field(&g); type_text(&g, "2.5");
+    gui_key(&g, XKB_KEY_Return, NULL, 0);
+    CHECK(g.num_idx < 0 && fabs(cd_config_get_double(g.store[FILE_CD], "display", "render_scale", -1) - 2.5) < 1e-9,
+          "typed render_scale did not commit");
+    CHECK(click_box(&g, H_NUM_FIELD, FILE_CD, ri), "cannot refocus render_scale input");
+    clear_field(&g); type_text(&g, "0");
+    gui_key(&g, XKB_KEY_Return, NULL, 0);
+    CHECK(g.num_idx == ri && fabs(cd_config_get_double(g.store[FILE_CD], "display", "render_scale", -1) - 2.5) < 1e-9,
+          "out-of-range render_scale overwrote the saved value");
+    gui_key(&g, XKB_KEY_Escape, NULL, 0);
+    CHECK(g.num_idx < 0, "Escape did not cancel render_scale edit");
     flush_saves(&g, true);
 
     /* Render all three tabs; each must be visibly non-blank. */
@@ -2172,6 +2227,7 @@ static int selftest(const char *config_dir_arg) {
     CHECK(v && cd_config_get_bool(v, "app.files", "autostart", true) == false, "autostart not saved");
     CHECK(v && !strcmp(cd_config_get_string(v, "cockpit", "background", ""), "texture"), "background not saved");
     CHECK(v && cd_config_get_int(v, "session", "vnc_port", -1) == 5917, "VNC port not saved");
+    CHECK(v && fabs(cd_config_get_double(v, "display", "render_scale", -1) - 2.5) < 1e-9, "render_scale not saved");
     CHECK(v && !strcmp(cd_config_get_string(v, "app.cockpit", "action", ""), "app") &&
           !strcmp(cd_config_get_string(v, "app.cockpit", "name", ""), "Garage3D") &&
           strstr(cd_config_get_string(v, "app.cockpit", "exec", ""), "garage3d") &&

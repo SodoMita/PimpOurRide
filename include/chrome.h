@@ -109,6 +109,16 @@ struct Server {
  SDL_Window *window;SDL_GLContext gl;                 /* windowed/dev backend (X11 via SDL2, GLX) */
  EGLDisplay egl_display;EGLContext egl_context;        /* headless backend (surfaceless EGL, no X) */
  GLuint target_fbo,fbo_color_rb,fbo_depth_rb;          /* headless render target; 0 (default) when windowed */
+ /* Render-to-texture offscreen pass. The compositor multiplies the output
+  * size by render_scale, samples the result into target_fbo with separate
+  * mag/min filters, and falls back to direct-to-output if allocation fails.
+  * render_width/height are 0 when that fallback is active. */
+ double render_scale;
+ GLuint render_mag_filter,render_min_filter;           /* requested from [display] */
+ GLuint rtt_fbo,rtt_color_tex,rtt_depth_rb;
+ int rtt_width,rtt_height;                             /* last allocation attempt */
+ GLuint rtt_mag_filter,rtt_min_filter;                 /* filters of last attempt */
+ int render_width,render_height;                       /* active offscreen size, 0 = direct */
  void *vnc_screen;int vnc_port;uint8_t *vnc_pixels;    /* rfbScreenInfoPtr, opaque here (see backend_headless.c) */
  int vnc_prev_mask,vnc_prev_x,vnc_prev_y;              /* RFB pointer edge-detection state (no separate down/up events in the protocol) */
  bool dmabuf_supported;int dmabuf_format_count;DmabufFormat dmabuf_formats[CD_DMABUF_MAX_FORMATS];
@@ -156,6 +166,10 @@ void server_each_surface(Surface *root,void (*fn)(Surface*,int,int,void*),void *
 uint32_t sdl_to_evdev(SDL_Scancode code);
 void scene_init(Server *s);
 void scene_render(Server *s);
+/* Offscreen pass: begin binds/allocates the scaled render target and returns
+ * true; false means the direct-to-output fallback is in use. end blits it. */
+bool scene_rtt_begin(Server *s);
+void scene_rtt_end(Server *s);
 void scene_finish(Server *s);
 Hit scene_pick(Server *s,float x,float y,bool grab);
 void scene_focus_monitor(Server *s,int slot,bool zoom);

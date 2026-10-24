@@ -27,6 +27,33 @@ void app_notice(Server *s,const char *fmt,...){va_list args;va_start(args,fmt);v
 static char config_path[4096];
 static time_t config_mtime_seen;
 static bool config_enabled=true;
+/* Render sampling tokens map straight to GL filters. Upscale only accepts
+ * the two non-mipmap modes; downscale additionally accepts the four mipmap
+ * combinations. Unknown tokens leave the previous setting untouched. */
+static bool config_filter(const char *value,bool mipmaps,GLuint *out){
+ if(!strcmp(value,"nearest")){*out=GL_NEAREST;return true;}
+ if(!strcmp(value,"linear")){*out=GL_LINEAR;return true;}
+ if(!mipmaps)return false;
+ if(!strcmp(value,"nearest_mipmap_nearest")){*out=GL_NEAREST_MIPMAP_NEAREST;return true;}
+ if(!strcmp(value,"linear_mipmap_nearest")){*out=GL_LINEAR_MIPMAP_NEAREST;return true;}
+ if(!strcmp(value,"nearest_mipmap_linear")){*out=GL_NEAREST_MIPMAP_LINEAR;return true;}
+ if(!strcmp(value,"linear_mipmap_linear")){*out=GL_LINEAR_MIPMAP_LINEAR;return true;}
+ return false;
+}
+static void apply_render_config(Server *s,const CdConfig *cfg){
+ const char *v=cd_config_get_string(cfg,"display","render_scale",NULL);
+ if(v){
+  char *end=NULL;errno=0;double n=strtod(v,&end);
+  if(errno==0&&end!=v&&end&&!*end&&isfinite(n)&&n>=0.001&&n<=100.0)s->render_scale=n;
+  else fprintf(stderr,"[config] ignoring render_scale '%s' (want finite 0.001..100)\n",v);
+ }
+ v=cd_config_get_string(cfg,"display","render_upscale",NULL);
+ if(v){GLuint f;if(config_filter(v,false,&f))s->render_mag_filter=f;
+  else fprintf(stderr,"[config] ignoring render_upscale '%s' (want nearest|linear)\n",v);}
+ v=cd_config_get_string(cfg,"display","render_downscale",NULL);
+ if(v){GLuint f;if(config_filter(v,true,&f))s->render_min_filter=f;
+  else fprintf(stderr,"[config] ignoring render_downscale '%s' (want nearest|linear|nearest_mipmap_nearest|linear_mipmap_nearest|nearest_mipmap_linear|linear_mipmap_linear)\n",v);}
+}
 static void apply_config(Server *s,const CdConfig *cfg,bool startup,const char **socket_out){
  if(startup){
   long w=cd_config_get_int(cfg,"display","width",s->width),h=cd_config_get_int(cfg,"display","height",s->height);
@@ -44,6 +71,7 @@ static void apply_config(Server *s,const CdConfig *cfg,bool startup,const char *
  s->fps_limit=(int)clampf((float)cd_config_get_int(cfg,"display","fps",s->fps_limit),1,120);
  s->target_fov=clampf((float)cd_config_get_double(cfg,"display","fov",s->target_fov),40,100);
  if(startup)s->fov=s->target_fov;
+ apply_render_config(s,cfg);
  long neon=cd_config_get_int(cfg,"cockpit","neon",s->theme);neon=((neon%3)+3)%3;
  if((int)neon!=s->theme){s->theme=(int)neon;s->rebuild_scene=true;}
  s->hud_visible=cd_config_get_bool(cfg,"cockpit","hud",s->hud_visible);
@@ -478,7 +506,7 @@ bool app_global_key(Server *s,uint32_t evdev,bool down){
 }
 static void usage(const char *name){printf("ChromeDrive " CD_VERSION " — native, first-person Wayland cockpit\n\nUsage: %s [options]\n  --demo                Start a real terminal + Files + Audio clients\n  --socket NAME         Wayland socket (default: automatic)\n  --exec COMMAND        Launch an extra Wayland client (repeatable)\n  --size WIDTHxHEIGHT   Framebuffer/host window size (default 1600x1000)\n  --fps N               Frame cap, 1..120 (default 60)\n  --headless            Run with no X server: surfaceless EGL + built-in VNC server (default)\n  --windowed            Dev/debug mode: open a real SDL2/GLX window on an X server instead\n  --vnc-port N          VNC port for --headless mode (default 5900)\n  --fullscreen          --windowed only: start fullscreen, F11 to leave\n  --exit-after SECONDS   Useful for automated checks\n  --screenshot PATH     Capture a WebP after 3 seconds\n  --config PATH         Config file (default: ~/.config/chromedrive/chromedrive.conf)\n  --no-config           Ignore the config file entirely\n  --help                Show this help\n\nF1 help | F2 cockpit | F3 focus | F4 neon | F5 arrange window | F6 next display\nMiddle-drag/VNC-drag to look | Drag a titlebar to move | HANDLES button shows move/rotate/resize gizmo | Ctrl+Alt+Enter new terminal\n",name);}
 int main(int argc,char **argv){
- Server s={.width=1600,.height=1000,.fps_limit=60,.running=true,.hud_visible=true,.hover_button=-1,.keymap_fd=-1,.arrange_slot=-1,.frame_drag_slot=-1,.fov=65,.target_fov=65,.eye={0,1.0f,2.8f},.headless=true,.vnc_port=5900};
+ Server s={.width=1600,.height=1000,.fps_limit=60,.running=true,.hud_visible=true,.hover_button=-1,.keymap_fd=-1,.arrange_slot=-1,.frame_drag_slot=-1,.fov=65,.target_fov=65,.eye={0,1.0f,2.8f},.headless=true,.vnc_port=5900,.render_scale=1,.render_mag_filter=GL_LINEAR,.render_min_filter=GL_LINEAR};
  const char *socket_name=NULL;double exit_after=0;bool auto_screenshot=false;
  /* Config pre-scan: --config/--no-config must be known before the file is
   * read, and the file must be read before the real option pass below so
@@ -540,7 +568,10 @@ int main(int argc,char **argv){
   Hit hover=scene_pick(&s,s.mouse_x,s.mouse_y,false);s.hover_button=hover.kind==HIT_BUTTON?hover.button:-1;s.cog_hover=hover.kind==HIT_COG;
   s.cog_angle+=((s.time<s.cog_spin_until)?540.f:s.cog_hover?160.f:20.f)*(float)s.dt;if(s.cog_angle>=360.f)s.cog_angle-=360.f;
   glBindFramebuffer(GL_FRAMEBUFFER,s.target_fbo);
+  bool rtt=scene_rtt_begin(&s);
   ui_update(&s);scene_render(&s);ui_draw_overlay(&s);
+  if(rtt)scene_rtt_end(&s);
+  else{glBindFramebuffer(GL_FRAMEBUFFER,s.target_fbo);glViewport(0,0,s.width,s.height);}
   if(auto_screenshot&&s.time>3){s.screenshot_requested=true;auto_screenshot=false;}if(s.screenshot_requested){scene_save_screenshot(&s,s.screenshot_path);s.screenshot_requested=false;app_notice(&s,"Screenshot saved");}
   if(s.headless)backend_headless_present(&s);else backend_sdl_present(&s);
   server_frame_done(&s,(uint32_t)(clock_now()*1000));wl_display_flush_clients(s.display);s.frames++;fps_frames++;
