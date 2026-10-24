@@ -7,6 +7,15 @@ driver's seat, first-person. Dashboard buttons — picked with real 3D raycasts,
 not HTML — launch genuine Wayland applications, and **each app gets its own
 spatial monitor** mounted around the windshield.
 
+The cockpit now belongs to a **spline-built electric hover car**. Its modeled
+82 kWh skateboard pack, dual drive units, power electronics, charging hardware,
+and thermal loop can be inspected in an exterior systems cutaway. Fixed-step
+120 Hz dynamics make the whole car/cockpit/monitor rig drive through the 3D
+garage—without pretending to simulate wheels. F7 switches the physical steering
+wheel and driving keys between Wayland-client input and hover-car control; F5
+cycles driver, chase, and EV-systems cameras. See
+[`docs/vehicle-and-remote.md`](docs/vehicle-and-remote.md).
+
 This is a real compositor: it implements `wl_compositor`, `wl_subcompositor`,
 `xdg-shell` (toplevels + popups), `wl_seat` (pointer + xkbcommon keyboard),
 `wl_data_device_manager` (in-session clipboard), `zxdg_decoration_manager_v1`,
@@ -168,6 +177,24 @@ details: [`docs/configuration.md`](docs/configuration.md).
 ./bin/chromedrive-config --selftest               # headless widget/file test (make test)
 ```
 
+### Electric hover car and dual-mode steering
+
+The body panels, roof, high-voltage cables, and coolant lines use interpolated
+Catmull-Rom splines. The systems view exposes the battery modules, front/rear
+permanent-magnet motors, reduction housings, inverters, onboard charger,
+DC/DC converter, contactor box, low-voltage battery, cooling loop, and four
+hover pods. A single heave spring/damper replaces wheel simulation by design.
+
+In **client mode** (the default), dragging the 3D steering wheel sends
+horizontal `wl_pointer.axis` input to the focused app and W/A/S/D remain app
+keys. In **drive mode**, W/up accelerates, S/down brakes then reverses,
+A/D/left/right steer, Space brakes, and dragging the wheel steers directly.
+Client mode applies a parking brake. The web viewer includes hold-to-drive
+buttons with stuck-key protection.
+
+Implementation, protocol/EGL/frame-callback notes, physics limits, and the
+complete control table: [`docs/vehicle-and-remote.md`](docs/vehicle-and-remote.md).
+
 ### Watching the headless session (VNC / browser preview)
 
 `--headless` starts an RFB server on `--vnc-port` (default 5900) listening on
@@ -177,13 +204,23 @@ all interfaces. Point any VNC client at it directly:
 vncviewer HOST:5900
 ```
 
-…or bridge it to a browser with the bundled noVNC viewer:
+…or use the one-command native backend + noVNC fullstack session:
+
+```sh
+./tools/run-web.sh
+# then open http://HOST:8080/
+# WEB_PORT / VNC_PORT / SIZE and CHROMEDRIVE_DEMO=0 are supported.
+```
+
+To run the pieces manually, start `chromedrive --headless` first, then:
 
 ```sh
 ./tools/prepare-viewer.sh     # stages noVNC's static assets into tools/viewer once
 websockify --web=tools/viewer 0.0.0.0:8080 127.0.0.1:5900
-# then open http://HOST:8080/
 ```
+
+The development endpoints add no authentication/TLS; use an authenticated TLS
+reverse proxy and firewall before exposing them to an untrusted network.
 
 ### Controls
 
@@ -200,7 +237,12 @@ websockify --web=tools/viewer 0.0.0.0:8080 127.0.0.1:5900
 | F2 | Reset to the driver's seat view |
 | F3 | Toggle a tight focus zoom on the active screen |
 | F4 | Cycle underglow color (violet / ice blue / acid lime) |
+| F5 | Cycle driver / exterior chase / EV systems cutaway |
 | F6 | Cycle to the next connected screen |
+| F7 | Toggle client input / hover-drive ownership |
+| F8 | Recover the car pose (battery and odometer are preserved) |
+| W/A/S/D or arrows, Space | Drive mode: throttle/steer/reverse and regenerative brake |
+| Left-drag steering wheel | Client mode: scroll focused app; drive mode: steer |
 | F11 | `--windowed` only: toggle fullscreen |
 | F12 | Save a screenshot to `screenshots/` |
 | Ctrl+Alt+Enter | Open a new terminal |
@@ -231,12 +273,15 @@ Launch commands for the dashboard buttons can be overridden with the
 ## Layout
 
 ```
-include/chrome.h, math3d.h, cdconfig.h  shared types, ray/plane math, config store API
+include/chrome.h, math3d.h, vehicle.h, cdconfig.h  shared types, math, vehicle and config APIs
 src/math3d.c                 camera rays, plane intersection, monitor layout
-src/wayland.c                 the actual compositor protocol implementation
-src/dmabuf.c                  zwp_linux_dmabuf_v1: real EGLImage GPU buffer import
-src/scene.c                   OpenGL cockpit, monitors, buttons, picking, 3D garage backdrop
-src/ui.c                      cairo-rendered textures: gauges, HUD, labels
+src/vehicle.c                fixed-step hover EV dynamics, splines, exact rig transforms
+src/vehicle_scene.c          spline body/glass/cables + complete electric systems renderer
+src/keymap.c                 exact RFB/X11 keysym to Linux evdev translation
+src/wayland.c                the actual compositor protocol implementation
+src/dmabuf.c                 zwp_linux_dmabuf_v1: real EGLImage GPU buffer import
+src/scene.c                  OpenGL cockpit, monitors, picking, camera rig, 3D garage backdrop
+src/ui.c                     cairo-rendered textures: EV gauges, HUD, labels
 src/main.c                    CLI parsing, event loop, process spawn (backend-agnostic)
 src/backend_sdl.c             --windowed: SDL2 window + GLX context + SDL input
 src/backend_headless.c        --headless (default): surfaceless EGL + embedded VNC + RFB input
@@ -246,10 +291,14 @@ clients/garage3d/              Garage3D: native Wayland + GLES 3.1 client (the g
 src/cdconfig.c                 shared INI config store (compositor + GUI; Garage3D has its own loader)
 docs/garage3d-architecture.md  Garage3D architecture + Wayland lifecycle documentation
 docs/configuration.md          config files, launch-menu editing, hot-reload semantics
+docs/vehicle-and-remote.md    EV physics/model, browser stack, Wayland/EGL/frame lifecycle
 tests/test_math.c             raycast/picking unit tests
 tests/test_config.c           INI store round-trip tests
+tests/test_vehicle.c          spline, EV dynamics, transform and fixed-step tests
+tests/test_keymap.c           RFB typing/WASD/function-key mapping regressions
 tests/protocol_probe.c        end-to-end Wayland protocol conformance test (incl. dma-buf)
-tools/viewer/                 noVNC web viewer for the headless VNC server (see prepare-viewer.sh)
+tools/run-web.sh              one-command native backend + browser bridge
+tools/viewer/                 static noVNC remote desktop + safe hold-to-drive controls
 ```
 
 ## Known limitations / next steps

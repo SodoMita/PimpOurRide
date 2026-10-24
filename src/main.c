@@ -16,6 +16,13 @@ static volatile sig_atomic_t interrupted;
 static void on_signal(int sig){interrupted=1;}
 static double clock_now(void){return (double)SDL_GetPerformanceCounter()/SDL_GetPerformanceFrequency();}
 void app_notice(Server *s,const char *fmt,...){va_list args;va_start(args,fmt);vsnprintf(s->notice,sizeof(s->notice),fmt,args);va_end(args);s->notice_until=s->time+4.0;}
+static void clear_drive_controls(Server *s){s->drive_forward=s->drive_reverse=s->drive_left=s->drive_right=s->drive_brake=false;s->wheel_steer=0;}
+void app_release_input(Server *s,uint32_t time){
+ /* Drive keys are compositor-local and therefore are not present in the
+  * Wayland seat's s->keys[] bitmap. Both sets must be released on focus loss,
+  * otherwise switching windows could leave a client key or motor latched. */
+ server_release_keys(s,time);clear_drive_controls(s);scene_wheel_cancel(s);
+}
 /* ---- persistent configuration (chromedrive.conf, edited by the GUI) ----
  * Precedence: built-in defaults < config file < command line. The file is
  * re-read whenever its mtime changes while running (config_poll, 2 Hz), so
@@ -143,27 +150,56 @@ static void next_monitor(Server *s){for(int d=1;d<=CD_MAX_MONITORS;d++){int i=(s
  * Keyed on evdev codes + the live s->keys[] modifier bitmap (already updated by
  * server_key() for prior events in the same stream), so it works identically
  * whether the raw event came from an SDL_Keycode+scancode or an X11 keysym. */
+static bool drive_key(Server *s,uint32_t key,bool down){
+ if(s->steering_mode!=VEHICLE_STEER_DRIVE)return false;
+ bool *held=NULL;
+ if(key==KEY_W||key==KEY_UP)held=&s->drive_forward;
+ else if(key==KEY_S||key==KEY_DOWN)held=&s->drive_reverse;
+ else if(key==KEY_A||key==KEY_LEFT)held=&s->drive_left;
+ else if(key==KEY_D||key==KEY_RIGHT)held=&s->drive_right;
+ else if(key==KEY_SPACE)held=&s->drive_brake;
+ if(!held)return false;
+ *held=down;
+ return true; /* consumed locally: never leak motor controls into a Wayland app */
+}
 bool app_global_key(Server *s,uint32_t evdev,bool down){
  bool ctrl=s->keys[KEY_LEFTCTRL]||s->keys[KEY_RIGHTCTRL];
  bool alt=s->keys[KEY_LEFTALT]||s->keys[KEY_RIGHTALT];
  if(ctrl&&alt&&(evdev==KEY_ENTER||evdev==KEY_Q)){if(down){if(evdev==KEY_Q)s->running=false;else app_launch(s,0,true);}return true;}
- bool global=evdev==KEY_F1||evdev==KEY_F2||evdev==KEY_F3||evdev==KEY_F4||evdev==KEY_F6||evdev==KEY_F11||evdev==KEY_F12;
- if(!global)return false;if(!down)return true;
+ bool global=evdev==KEY_F1||evdev==KEY_F2||evdev==KEY_F3||evdev==KEY_F4||evdev==KEY_F5||evdev==KEY_F6||evdev==KEY_F7||evdev==KEY_F8||evdev==KEY_F11||evdev==KEY_F12;
+ if(!global)return drive_key(s,evdev,down);if(!down)return true;
  switch(evdev){
  case KEY_F1:s->show_help=!s->show_help;break;
  case KEY_F2:scene_reset_camera(s);break;
  case KEY_F3:if(s->keyboard_focus)scene_focus_monitor(s,s->keyboard_focus->slot,!s->focus_view);else next_monitor(s);break;
  case KEY_F4:app_launch(s,4,false);break;
+ case KEY_F5:
+  s->camera_mode=(VehicleCameraMode)((s->camera_mode+1)%3);
+  scene_wheel_cancel(s);
+  app_notice(s,"%s",s->camera_mode==VEHICLE_CAMERA_DRIVER?"Driver camera":s->camera_mode==VEHICLE_CAMERA_CHASE?"Exterior chase camera":"EV systems cutaway");
+  break;
  case KEY_F6:next_monitor(s);break;
+ case KEY_F7:
+  /* Release app keys before changing ownership. Otherwise a key held during
+   * the transition could remain pressed in the client even after its release
+   * starts being consumed as a vehicle control. */
+  app_release_input(s,SDL_GetTicks());
+  s->steering_mode=s->steering_mode==VEHICLE_STEER_DRIVE?VEHICLE_STEER_CLIENT:VEHICLE_STEER_DRIVE;
+  app_notice(s,s->steering_mode==VEHICLE_STEER_DRIVE?"DRIVE / WASD + wheel; F7 returns input to apps":"CLIENT / wheel scrolls the focused Wayland app");
+  break;
+ case KEY_F8:
+  vehicle_reset_pose(&s->vehicle);clear_drive_controls(s);scene_wheel_cancel(s);
+  app_notice(s,"Vehicle recovered to the garage start pose");break;
  case KEY_F11:if(!s->headless&&s->window){s->fullscreen=!s->fullscreen;SDL_SetWindowFullscreen(s->window,s->fullscreen?SDL_WINDOW_FULLSCREEN_DESKTOP:0);}break;
  case KEY_F12:snprintf(s->screenshot_path,sizeof(s->screenshot_path),"%.4000s/screenshots/cockpit-%llu.webp",s->root,(unsigned long long)SDL_GetTicks64());s->screenshot_requested=true;break;
  default:break;
  }
  return true;
 }
-static void usage(const char *name){printf("ChromeDrive " CD_VERSION " — native, first-person Wayland cockpit\n\nUsage: %s [options]\n  --demo                Start a real terminal + Files + Audio clients\n  --socket NAME         Wayland socket (default: automatic)\n  --exec COMMAND        Launch an extra Wayland client (repeatable)\n  --size WIDTHxHEIGHT   Framebuffer/host window size (default 1600x1000)\n  --fps N               Frame cap, 1..120 (default 60)\n  --headless            Run with no X server: surfaceless EGL + built-in VNC server (default)\n  --windowed            Dev/debug mode: open a real SDL2/GLX window on an X server instead\n  --vnc-port N          VNC port for --headless mode (default 5900)\n  --fullscreen          --windowed only: start fullscreen, F11 to leave\n  --exit-after SECONDS   Useful for automated checks\n  --screenshot PATH     Capture a WebP after 3 seconds\n  --config PATH         Config file (default: ~/.config/chromedrive/chromedrive.conf)\n  --no-config           Ignore the config file entirely\n  --help                Show this help\n\nF1 help | F2 cockpit | F3 focus | F4 neon | F6 next display\nMiddle-drag/VNC-drag to look | Click a screen to focus | Ctrl+Alt+Enter new terminal\n",name);}
+static void usage(const char *name){printf("ChromeDrive " CD_VERSION " — native, first-person Wayland cockpit\n\nUsage: %s [options]\n  --demo                Start a real terminal + Files + Audio clients\n  --socket NAME         Wayland socket (default: automatic)\n  --exec COMMAND        Launch an extra Wayland client (repeatable)\n  --size WIDTHxHEIGHT   Framebuffer/host window size (default 1600x1000)\n  --fps N               Frame cap, 1..120 (default 60)\n  --headless            Run with no X server: surfaceless EGL + built-in VNC server (default)\n  --windowed            Dev/debug mode: open a real SDL2/GLX window on an X server instead\n  --vnc-port N          VNC port for --headless mode (default 5900)\n  --fullscreen          --windowed only: start fullscreen, F11 to leave\n  --exit-after SECONDS   Useful for automated checks\n  --screenshot PATH     Capture a WebP after 3 seconds\n  --config PATH         Config file (default: ~/.config/chromedrive/chromedrive.conf)\n  --no-config           Ignore the config file entirely\n  --help                Show this help\n\nF1 help | F2 cockpit | F3 focus | F4 neon | F5 driver/chase/systems | F6 next display\nF7 client/drive input | F8 recover car | Drive: WASD/arrows + Space + drag wheel\nMiddle-drag/VNC-drag to look | Click a screen to focus | Ctrl+Alt+Enter new terminal\n",name);}
 int main(int argc,char **argv){
  Server s={.width=1600,.height=1000,.fps_limit=60,.running=true,.hud_visible=true,.hover_button=-1,.keymap_fd=-1,.fov=65,.target_fov=65,.eye={0,1.0f,2.8f},.headless=true,.vnc_port=5900};
+ vehicle_init(&s.vehicle);
  const char *socket_name=NULL;double exit_after=0;bool auto_screenshot=false;
  /* Config pre-scan: --config/--no-config must be known before the file is
   * read, and the file must be read before the real option pass below so
@@ -221,9 +257,24 @@ int main(int argc,char **argv){
   server_dispatch(&s);
   int status;pid_t pid;while((pid=waitpid(-1,&status,WNOHANG))>0){for(int i=0;i<s.child_count;i++)if(s.children[i]==pid){s.children[i]=s.children[--s.child_count];break;}if(WIFEXITED(status)&&WEXITSTATUS(status)!=0){fprintf(stderr,"[launch] pid %d exited %d\n",(int)pid,WEXITSTATUS(status));app_notice(&s,"Client exited with status %d — see launch log",WEXITSTATUS(status));}}
   if(s.demo&&!initial_focus&&s.time>2.0&&s.monitors[0].surface){server_focus(&s,s.monitors[0].surface);initial_focus=true;}
+  /* Physics consumes a snapshot of the current input mode, then advances in
+   * 120 Hz fixed ticks. CLIENT mode applies a parking brake: manipulating a
+   * Wayland app must never leave the car accelerating behind the desktop. */
+  VehicleInput vehicle_input={.brake=1};
+  if(s.steering_mode==VEHICLE_STEER_DRIVE){
+   vehicle_input.throttle=(s.drive_forward?1.f:0.f)-(s.drive_reverse?1.f:0.f);
+   vehicle_input.steering=s.wheel_drag?s.wheel_steer:(s.drive_right?1.f:0.f)-(s.drive_left?1.f:0.f);
+   vehicle_input.brake=s.drive_brake?1.f:0.f;
+  }
+  vehicle_update(&s.vehicle,vehicle_input,s.dt);
+  static bool collision_seen;if(s.vehicle.collision&&!collision_seen)app_notice(&s,"Hover bumper absorbed a garage wall contact");collision_seen=s.vehicle.collision;
+  if(!s.wheel_drag)s.wheel_client_angle+=(0-s.wheel_client_angle)*(1.f-expf(-(float)s.dt*9.f));
   float blend=1.f-expf(-(float)s.dt*12.f);s.yaw+=(s.target_yaw-s.yaw)*blend;s.pitch+=(s.target_pitch-s.pitch)*blend;s.fov+=(s.target_fov-s.fov)*blend;
-  Hit hover=scene_pick(&s,s.mouse_x,s.mouse_y,false);s.hover_button=hover.kind==HIT_BUTTON?hover.button:-1;s.cog_hover=hover.kind==HIT_COG;
+  Hit hover=scene_pick(&s,s.mouse_x,s.mouse_y,false);s.hover_button=hover.kind==HIT_BUTTON?hover.button:-1;s.cog_hover=hover.kind==HIT_COG;s.wheel_hover=hover.kind==HIT_WHEEL;
   s.cog_angle+=((s.time<s.cog_spin_until)?540.f:s.cog_hover?160.f:20.f)*(float)s.dt;if(s.cog_angle>=360.f)s.cog_angle-=360.f;
+  /* One thread owns the current GL context for the entire frame: UI texture
+   * regeneration, vehicle/cockpit geometry, and Wayland surface textures are
+   * rendered into one FBO. No web worker or physics callback touches GL. */
   glBindFramebuffer(GL_FRAMEBUFFER,s.target_fbo);
   ui_update(&s);scene_render(&s);ui_draw_overlay(&s);
   if(auto_screenshot&&s.time>3){s.screenshot_requested=true;auto_screenshot=false;}if(s.screenshot_requested){scene_save_screenshot(&s,s.screenshot_path);s.screenshot_requested=false;app_notice(&s,"Screenshot saved");}

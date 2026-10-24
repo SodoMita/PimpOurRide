@@ -59,13 +59,20 @@ static void gauges(Server *s){
  int count=0;for(int i=0;i<CD_MAX_MONITORS;i++)if(s->monitors[i].surface)count++;
  for(int k=0;k<2;k++){
   double cx=k?930:270,cy=247,r=184;rgba(c,.55,.42,.8,.13);cairo_arc(c,cx,cy,r+12,0,2*PI);cairo_set_line_width(c,16);cairo_stroke(c);rgb(c,.27,.29,.38);cairo_arc(c,cx,cy,r+6,0,2*PI);cairo_set_line_width(c,3);cairo_stroke(c);
-  cairo_set_line_width(c,9);rgb(c,.12,.16,.23);cairo_arc(c,cx,cy,r-4,.73*PI,2.27*PI);cairo_stroke(c);rgb(c,k?.67:.30,k?.34:.89,k?.98:.78);double value=k?(double)count/8:fmin(s->fps/120,1);cairo_arc(c,cx,cy,r-4,.73*PI,.73*PI+1.54*PI*value);cairo_stroke(c);
+  cairo_set_line_width(c,9);rgb(c,.12,.16,.23);cairo_arc(c,cx,cy,r-4,.73*PI,2.27*PI);cairo_stroke(c);rgb(c,k?.67:.30,k?.34:.89,k?.98:.78);double value=k?(double)count/8:fmin(fabs(s->vehicle.speed)*3.6/240,1);cairo_arc(c,cx,cy,r-4,.73*PI,.73*PI+1.54*PI*value);cairo_stroke(c);
   for(int i=0;i<=40;i++){double a=.73*PI+i*1.54*PI/40;rgb(c,i%5==0?.77:.3,i%5==0?.79:.36,i%5==0?.84:.43);cairo_set_line_width(c,i%5==0?3:1.4);line(c,cx+(r-19)*cos(a),cy+(r-19)*sin(a),cx+(r-(i%5==0?38:28))*cos(a),cy+(r-(i%5==0?38:28))*sin(a));}
-  char value_text[32];if(k)snprintf(value_text,sizeof(value_text),"%02d",count);else snprintf(value_text,sizeof(value_text),"%.0f",s->fps);
-  rgb(c,.90,.93,.98);font(c,99,true,false);cairo_text_extents_t e;cairo_text_extents(c,value_text,&e);cairo_move_to(c,cx-e.width/2-e.x_bearing,cy+28);cairo_show_text(c,value_text);rgb(c,.43,.56,.63);mono(c,cx-40,cy+74,19,k?"SCREENS":"FPS");
+  char value_text[32];if(k)snprintf(value_text,sizeof(value_text),"%02d",count);else snprintf(value_text,sizeof(value_text),"%.0f",fabs(s->vehicle.speed)*3.6);
+  rgb(c,.90,.93,.98);font(c,99,true,false);cairo_text_extents_t e;cairo_text_extents(c,value_text,&e);cairo_move_to(c,cx-e.width/2-e.x_bearing,cy+28);cairo_show_text(c,value_text);rgb(c,.43,.56,.63);mono(c,cx-40,cy+74,19,k?"SCREENS":"KM/H");
   rgb(c,.36,.90,.74);cairo_arc(c,cx,cy+115,4,0,2*PI);cairo_fill(c);
  }
- rgb(c,.67,.72,.80);mono(c,495,153,20,"CD // 001");rgb(c,.35,.87,.72);text(c,529,255,58,"P",true);rgb(c,.46,.53,.65);mono(c,495,303,18,"PARKED");mono(c,485,381,15,"NATIVE / SHM");
+ const char *gear="C",*drive_state="CLIENT INPUT";
+ if(s->steering_mode==VEHICLE_STEER_DRIVE){
+  drive_state="HOVER DRIVE";
+  if(s->vehicle.speed>.25f)gear="D";else if(s->vehicle.speed<-.25f)gear="R";else gear="N";
+  if(s->drive_brake)drive_state="REGEN BRAKE";
+ }
+ rgb(c,.67,.72,.80);mono(c,495,153,20,"CD // EV-01");rgb(c,.35,.87,.72);text(c,529,255,58,gear,true);rgb(c,.46,.53,.65);mono(c,465,303,18,drive_state);
+ char pack[64];snprintf(pack,sizeof(pack),"%.0f%% / 82 KWH",100*s->vehicle.battery_kwh/VEHICLE_BATTERY_CAPACITY_KWH);mono(c,490,381,15,pack);
  s->gauge_tex=ui_texture(im,s->gauge_tex);cairo_destroy(c);cairo_surface_destroy(im);
 }
 static void make_console(Server *s){
@@ -97,13 +104,16 @@ static void hud(Server *s){
  if(w>1050){rgb(c,.33,.43,.53);mono(c,w/2-72,43,10,"CUSTOM BUILD / 001");rgb(c,.79,.82,.88);mono(c,w/2-65,64,12,"MIDNIGHT EDITION");}
  rgba(c,.075,.12,.14,.85);rounded(c,w-210,28,182,41,20);cairo_fill(c);rgb(c,.38,.88,.70);cairo_arc(c,w-189,49,3.5,0,2*PI);cairo_fill(c);mono(c,w-174,53,11,"NATIVE SESSION");
  rgba(c,.39,.45,.56,.2);cairo_set_line_width(c,1);line(c,28,91,w-28,91);
- rgb(c,.42,.49,.6);mono(c,29,116,10,"DRIVER VIEW  /  FIRST PERSON");snprintf(b,sizeof(b),"%02d CONNECTED  /  %02d BAYS",count,CD_MAX_MONITORS);mono(c,w-237,116,10,b);
+ const char *view=s->camera_mode==VEHICLE_CAMERA_DRIVER?"DRIVER VIEW  /  FIRST PERSON":s->camera_mode==VEHICLE_CAMERA_CHASE?"CHASE VIEW  /  SPLINE BODY":"EV SYSTEMS  /  800 V CUTAWAY";
+ rgb(c,.42,.49,.6);mono(c,29,116,10,view);snprintf(b,sizeof(b),"%02d CONNECTED  /  %02d BAYS",count,CD_MAX_MONITORS);mono(c,w-237,116,10,b);
+ if(w>1050){snprintf(b,sizeof(b),"%3.0f%% PACK  /  %+6.1f KW",100*s->vehicle.battery_kwh/VEHICLE_BATTERY_CAPACITY_KWH,s->vehicle.power_kw);mono(c,w/2-78,116,10,b);}
  /* The control hints are chrome, not fake app controls. The actual buttons are 3D. */
  if(w>=1100){int bx=w/2-438,by=h-66;rgba(c,.025,.038,.059,.88);rounded(c,bx,by,876,43,21);cairo_fill(c);rgba(c,.35,.43,.53,.30);rounded(c,bx,by,876,43,21);cairo_stroke(c);
-  const char *keys[]={"MMB","F2","F3","F4","F6","F1"};const char *labels[]={"Look around","Driver view","Focus app","Neon","Next screen","Help"};int widths[]={181,165,159,115,159,0};int x=bx+18;
+  const char *keys[]={"F7","WASD","F5","F2","F3","F1"};const char *labels[]={"Input mode","Hover drive","Change view","Driver view","Focus app","Help"};int widths[]={181,165,159,115,159,0};int x=bx+18;
   for(int i=0;i<6;i++){rgb(c,.14,.19,.25);rounded(c,x,by+11,i?25:34,21,4);cairo_fill(c);rgb(c,.80,.85,.91);mono(c,x+5,by+25,10,keys[i]);rgb(c,.60,.67,.74);text(c,x+(i?34:44),by+26,11,labels[i],false);x+=widths[i];}
  }
- rgb(c,.75,.81,.87);text(c,29,h-47,12,s->focus_view?"FOCUS MODE":"IN THE DRIVER'S SEAT",true);rgb(c,.37,.45,.55);mono(c,29,h-26,9,"NESTED WAYLAND / v" CD_VERSION);
+ const char *seat_state=s->camera_mode==VEHICLE_CAMERA_SYSTEMS?"EV SKATEBOARD / NO WHEELS":s->camera_mode==VEHICLE_CAMERA_CHASE?"SPLINE-BUILT ELECTRIC HOVER CAR":s->steering_mode==VEHICLE_STEER_DRIVE?"HOVER DRIVE / F7 FOR CLIENTS":"CLIENT INPUT / WHEEL = SCROLL";
+ rgb(c,.75,.81,.87);text(c,29,h-47,12,s->focus_view&&s->camera_mode==VEHICLE_CAMERA_DRIVER?"FOCUS MODE":seat_state,true);rgb(c,.37,.45,.55);mono(c,29,h-26,9,"NATIVE WAYLAND / v" CD_VERSION);
  rgb(c,.72,.78,.84);snprintf(b,sizeof(b),"%02.0f FPS",s->fps);mono(c,w-94,h-47,12,b);rgb(c,.39,.48,.56);mono(c,w-107,h-26,9,"OPENGL / SHM");
  if(s->notice_until>s->time){font(c,12,false,false);cairo_text_extents_t ex;cairo_text_extents(c,s->notice,&ex);float tw=ex.width+44;rgba(c,.035,.06,.08,.94);rounded(c,(w-tw)/2,h-115,tw,31,15);cairo_fill(c);rgb(c,.53,.90,.77);text(c,(w-ex.width)/2,h-94,12,s->notice,false);}
  if(s->middle_look){rgba(c,.38,.93,.77,.8);cairo_set_line_width(c,1);line(c,w/2-9,h/2,w/2+9,h/2);line(c,w/2,h/2-9,w/2,h/2+9);}
@@ -112,8 +122,9 @@ static void hud(Server *s){
 static void help(Server *s){
  cairo_surface_t *im=cairo_image_surface_create(CAIRO_FORMAT_ARGB32,1000,720);cairo_t *c=cairo_create(im);rgba(c,.025,.038,.063,.98);rounded(c,1,1,998,718,25);cairo_fill(c);rgb(c,.25,.33,.43);cairo_set_line_width(c,2);rounded(c,1,1,998,718,25);cairo_stroke(c);
  rgb(c,.52,.90,.77);mono(c,58,63,15,"CHROMEDRIVE / DRIVER'S MANUAL");rgb(c,.94,.95,.97);text(c,55,130,45,"Make yourself at home.",true);rgb(c,.47,.58,.69);text(c,58,176,18,"Real Wayland apps. One virtual monitor for every window.",false);
- const char *keys[]={"MIDDLE + DRAG","CLICK A SCREEN","F2 / F3","F4 / F6","SHIFT + BUTTON","CTRL + ALT + ENTER","F11 / F12","DASH COG"};const char *desc[]={"Look around from the driver's seat","Send keyboard and pointer input to that app","Restore driver view / focus the selected monitor","Change underglow / cycle to the next monitor","Launch another instance instead of focusing","Open a new terminal on its own screen","Fullscreen host window / save a screenshot","Click the spinning gear for Settings"};
- for(int i=0;i<8;i++){int y=234+i*51;rgb(c,.69,.77,.88);mono(c,61,y,17,keys[i]);rgb(c,.54,.63,.73);text(c,328,y,17,desc[i],false);rgba(c,.26,.33,.43,.4);line(c,58,y+18,942,y+18);}
+ const char *keys[]={"MIDDLE + DRAG","CLICK A SCREEN","F7","WASD / SPACE","DRAG WHEEL","F5 / F8","F2 / F3 / F6","F4 / F12","SHIFT + BUTTON","DASH COG"};
+ const char *desc[]={"Look around from the driver's seat","Send keyboard and pointer input to that app","Toggle client input / hover-drive ownership","Accelerate, reverse, steer and regenerative brake","Steer in drive mode; scroll focused app in client mode","Cycle driver/chase/systems / recover the car","Driver view / focus app / next spatial monitor","Change underglow / save a WebP screenshot","Launch another instance instead of focusing","Open native compositor Settings"};
+ for(int i=0;i<10;i++){int y=224+i*40;rgb(c,.69,.77,.88);mono(c,61,y,14,keys[i]);rgb(c,.54,.63,.73);text(c,294,y,14,desc[i],false);rgba(c,.26,.33,.43,.4);line(c,58,y+13,942,y+13);}
  rgb(c,.40,.49,.60);text(c,58,640,15,"Dashboard controls are ray-picked in 3D. Right click is passed to apps.",false);rgb(c,.50,.87,.73);mono(c,58,686,15,"F1 TO CLOSE       CTRL + ALT + Q TO EXIT");s->help_tex=ui_texture(im,0);cairo_destroy(c);cairo_surface_destroy(im);
 }
 static void make_leather(Server *s){
@@ -133,7 +144,7 @@ static void overlay_texture(GLuint tex,float x,float y,float w,float h){glBindTe
 static void draw_cursor(Server *s){
  if(s->middle_look)return; /* mid-drag means "looking around", not pointing at anything */
  float r,g,b;scene_neon_color(s,&r,&g,&b);
- bool hot=s->hover_button>=0||s->cog_hover;float cx=s->mouse_x,cy=s->mouse_y,ring=hot?11.f:8.f;
+ bool hot=s->hover_button>=0||s->cog_hover||s->wheel_hover||s->wheel_drag;float cx=s->mouse_x,cy=s->mouse_y,ring=hot?11.f:8.f;
  glDisable(GL_TEXTURE_2D);glLineWidth(hot?2.2f:1.4f);
  glColor4f(hot?1.f:r,hot?1.f:g,hot?.95f:b,hot?.95f:.78f);
  glBegin(GL_LINE_LOOP);for(int i=0;i<24;i++){float a=i*(2.f*(float)PI/24.f);glVertex2f(cx+cosf(a)*ring,cy+sinf(a)*ring);}glEnd();

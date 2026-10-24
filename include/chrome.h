@@ -16,6 +16,7 @@
 #include <cairo/cairo.h>
 #include <xkbcommon/xkbcommon.h>
 #include "math3d.h"
+#include "vehicle.h"
 /* Cockpit backdrop (src/scene.c environment()), selectable in
  * chromedrive.conf / the config GUI: the real 3D garage (default), the
  * original flat garage.webp poster, or nothing at all. */
@@ -25,7 +26,7 @@
 #define CD_MAX_MONITORS 8
 #define CD_APP_W 1000
 #define CD_APP_H 625
-#define CD_VERSION "0.2.0"
+#define CD_VERSION "0.3.0"
 #define CD_DMABUF_MAX_FORMATS 8
 #define CD_DMABUF_MAX_MODIFIERS 16
 typedef struct Server Server;
@@ -74,7 +75,7 @@ typedef struct { Plane plane;Surface *surface;GLuint label;char label_text[300];
  * (chromedrive.conf [app.*], edited by bin/chromedrive-config) and applied
  * live: DashButton owns copies, ui_refresh_buttons() re-renders textures. */
 typedef struct { Plane plane;char name[48],sub[64];int action,icon;bool enabled;GLuint texture; } DashButton;
-typedef enum {HIT_NONE,HIT_APP,HIT_BUTTON,HIT_CLOSE,HIT_COG} HitKind;
+typedef enum {HIT_NONE,HIT_APP,HIT_BUTTON,HIT_CLOSE,HIT_COG,HIT_WHEEL} HitKind;
 typedef struct { HitKind kind;Surface *surface;int slot,button;float x,y,distance; } Hit;
 typedef struct { uint32_t format;uint64_t modifiers[CD_DMABUF_MAX_MODIFIERS];int modifier_count; } DmabufFormat;
 struct Server {
@@ -91,7 +92,7 @@ struct Server {
   * dash between wheel and console (scene.c draw_cog). Clicking it opens
   * bin/chromedrive-config. Picked by ray against cog's plane + radial test,
   * like the buttons. */
- Plane cog;bool cog_hover;float cog_angle;double cog_spin_until;
+ Plane cog;bool cog_hover,wheel_hover;float cog_angle;double cog_spin_until;
  DataSource *selection;
  /* Backend: exactly one of these is used, chosen at startup by --headless (default) or --windowed. */
  bool headless;
@@ -106,6 +107,15 @@ struct Server {
  bool running,middle_look,focus_view,show_help,hud_visible,fullscreen,demo,launch_pending;
  float yaw,pitch,target_yaw,target_pitch,fov,target_fov;
  Vec3 eye;
+ /* Native electric hover-car rig and input routing. In CLIENT mode drive keys
+  * continue to Wayland clients and the wheel emits pointer-axis input; in
+  * DRIVE mode the same physical controls are consumed by vehicle.c instead. */
+ Vehicle vehicle;
+ VehicleSteeringMode steering_mode;
+ VehicleCameraMode camera_mode;
+ bool drive_forward,drive_reverse,drive_left,drive_right,drive_brake;
+ bool wheel_drag;
+ float wheel_steer,wheel_client_angle,wheel_axis_accum,wheel_last_x,wheel_last_y;
  double time,dt,fps,start_time,last_ui_time,notice_until;
  uint64_t frames,commits;
  char socket[128],root[4096],runtime[4096],notice[256];
@@ -140,8 +150,14 @@ void scene_finish(Server *s);
 Hit scene_pick(Server *s,float x,float y,bool grab);
 void scene_focus_monitor(Server *s,int slot,bool zoom);
 void scene_reset_camera(Server *s);
+bool scene_wheel_button(Server *s,Hit hit,int x,int y,bool down,uint32_t time);
+void scene_wheel_motion(Server *s,int x,int y,uint32_t time);
+void scene_wheel_cancel(Server *s);
 void scene_save_screenshot(Server *s,const char *path);
 void scene_neon_color(Server *s,float *r,float *g,float *b);
+void vehicle_render(Server *s,bool cutaway);
+void vehicle_render_glass(Server *s);
+void app_release_input(Server *s,uint32_t time);
 GLuint ui_texture(cairo_surface_t *surface,GLuint reuse);
 GLuint ui_load_webp(const char *path);
 void ui_init(Server *s);

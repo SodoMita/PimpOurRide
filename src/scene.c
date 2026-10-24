@@ -258,10 +258,16 @@ static void dashboard(Server *s){
  /* Polished shifter on the transmission tunnel. */
  color(.045,.04,.072);rbox(.66,-.84,1.02,.70,.48,.29,.10);color(.28,.32,.40);cylinder(v3(.66,-.88,.96),v3(.66,-.49,.96),.025,20);glPushMatrix();glTranslatef(.66,-.47,.96);color(.65,.64,.74);torus(.054,.049,28,16);glPopMatrix();
 }
+static Plane steering_plane(void){return (Plane){.center={-.84f,.28f,1.10f},.width=1.12f,.height=1.12f,.pitch=-18};}
 static void steering_wheel(Server *s){
- float nr,ng,nb;neon(s,&nr,&ng,&nb);glPushMatrix();glTranslatef(-.84,.28,1.10);glRotatef(-18,1,0,0);glScalef(.74,.74,.74);
+ float nr,ng,nb;neon(s,&nr,&ng,&nb);glPushMatrix();glTranslatef(-.84,.28,1.10);glRotatef(-18,1,0,0);
+ /* Spin in the wheel's own XY plane, then tilt the complete assembly. Applying
+  * Z before the tilt would wobble the rim instead of rotating the control. */
+ float wheel_angle=s->steering_mode==VEHICLE_STEER_DRIVE?s->vehicle.wheel_angle:s->wheel_client_angle;
+ glRotatef(wheel_angle,0,0,1);glScalef(.74,.74,.74);
  /* Thick violet leather rim, bright machined inner and outer rings. */
  color(.065,.033,.098);torus(.595,.078,96,16);color(.37,.35,.46);torus(.67,.009,96,10);color(.51,.54,.63);torus(.515,.012,96,10);color(.28,.067,.41);torus(.595,.063,96,12);
+ if(s->wheel_hover||s->wheel_drag){glDisable(GL_LIGHTING);color(nr,ng,nb);torus(.675,.010,96,8);glEnable(GL_LIGHTING);}
  /* Grip pads at nine and three o'clock, wrapped in dark leather. */
  for(int side=-1;side<=1;side+=2){color(.033,.033,.051);rbox(side*.58,0,.028,.145,.26,.096,.055);glDisable(GL_LIGHTING);color(.31,.20,.38);glBegin(GL_LINES);for(int i=-4;i<=4;i++){glVertex3f(side*.58-.04,i*.023,.082);glVertex3f(side*.58+.04,i*.023,.082);}glEnd();glEnable(GL_LIGHTING);}
  /* Three swept chrome spokes and hollow screw details. */
@@ -334,14 +340,61 @@ void scene_init(Server *s){
   * at z=.37 is behind this sloped surface from the driver's seat.) */
  s->cog=(Plane){.center={-.30f,-.066f,.610f},.width=.24f,.height=.24f,.yaw=0,.pitch=-61};
 }
+typedef struct {Vec3 eye,forward,right,up;} SceneCamera;
+static SceneCamera scene_camera(Server *s){
+ SceneCamera c;
+ if(s->camera_mode==VEHICLE_CAMERA_DRIVER){
+  c.eye=vehicle_local_to_world(&s->vehicle,s->eye);
+  Vec3 forward=rotate_y(rotate_x(v3(0,0,-1),s->pitch),s->yaw);
+  Vec3 right=rotate_y(v3(1,0,0),s->yaw),up=vcross(right,forward);
+  c.forward=vehicle_local_direction(&s->vehicle,forward);
+  c.right=vehicle_local_direction(&s->vehicle,right);
+  c.up=vehicle_local_direction(&s->vehicle,up);
+ }else{
+  /* Exterior cameras are expressed in car-local coordinates too, so they
+   * follow the same rigid transform as the cockpit instead of drifting when
+   * the vehicle moves. SYSTEMS uses a side view to expose the EV skateboard. */
+  Vec3 local_eye=s->camera_mode==VEHICLE_CAMERA_CHASE?v3(8.8f,5.4f,11.8f):v3(9.8f,3.4f,1.2f);
+  Vec3 local_target=v3(0,-.15f,0);
+  c.eye=vehicle_local_to_world(&s->vehicle,local_eye);
+  Vec3 target=vehicle_local_to_world(&s->vehicle,local_target);
+  c.forward=vnorm(vsub(target,c.eye));c.right=vnorm(vcross(c.forward,v3(0,1,0)));c.up=vcross(c.right,c.forward);
+ }
+ return c;
+}
+static Vec3 scene_camera_ray(Server *s,SceneCamera c,float x,float y){
+ float t=tanf(s->fov*RAD*.5f);
+ Vec3 ray=vadd(c.forward,vadd(vmul(c.right,(2*x/s->width-1)*((float)s->width/s->height)*t),vmul(c.up,(1-2*y/s->height)*t)));
+ return vnorm(ray);
+}
+static void scene_camera_view(SceneCamera c){
+ /* gluLookAt equivalent, kept local to avoid a GLU dependency. The matrix is
+  * column-major: right/up/-forward are the camera's world-space basis rows. */
+ GLfloat m[16]={c.right.x,c.up.x,-c.forward.x,0,c.right.y,c.up.y,-c.forward.y,0,c.right.z,c.up.z,-c.forward.z,0,0,0,0,1};
+ glMultMatrixf(m);glTranslatef(-c.eye.x,-c.eye.y,-c.eye.z);
+}
+static void vehicle_model_transform(Server *s){
+ Vehicle *v=&s->vehicle;glTranslatef(v->position.x,v->position.y,v->position.z);
+ glRotatef(v->yaw,0,1,0);glRotatef(v->pitch,1,0,0);glRotatef(v->roll,0,0,1);
+}
 void scene_render(Server *s){
  glViewport(0,0,s->width,s->height);glClear(GL_COLOR_BUFFER_BIT|GL_DEPTH_BUFFER_BIT|GL_STENCIL_BUFFER_BIT);glEnable(GL_DEPTH_TEST);
  glMatrixMode(GL_PROJECTION);glLoadIdentity();double t=tan(s->fov*RAD/2)*.05;glFrustum(-t*s->width/s->height,t*s->width/s->height,-t,t,.05,150);
- glMatrixMode(GL_MODELVIEW);glLoadIdentity();glRotatef(-s->pitch,1,0,0);glRotatef(-s->yaw,0,1,0);glTranslatef(-s->eye.x,-s->eye.y,-s->eye.z);
- lighting();environment(s);lighting();dashboard(s);draw_buttons(s);draw_cog(s);for(int i=0;i<CD_MAX_MONITORS;i++)draw_monitor(s,i);steering_wheel(s);
+ glMatrixMode(GL_MODELVIEW);glLoadIdentity();SceneCamera camera=scene_camera(s);scene_camera_view(camera);
+ lighting();environment(s);
+ glPushMatrix();vehicle_model_transform(s);lighting();
+ bool driver=s->camera_mode==VEHICLE_CAMERA_DRIVER;
+ vehicle_render(s,s->camera_mode==VEHICLE_CAMERA_SYSTEMS);
+ if(driver){dashboard(s);draw_buttons(s);draw_cog(s);for(int i=0;i<CD_MAX_MONITORS;i++)draw_monitor(s,i);steering_wheel(s);}
+ vehicle_render_glass(s);glPopMatrix();
 }
 Hit scene_pick(Server *s,float x,float y,bool grab){
- Hit best={.kind=HIT_NONE,.distance=1e9f};Vec3 ray=camera_ray(x,y,s->width,s->height,s->fov,s->yaw,s->pitch);float u,v,d;
+ Hit best={.kind=HIT_NONE,.distance=1e9f};
+ /* Exterior inspection views deliberately have no invisible cockpit hit
+  * targets. Driver picking transforms the world ray back into car-local space,
+  * allowing all existing Plane/UV mathematics to remain unchanged and exact. */
+ if(s->camera_mode!=VEHICLE_CAMERA_DRIVER)return best;
+ SceneCamera camera=scene_camera(s);Vec3 ray=vehicle_world_direction(&s->vehicle,scene_camera_ray(s,camera,x,y));float u,v,d;
  if(grab&&s->pointer_grab){Surface *root=surface_root(s->pointer_grab);if(root&&root->slot>=0){Plane p=s->monitors[root->slot].plane;if(plane_hit(p,s->eye,ray,&u,&v,&d,false)){float scale=fminf(p.width/root->width,p.height/root->height);float sx=(u-.5f)*p.width/scale+root->width/2.f,sy=(v-.5f)*p.height/scale+root->height/2.f;Surface *child=s->pointer_grab;while(child!=root&&child){sx-=child->x;sy-=child->y;child=child->parent;}return (Hit){.kind=HIT_APP,.surface=s->pointer_grab,.slot=root->slot,.x=sx,.y=sy,.distance=d};}}return best;}
  for(int i=0;i<CD_MAX_MONITORS;i++){Monitor *m=&s->monitors[i];if(!m->surface)continue;Plane p=m->plane;if(!plane_hit(p,s->eye,ray,&u,&v,&d,false)||d>=best.distance)continue;
   if(u>.92&&u<1.01&&v<0&&v>-.12){best=(Hit){.kind=HIT_CLOSE,.surface=m->surface,.slot=i,.distance=d};continue;}
@@ -352,13 +405,58 @@ Hit scene_pick(Server *s,float x,float y,bool grab){
  /* Cog: same pick plane as drawn, then a radial test so only the gear
   * itself (teeth at .115 m of the .12 m half-plane) is clickable. */
  if(plane_hit(s->cog,s->eye,ray,&u,&v,&d,false)&&d<best.distance){float du=u-.5f,dv=v-.5f;if(du*du+dv*dv<=.25f)best=(Hit){.kind=HIT_COG,.distance=d};}
+ Plane wheel=steering_plane();
+ if(plane_hit(wheel,s->eye,ray,&u,&v,&d,false)&&d<best.distance){
+  float dx=(u-.5f)*wheel.width,dy=(v-.5f)*wheel.height;
+  if(dx*dx+dy*dy<=.50f*.50f)best=(Hit){.kind=HIT_WHEEL,.x=u,.y=v,.distance=d};
+ }
  return best;
 }
+void scene_wheel_cancel(Server *s){s->wheel_drag=false;s->wheel_steer=0;s->wheel_axis_accum=0;}
+bool scene_wheel_button(Server *s,Hit hit,int x,int y,bool down,uint32_t time){
+ if(down){
+  if(s->wheel_drag||hit.kind!=HIT_WHEEL)return s->wheel_drag;
+  s->wheel_drag=true;s->wheel_last_x=x;s->wheel_last_y=y;s->wheel_axis_accum=0;s->wheel_steer=0;
+  /* A wheel grab is compositor-owned. Send the matching pointer leave before
+   * intercepting motion; otherwise the previously hovered client would see a
+   * pointer that appears frozen inside its surface. */
+  server_pointer_motion(s,(Hit){0},time);
+  if(s->steering_mode==VEHICLE_STEER_CLIENT&&s->keyboard_focus){
+   /* wl_pointer.axis is legal only on a surface with pointer focus. Move that
+    * focus to the active app's centre before emitting wheel/scroll events;
+    * keyboard focus alone is not sufficient in the Wayland protocol. */
+   Surface *p=s->keyboard_focus;
+   Hit center={.kind=HIT_APP,.surface=p,.slot=p->slot,.x=p->width*.5f,.y=p->height*.5f,.distance=0};
+   server_pointer_motion(s,center,time);
+  }
+  return true;
+ }
+ if(s->wheel_drag){scene_wheel_cancel(s);return true;}
+ return false;
+}
+void scene_wheel_motion(Server *s,int x,int y,uint32_t time){
+ if(!s->wheel_drag)return;
+ float dx=x-s->wheel_last_x;s->wheel_last_x=x;s->wheel_last_y=y;
+ if(s->steering_mode==VEHICLE_STEER_DRIVE){
+  s->wheel_steer=clampf(s->wheel_steer+dx*.006f,-1,1);
+ }else{
+  s->wheel_client_angle=clampf(s->wheel_client_angle-dx*.65f,-135,135);
+  /* Coalesce high-frequency pointer samples into detents. This preserves the
+   * familiar wheel-click semantics for toolkits while still accepting smooth
+   * trackpad-style axis values through server_pointer_axis(). */
+  s->wheel_axis_accum+=dx;
+  if(fabsf(s->wheel_axis_accum)>=28){
+   float detents=truncf(s->wheel_axis_accum/28);s->wheel_axis_accum-=detents*28;
+   server_pointer_axis(s,-detents,0,time);
+  }
+ }
+}
 void scene_focus_monitor(Server *s,int slot,bool zoom){
+ s->camera_mode=VEHICLE_CAMERA_DRIVER;
  if(slot<0||slot>=CD_MAX_MONITORS)return;Plane p=s->monitors[slot].plane;float desired=atan2f(-p.center.x,s->eye.z-p.center.z)/RAD;
  while(desired-s->yaw>180)desired-=360;while(desired-s->yaw<-180)desired+=360;s->target_yaw=desired;s->target_pitch=atan2f(p.center.y-s->eye.y,4.4f)/RAD;s->target_fov=zoom?32:65;s->focus_view=zoom;
 }
-void scene_reset_camera(Server *s){s->target_yaw=roundf(s->yaw/360)*360;s->target_pitch=-6;s->target_fov=65;s->focus_view=false;}
+void scene_reset_camera(Server *s){s->camera_mode=VEHICLE_CAMERA_DRIVER;s->target_yaw=roundf(s->yaw/360)*360;s->target_pitch=-6;s->target_fov=65;s->focus_view=false;}
 void scene_save_screenshot(Server *s,const char *path){
  int w=s->width,h=s->height;uint8_t *pixels=malloc((size_t)w*h*4);if(!pixels)return;glReadPixels(0,0,w,h,GL_BGRA,GL_UNSIGNED_BYTE,pixels);
  uint8_t *flipped=malloc((size_t)w*h*4);

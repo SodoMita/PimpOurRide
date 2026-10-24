@@ -1,6 +1,8 @@
 /* Native Wayland server. No X11 window capture and no browser surfaces.
- * Core wl_shm, xdg-shell, seat, per-screen outputs, subsurfaces and selection.
- * Intentionally no DMA-BUF, Xwayland, layer-shell or DRM backend in v0.1. */
+ * Core wl_shm, xdg-shell, seat, per-screen outputs, subsurfaces and selection,
+ * plus optional EGLImage-backed linux-dmabuf import on the headless backend.
+ * Browser clients see the finished compositor framebuffer over RFB; actual
+ * applications remain ordinary Wayland clients on this libwayland display. */
 #include "chrome.h"
 #include "xdg-shell-server.h"
 #include "xdg-decoration-server.h"
@@ -69,6 +71,11 @@ static void surface_attach(struct wl_client *c,struct wl_resource *r,struct wl_r
 }
 static void surface_damage(struct wl_client *c,struct wl_resource *r,int32_t x,int32_t y,int32_t w,int32_t h){}
 static void surface_frame(struct wl_client *c,struct wl_resource *r,uint32_t id){
+ /* wl_surface.frame is double-buffered state. A well-behaved client normally
+  * requests it before the commit that presents its next buffer; sending done
+  * here would acknowledge the previous frame and allow an unbounded render
+  * loop. Keep the callback in pending_callbacks, promote it on wl_surface
+  * .commit, and only complete it after that committed content was presented. */
  Surface *p=wl_resource_get_user_data(r);Callback *cb=calloc(1,sizeof(*cb));if(!cb){wl_client_post_no_memory(c);return;}
  cb->resource=wl_resource_create(c,&wl_callback_interface,1,id);if(!cb->resource){free(cb);wl_client_post_no_memory(c);return;}
  wl_resource_set_implementation(cb->resource,NULL,cb,callback_destroy);wl_list_insert(p->pending_callbacks.prev,&cb->link);
@@ -116,12 +123,20 @@ static void surface_apply(Surface *p){
  }
  p->width=((p->transform&1)?p->bh:p->bw)/p->scale;p->height=((p->transform&1)?p->bw:p->bh)/p->scale;
  if(p->input_changed){if(p->input_region)cairo_region_destroy(p->input_region);p->input_region=p->pending_input_region;p->pending_input_region=NULL;p->input_changed=false;}
+ /* Atomic pending -> committed transition: a frame callback belongs to the
+  * buffer/state committed by this surface_apply, never to an arbitrary later
+  * commit. This is the server half of the frame-callback pacing pattern. */
  wl_list_insert_list(p->callbacks.prev,&p->pending_callbacks);wl_list_init(&p->pending_callbacks);
  if(!p->mapped&&p->texture&&!p->pending_null)surface_map(p);
  p->pending_ready=false;
  Surface *child;wl_list_for_each(child,&s->surfaces,link)if(child->parent==p){if(child->subsurface){child->x=child->pending_x;child->y=child->pending_y;}if(child->pending_ready&&effective_sync(child))surface_apply(child);}
 }
 static void surface_commit(struct wl_client *c,struct wl_resource *r){
+ /* xdg-shell has a stricter sequence than bare wl_surface: the initial
+  * bufferless commit receives configure(size,states) + xdg_surface.configure
+  * (serial); the client must ack that serial before attaching its first real
+  * buffer. Posting a protocol error here is important—silently accepting an
+  * unconfigured buffer leaves toolkits with contradictory surface geometry. */
  Surface *p=wl_resource_get_user_data(r);p->server->commits++;
  if(p->xdg&&!p->configure_sent){
   if(p->buffer_changed&&!p->pending_null){wl_resource_post_error(p->xdg,XDG_SURFACE_ERROR_UNCONFIGURED_BUFFER,"commit without a buffer before mapping");return;}
@@ -329,7 +344,14 @@ static void each_surface_recursive(Surface *p,int x,int y,int depth,void (*fn)(S
 void server_each_surface(Surface *root,void (*fn)(Surface*,int,int,void*),void *data){if(root)each_surface_recursive(root,0,0,0,fn,data);}
 static Surface *surface_at_rec(Surface *root,float x,float y,float *sx,float *sy,int depth){if(depth>32)return NULL;Surface *child;wl_list_for_each_reverse(child,&root->server->surfaces,link)if(child->parent==root&&child->mapped){Surface *hit=surface_at_rec(child,x-child->x,y-child->y,sx,sy,depth+1);if(hit)return hit;}if(root->mapped&&x>=0&&y>=0&&x<root->width&&y<root->height&&(!root->input_region||cairo_region_contains_point(root->input_region,(int)x,(int)y))){*sx=x;*sy=y;return root;}return NULL;}
 Surface *surface_at(Surface *root,float x,float y,float *sx,float *sy){return root?surface_at_rec(root,x,y,sx,sy,0):NULL;}
-void server_frame_done(Server *s,uint32_t time){Surface *p;wl_list_for_each(p,&s->surfaces,link){Callback *cb,*tmp;wl_list_for_each_safe(cb,tmp,&p->callbacks,link){wl_callback_send_done(cb->resource,time);wl_resource_destroy(cb->resource);}}}
+void server_frame_done(Server *s,uint32_t time){
+ /* main calls this after scene_render + backend present/readback, then flushes
+  * client sockets. done carries the compositor clock (not a Unix timestamp)
+  * and the callback resource is one-shot, so destroy it immediately after the
+  * event. Clients can now request exactly one callback for their next frame;
+  * this is backpressure, not a timer that tries to guess their render rate. */
+ Surface *p;wl_list_for_each(p,&s->surfaces,link){Callback *cb,*tmp;wl_list_for_each_safe(cb,tmp,&p->callbacks,link){wl_callback_send_done(cb->resource,time);wl_resource_destroy(cb->resource);}}
+}
 bool server_init(Server *s,const char *socket_name){
  wl_list_init(&s->surfaces);wl_list_init(&s->pointers);wl_list_init(&s->keyboards);wl_list_init(&s->outputs);wl_list_init(&s->data_devices);
  s->display=wl_display_create();if(!s->display)return false;s->loop=wl_display_get_event_loop(s->display);

@@ -12,6 +12,7 @@ Vec3 vcross(Vec3 a,Vec3 b);
 Vec3 vnorm(Vec3 v);
 Vec3 rotate_y(Vec3 v,float deg);
 Vec3 rotate_x(Vec3 v,float deg);
+Vec3 rotate_z(Vec3 v,float deg);
 Vec3 camera_ray(float x,float y,int w,int h,float fov,float yaw,float pitch);
 bool plane_hit(Plane p,Vec3 origin,Vec3 ray,float *u,float *v,float *distance,bool clip);
 Plane monitor_plane(int index);
