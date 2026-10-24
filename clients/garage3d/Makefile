@@ -24,13 +24,13 @@ GEN = .generated
 BIN = bin
 
 SOURCES = src/main.c src/wayland_client.c src/renderer.c src/scene.c \
-          src/animation.c src/mesh.c src/gmath.c
+          src/animation.c src/mesh.c src/gmath.c src/config.c
 HEADERS = src/wayland_client.h src/renderer.h src/scene.h src/animation.h \
-          src/mesh.h src/gmath.h src/input.h
+          src/mesh.h src/gmath.h src/input.h src/config.h
 SHADERS = shaders/lit.vert shaders/lit.frag shaders/neon.vert shaders/neon.frag \
           shaders/city.vert shaders/city.frag shaders/mist.vert shaders/mist.frag \
           shaders/particle.vert shaders/particle.frag
-PURE_SOURCES = src/gmath.c src/mesh.c src/scene.c src/animation.c
+PURE_SOURCES = src/gmath.c src/mesh.c src/scene.c src/animation.c src/config.c
 
 .PHONY: all clean test smoke sanitize install
 all: $(BIN)/garage3d

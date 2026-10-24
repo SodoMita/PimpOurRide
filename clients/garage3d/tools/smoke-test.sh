@@ -33,6 +33,10 @@ trap cleanup EXIT INT TERM
 export XDG_RUNTIME_DIR="$TMP/rt"
 mkdir -p "$XDG_RUNTIME_DIR"
 chmod 700 "$XDG_RUNTIME_DIR"
+# Config isolation: the developer's real garage3d.conf (rain=0, black neon,
+# ...) must not leak into the pixel assertions below.
+export XDG_CONFIG_HOME="$TMP/cfg"
+mkdir -p "$XDG_CONFIG_HOME"
 
 weston --backend=headless-backend.so --renderer=gl --width=960 --height=540 \
     --socket=garage3d-smoke --idle-time=0 --log="$TMP/weston.log" &

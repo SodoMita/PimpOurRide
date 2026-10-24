@@ -40,7 +40,7 @@ typedef struct {
 
 typedef struct {
     GLuint program;
-    GLint u_mvp, u_time;
+    GLint u_mvp, u_time, u_density;
 } CityProgram;
 
 typedef struct {

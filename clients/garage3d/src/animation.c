@@ -36,8 +36,10 @@ void anim_init(AnimationState *a, const Scene *scene) {
     memset(a, 0, sizeof(*a));
     a->rng_state = 0x9E3779B9u;
     a->flicker = 1.0f;
-    /* Lamp starts displaced, like someone just brushed past it. */
-    a->swing_x = 0.32f; a->swing_z = 0.21f;
+    /* Lamp starts displaced at the configured amplitude, like someone just
+     * brushed past it (default 18 deg = the original 0.32 rad). */
+    float amp = scene->settings.lamp_swing * 0.0174532925f;
+    a->swing_x = amp; a->swing_z = amp * 0.65625f;
     a->next_kick = 9.0;
     static const struct { Vec3 p, v; float r; } seed[3] = {
         { { -2.5f, 2.6f, -5.0f }, { 1.6f, 0.0f, -2.2f }, 0.35f },
@@ -51,23 +53,42 @@ void anim_init(AnimationState *a, const Scene *scene) {
         a->balls[i].restitution = 0.72f;
         a->balls[i].orientation = quat_identity();
     }
-    a->rain_count = MAX_RAIN;
+    a->rain_count = scene->settings.rain < MAX_RAIN ? scene->settings.rain : MAX_RAIN;
     for (int i = 0; i < a->rain_count; i++) rain_respawn(a, i, true);
+}
+
+void anim_set_rain_count(AnimationState *a, int count) {
+    if (count < 0) count = 0;
+    if (count > MAX_RAIN) count = MAX_RAIN;
+    /* Newly activated streaks must not all fall in a sheet from y=0: seed
+     * them through the whole volume, same as at init. */
+    for (int i = a->rain_count; i < count; i++) rain_respawn(a, i, true);
+    a->rain_count = count;
+}
+
+void anim_rescale_swing(AnimationState *a, float ratio) {
+    if (ratio < 0.0f) ratio = 0.0f;
+    a->swing_x *= ratio; a->swing_z *= ratio;
+    a->swing_vx *= ratio; a->swing_vz *= ratio;
 }
 
 void anim_physics_step(AnimationState *a, Scene *scene, float h) {
     /* --- pendulum (semi-implicit Euler: update v from a, then x from new
      *     v; this ordering is symplectic, so energy doesn't blow up the way
      *     naive explicit Euler would over thousands of swings) --- */
+    const float g = GRAVITY * scene->settings.gravity;
     if (a->time >= a->next_kick) {
         /* Occasional nudge keeps the lamp alive forever without violating
-         * physics the rest of the time; direction is pseudo-random. */
-        a->swing_vx += (rng_float(a) - 0.5f) * 0.55f;
-        a->swing_vz += (rng_float(a) - 0.5f) * 0.55f;
+         * physics the rest of the time; direction is pseudo-random. The
+         * nudge scales with the configured amplitude, so lamp_swing = 0
+         * lets the lamp settle to a dead hang and stay there. */
+        float kick = 0.55f * (scene->settings.lamp_swing / 18.0f);
+        a->swing_vx += (rng_float(a) - 0.5f) * kick;
+        a->swing_vz += (rng_float(a) - 0.5f) * kick;
         a->next_kick = a->time + 8.0 + rng_float(a) * 5.0;
     }
-    float ax = -(GRAVITY / PENDULUM_L) * sinf(a->swing_x) - PENDULUM_DAMPING * a->swing_vx;
-    float az = -(GRAVITY / PENDULUM_L) * sinf(a->swing_z) - PENDULUM_DAMPING * a->swing_vz;
+    float ax = -(g / PENDULUM_L) * sinf(a->swing_x) - PENDULUM_DAMPING * a->swing_vx;
+    float az = -(g / PENDULUM_L) * sinf(a->swing_z) - PENDULUM_DAMPING * a->swing_vz;
     a->swing_vx += ax * h; a->swing_vz += az * h;
     a->swing_x += a->swing_vx * h; a->swing_z += a->swing_vz * h;
     if (scene->lamp_pivot >= 0) {
@@ -80,7 +101,7 @@ void anim_physics_step(AnimationState *a, Scene *scene, float h) {
      *     rolling rotation from horizontal velocity (axis = up x v) --- */
     for (int i = 0; i < scene->ball_count && i < 3; i++) {
         BallBody *b = &a->balls[i];
-        b->velocity.y -= GRAVITY * h;
+        b->velocity.y -= g * h;
         b->position = vec3_add(b->position, vec3_mul(b->velocity, h));
         if (b->position.y < b->radius) {
             b->position.y = b->radius;
@@ -158,7 +179,7 @@ void anim_update(AnimationState *a, Scene *scene, float dt) {
 
     /* Procedural: fan integrates a constant angular speed (dt-based, so
      * its rpm is identical at any presentation rate). */
-    a->fan_angle_deg += 140.0f * dt;
+    a->fan_angle_deg += 140.0f * scene->settings.fan_speed * dt;
     if (scene->fan_pivot >= 0)
         scene->nodes[scene->fan_pivot].rotation =
             quat_from_euler_deg(0, a->fan_angle_deg, 0);
@@ -169,13 +190,18 @@ void anim_update(AnimationState *a, Scene *scene, float dt) {
     float pulse = 0.96f + 0.04f * sinf(t * 7.0f);
     unsigned bucket = (unsigned)(t * 12.0f);
     unsigned hash = bucket * 2654435761u >> 24; /* 0..255 */
-    a->flicker = hash < 26 ? 0.12f : (hash < 44 ? 0.45f : 1.0f);
+    /* flicker=false in settings "repairs" the faulty tube: it breathes
+     * with the healthy ones and its cluster light goes steady. */
+    a->flicker = scene->settings.flicker
+        ? (hash < 26 ? 0.12f : (hash < 44 ? 0.45f : 1.0f)) : 1.0f;
     for (int i = 0; i < scene->node_count; i++) {
         Node *n = &scene->nodes[i];
         if (n->program != PROG_NEON) continue;
-        bool faulty = (i == scene->flicker_tube || i == scene->flicker_halo);
+        bool faulty = scene->settings.flicker &&
+                      (i == scene->flicker_tube || i == scene->flicker_halo);
         n->emissive_scale = faulty ? a->flicker : pulse;
-        if (n->layer == LAYER_REFLECT) n->emissive_scale *= 0.55f;
+        if (n->layer == LAYER_REFLECT)
+            n->emissive_scale *= 0.55f * scene->settings.reflections;
     }
     scene->points[LIGHT_MAGENTA_NEAR].intensity = 7.0f * (0.35f + 0.65f * a->flicker) * pulse;
 

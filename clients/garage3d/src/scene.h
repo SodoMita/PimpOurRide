@@ -34,6 +34,7 @@
 #ifndef GARAGE3D_SCENE_H
 #define GARAGE3D_SCENE_H
 
+#include "config.h"
 #include "gmath.h"
 #include "input.h"
 #include "mesh.h"
@@ -78,6 +79,10 @@ typedef struct {
     float emissive_scale; /* animated (flicker/pulse), default 1 */
     float shader_param;   /* per-node seed/phase for mist & city */
     bool visible;
+    /* Which settings colour (if any) drives this node's emissive. Set at
+     * build for tubes/halos/reflections so a config reload can re-tint the
+     * whole installation without rebuilding the graph. 0=none 1=left 2=right */
+    unsigned char color_role;
 } Node;
 
 typedef struct {
@@ -128,11 +133,23 @@ typedef struct {
     int balls[3], ball_count;
     int flicker_tube, flicker_halo; /* the one faulty tube, right wall */
     int mists[4], mist_count;
+
+    /* The effective settings (config file + CLI, hot-reloadable). Owned by
+     * the scene so animation/renderer read tunables without extra plumbing
+     * parameters; main.c replaces the copy via scene_apply_settings(). */
+    GarageSettings settings;
 } Scene;
 
-/* Builds the whole garage. fov_deg comes from --fov (configurable, and
- * adjustable later with +/-). Pure CPU work: no GL calls here. */
-void scene_build(Scene *scene, float fov_deg);
+/* Builds the whole garage from `settings` (copied into the scene; the
+ * camera FOV, neon colours, fog etc. all come from there). Pure CPU work:
+ * no GL calls here. */
+void scene_build(Scene *scene, const GarageSettings *settings);
+/* Hot-swaps the scene's settings: re-tints neon nodes, re-colours the
+ * cluster lights, updates fog/FOV/mist/ball visibility. Safe to call every
+ * frame, but main.c calls it when the config file's mtime changes.
+ * Edge-triggered consequences (rain count, pause state, pendulum energy,
+ * fullscreen, scale) are main.c's job - they need old-vs-new diffing. */
+void scene_apply_settings(Scene *scene, const GarageSettings *settings);
 /* Resolves world matrices (parents precede children) and syncs the lamp
  * light to the bulb node's world position. Call after animation. */
 void scene_update_world(Scene *scene);

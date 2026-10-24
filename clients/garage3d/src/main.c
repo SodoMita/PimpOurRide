@@ -50,6 +50,8 @@ typedef struct {
     uint64_t max_frames;       /* 0 = unlimited (smoke tests use this) */
     double exit_after;         /* seconds, 0 = never */
     bool start_paused;
+    const char *config_path;   /* --config override (pre-scanned) */
+    bool no_config;            /* --no-config */
 } Options;
 
 static void usage(const char *argv0) {
@@ -66,6 +68,8 @@ static void usage(const char *argv0) {
         "  --exit-after SECONDS   Exit after SECONDS (smoke tests)\n"
         "  --screenshot PATH      Write a WebP of frame --screenshot-frame\n"
         "  --screenshot-frame N   Frame to capture (default 20)\n"
+        "  --config PATH          Settings file (default: ~/.config/garage3d/garage3d.conf)\n"
+        "  --no-config            Ignore the settings file (built-in defaults + CLI)\n"
         "  --help                 This help\n"
         "\nControls:\n"
         "  mouse left-drag / 1-finger drag    orbit        wheel / pinch   zoom\n"
@@ -132,6 +136,34 @@ int main(int argc, char **argv) {
     opt.fov = 62.0f;
     opt.screenshot_frame = 20;
 
+    /* Settings pre-scan + load. Precedence: built-in defaults < config
+     * file < CLI flags. --config/--no-config must be known before the file
+     * is read, and the file must seed `opt` before the real option pass
+     * overwrites individual fields - hence this little two-pass dance.
+     * `cur` stays the effective settings for the whole run; the loop
+     * hot-reloads it when the file changes (see below). */
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "--config") == 0 && i + 1 < argc) opt.config_path = argv[i + 1];
+        else if (strcmp(argv[i], "--no-config") == 0) opt.no_config = true;
+    }
+    char cfg_path[4096] = "";
+    if (opt.config_path) snprintf(cfg_path, sizeof(cfg_path), "%s", opt.config_path);
+    else if (!opt.no_config) settings_path(cfg_path, sizeof(cfg_path));
+    bool cfg_on = cfg_path[0] != '\0' && (!opt.no_config || opt.config_path != NULL);
+    GarageSettings cur;
+    settings_defaults(&cur);
+    bool cfg_loaded = false;
+    if (cfg_on) cfg_loaded = settings_load(cfg_path, &cur);
+    time_t cfg_mtime = cfg_on ? settings_mtime(cfg_path) : 0;
+    fprintf(stderr, "garage3d: settings %s%s\n",
+            cfg_loaded ? "loaded from " : "defaults",
+            cfg_loaded ? cfg_path : (cfg_on ? " (no config file yet)" : " (config disabled)"));
+    opt.app.width = cur.width;
+    opt.app.height = cur.height;
+    opt.app.start_fullscreen = cur.fullscreen;
+    opt.app.scale_override = cur.scale;
+    opt.fov = cur.fov;
+
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0) {
             usage(argv[0]); return 0;
@@ -146,6 +178,8 @@ int main(int argc, char **argv) {
         else if (strcmp(argv[i], "--exit-after") == 0 && i + 1 < argc) opt.exit_after = atof(argv[++i]);
         else if (strcmp(argv[i], "--screenshot") == 0 && i + 1 < argc) opt.screenshot_path = argv[++i];
         else if (strcmp(argv[i], "--screenshot-frame") == 0 && i + 1 < argc) opt.screenshot_frame = strtoull(argv[++i], NULL, 10);
+        else if (strcmp(argv[i], "--config") == 0 && i + 1 < argc) i++; /* consumed by the pre-scan */
+        else if (strcmp(argv[i], "--no-config") == 0) { /* consumed by the pre-scan */ }
         else {
             fprintf(stderr, "garage3d: unknown or incomplete option '%s'\n", argv[i]);
             usage(argv[0]);
@@ -160,6 +194,13 @@ int main(int argc, char **argv) {
         fprintf(stderr, "garage3d: --scale must be 0 (auto) or 1..4\n");
         return 2;
     }
+    /* CLI finals win over the file for the values they share; fold them
+     * back into `cur` so scene_build/hot-reload diffing see one truth. */
+    cur.width = opt.app.width;
+    cur.height = opt.app.height;
+    cur.fullscreen = opt.app.start_fullscreen;
+    cur.scale = opt.app.scale_override;
+    cur.fov = opt.fov;
 
     /* sigaction WITHOUT SA_RESTART: Ctrl-C must interrupt the poll() inside
      * wlclient_dispatch, not restart it after the handler runs. */
@@ -177,10 +218,10 @@ int main(int argc, char **argv) {
     }
 
     Scene scene;
-    scene_build(&scene, opt.fov);
+    scene_build(&scene, &cur);
     AnimationState anim;
     anim_init(&anim, &scene);
-    anim.paused = opt.start_paused;
+    anim.paused = opt.start_paused || !cur.physics_enabled;
 
     Renderer renderer = { 0 };
     if (!renderer_init(&renderer, opt.shader_dir)) {
@@ -222,6 +263,43 @@ int main(int argc, char **argv) {
             anim.paused = !anim.paused;
             client.input.toggle_pause = false;
             fprintf(stderr, "garage3d: animation %s\n", anim.paused ? "paused" : "resumed");
+        }
+        /* Settings hot-reload: the config GUI may write garage3d.conf at
+         * any moment (atomically). Poll its mtime at 2 Hz; on change,
+         * continuous values (colours, fog, FOV, intensities...) go through
+         * scene_apply_settings, while edge-triggered ones are diffed
+         * against `cur` first so a reload doesn't, say, unpause physics
+         * the user stopped with Space. */
+        if (cfg_on) {
+            static double next_cfg_check = 0.0;
+            double tnow = wlclient_now();
+            if (tnow >= next_cfg_check) {
+                next_cfg_check = tnow + 0.5;
+                time_t m = settings_mtime(cfg_path);
+                if (m != 0 && m != cfg_mtime) {
+                    cfg_mtime = m;
+                    GarageSettings next;
+                    if (settings_load(cfg_path, &next)) {
+                        scene_apply_settings(&scene, &next);
+                        if (next.rain != cur.rain)
+                            anim_set_rain_count(&anim, next.rain);
+                        if (next.physics_enabled != cur.physics_enabled)
+                            anim.paused = !next.physics_enabled;
+                        if (next.lamp_swing != cur.lamp_swing) {
+                            if (cur.lamp_swing > 0.01f)
+                                anim_rescale_swing(&anim, next.lamp_swing / cur.lamp_swing);
+                            else
+                                anim.swing_x = next.lamp_swing * 0.0174532925f;
+                        }
+                        if (next.fullscreen != cur.fullscreen)
+                            wlclient_set_fullscreen(&client, next.fullscreen);
+                        if (next.scale != cur.scale)
+                            wlclient_set_scale_override(&client, next.scale);
+                        cur = next;
+                        fprintf(stderr, "garage3d: settings reloaded from %s\n", cfg_path);
+                    }
+                }
+            }
         }
         if (client.input.quit || !client.running || g_stop) break;
         if (!wlclient_can_draw(&client)) continue; /* the vsync gate */

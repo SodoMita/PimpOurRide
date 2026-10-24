@@ -123,7 +123,19 @@ static void garage_reflection(float x,float z,float r,float g,float b,float alph
  glColor4f(r,g,b,.015f);glVertex3f(x+.30f,-1.485f,z+10.f);glVertex3f(x-.30f,-1.485f,z+10.f);glEnd();
 }
 
+/* The pre-Garage3D backdrop, kept as a selectable mode (config/GUI
+ * background=texture): the flat garage.webp poster quad + wire grid floor,
+ * byte-for-byte the original environment(). Cheaper than the 3D hall and a
+ * useful A/B comparison for what real geometry buys you. */
+static void environment_flat(Server *s){
+ glDisable(GL_LIGHTING);glDisable(GL_DEPTH_TEST);texture(s->garage_tex,-45,-17.8,90,38.2,-35);glEnable(GL_DEPTH_TEST);
+ color(.021,.019,.036);glBegin(GL_QUADS);glNormal3f(0,1,0);glVertex3f(-50,-1.5,-35);glVertex3f(50,-1.5,-35);glVertex3f(50,-1.5,35);glVertex3f(-50,-1.5,35);glEnd();
+ glDisable(GL_LIGHTING);glEnable(GL_BLEND);glBlendFunc(GL_SRC_ALPHA,GL_ONE_MINUS_SRC_ALPHA);glColor4f(.28,.28,.5,.2);glBegin(GL_LINES);for(int i=-25;i<=25;i+=3){glVertex3f(i,-1.495,-35);glVertex3f(i,-1.495,25);glVertex3f(-35,-1.495,i);glVertex3f(35,-1.495,i);}glEnd();glDisable(GL_BLEND);glEnable(GL_LIGHTING);
+}
+
 static void environment(Server *s){
+ if(s->bg_mode==CD_BG_NONE)return;               /* backdrop disabled */
+ if(s->bg_mode==CD_BG_TEXTURE){environment_flat(s);return;}
  const float floor_y=-1.5f,ceil_y=12.f,wall_x=15.f,far_z=-40.f,near_z=16.f,center_z=-12.f,len=56.f;
  const float mid_y=(floor_y+ceil_y)*.5f,height=ceil_y-floor_y;
  static const float pillar_z[]={-4.f,-11.5f,-19.f,-26.5f,-34.f};
@@ -286,7 +298,9 @@ void scene_init(Server *s){
  glEnable(GL_DEPTH_TEST);glDepthFunc(GL_LEQUAL);glEnable(GL_MULTISAMPLE);glShadeModel(GL_SMOOTH);glClearColor(.013,.015,.031,1);s->pitch=s->target_pitch=-6;
  Plane panel={.center={.78,.33,.48},.width=1.56,.height=.9,.yaw=-5,.pitch=-28};Vec3 right=rotate_y(v3(1,0,0),panel.yaw),up=rotate_y(rotate_x(v3(0,1,0),panel.pitch),panel.yaw),normal=vcross(right,up);
  const char *names[]={"TERMINAL","FILES","AUDIO","METERS","NEON","COCKPIT"};const char *subs[]={"01 / SHELL","02 / EXPLORE","03 / SESSION","04 / LIVE","05 / COLOR","06 / HOME"};
- for(int i=0;i<6;i++){float x=(i%3-1)*.48f,y=i<3?.095f:-.22f;s->buttons[i]=(DashButton){.plane={.center=vadd(panel.center,vadd(vadd(vmul(right,x),vmul(up,y)),vmul(normal,.084f))),.width=.426,.height=.248,.yaw=panel.yaw,.pitch=panel.pitch},.name=names[i],.sub=subs[i],.action=i};}
+ /* Built-in menu defaults; [app.*] config (applied in main.c after ui_init)
+  * may relabel/re-icon/disable any of these live. */
+ for(int i=0;i<6;i++){float x=(i%3-1)*.48f,y=i<3?.095f:-.22f;s->buttons[i].plane=(Plane){.center=vadd(panel.center,vadd(vadd(vmul(right,x),vmul(up,y)),vmul(normal,.084f))),.width=.426,.height=.248,.yaw=panel.yaw,.pitch=panel.pitch};snprintf(s->buttons[i].name,sizeof(s->buttons[i].name),"%s",names[i]);snprintf(s->buttons[i].sub,sizeof(s->buttons[i].sub),"%s",subs[i]);s->buttons[i].action=i;s->buttons[i].icon=i;s->buttons[i].enabled=true;s->buttons[i].texture=0;}
 }
 void scene_render(Server *s){
  glViewport(0,0,s->width,s->height);glClear(GL_COLOR_BUFFER_BIT|GL_DEPTH_BUFFER_BIT|GL_STENCIL_BUFFER_BIT);glEnable(GL_DEPTH_TEST);

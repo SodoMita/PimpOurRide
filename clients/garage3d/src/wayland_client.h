@@ -90,6 +90,7 @@ struct WlClient {
     bool resize_pending;   /* deferred wl_egl_window_resize (see below) */
     bool running;          /* cleared by xdg_toplevel.close / fatal errors */
     bool fullscreen;       /* last compositor-confirmed state */
+    bool fullscreen_desired; /* latest state we requested (config/key) */
     uint32_t last_frame_time_ms; /* compositor clock from frame.done */
 
     /* Sizes: xdg_toplevel.configure speaks in logical (window-geometry)
@@ -167,6 +168,14 @@ void wlclient_apply_pending_resize(WlClient *c);
 bool wlclient_present(WlClient *c);
 
 void wlclient_toggle_fullscreen(WlClient *c);
+/* Absolute fullscreen request (config hot-reload); no-op if already the
+ * desired state. Like the toggle, this only *asks* - c->fullscreen stays
+ * the compositor-confirmed truth. */
+void wlclient_set_fullscreen(WlClient *c, bool on);
+/* Change the forced buffer scale at runtime (0 = follow output, 1..4).
+ * Marks a resize pending; wlclient_apply_pending_resize() performs the
+ * wl_egl_window_resize + set_buffer_scale at the next drawable frame. */
+void wlclient_set_scale_override(WlClient *c, int scale);
 
 static inline int wlclient_phys_width(const WlClient *c) { return c->logical_w * c->scale; }
 static inline int wlclient_phys_height(const WlClient *c) { return c->logical_h * c->scale; }

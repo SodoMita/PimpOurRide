@@ -13,6 +13,7 @@ in vec2 v_uv;
 out vec4 frag_color;
 
 uniform float u_time;
+uniform float u_density; // lit-window fraction of the NEAR layer (config: scene.city_density)
 
 float hash11(float p) {
     p = fract(p * 0.1031);
@@ -60,9 +61,9 @@ void main() {
     sky += star * smoothstep(0.55, 0.95, uv.y) * 0.5;
 
     vec3 result = sky;
-    vec3 far_layer = skyline_layer(uv, 26.0, 0.18, 0.34, vec3(0.07, 0.09, 0.19), 0.22, 3.1);
+    vec3 far_layer = skyline_layer(uv, 26.0, 0.18, 0.34, vec3(0.07, 0.09, 0.19), u_density * 0.73, 3.1);
     if (far_layer.r >= 0.0) result = far_layer;
-    vec3 near_layer = skyline_layer(uv, 15.0, 0.05, 0.30, vec3(0.03, 0.04, 0.09), 0.30, 8.7);
+    vec3 near_layer = skyline_layer(uv, 15.0, 0.05, 0.30, vec3(0.03, 0.04, 0.09), u_density, 8.7);
     if (near_layer.r >= 0.0) result = near_layer;
 
     // Ground haze at the very bottom, blending into the mist sheets.

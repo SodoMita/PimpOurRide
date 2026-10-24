@@ -156,6 +156,7 @@ bool renderer_init(Renderer *r, const char *shader_dir) {
     r->neon.u_halo = loc(r->neon.program, "u_halo");
     r->city.u_mvp = loc(r->city.program, "u_mvp");
     r->city.u_time = loc(r->city.program, "u_time");
+    r->city.u_density = loc(r->city.program, "u_density");
     r->mist.u_mvp = loc(r->mist.program, "u_mvp");
     r->mist.u_color = loc(r->mist.program, "u_color");
     r->mist.u_time = loc(r->mist.program, "u_time");
@@ -310,7 +311,11 @@ void renderer_draw(Renderer *r, const Scene *scene, const AnimationState *anim,
                                 scene->dir_light_dir.y, scene->dir_light_dir.z);
                     glUniform3f(r->lit.u_dir_color, scene->dir_light_color.x,
                                 scene->dir_light_color.y, scene->dir_light_color.z);
-                    glUniform1f(r->lit.u_dir_intensity, scene->dir_light_intensity);
+                    /* settings.light_intensity is the GUI's master dimmer:
+                     * it multiplies authored intensities at upload, so
+                     * per-frame animation (flicker light etc.) is untouched. */
+                    glUniform1f(r->lit.u_dir_intensity,
+                                scene->dir_light_intensity * scene->settings.light_intensity);
                     float pos[LIGHT_COUNT * 3], col[LIGHT_COUNT * 3], inten[LIGHT_COUNT];
                     for (int k = 0; k < LIGHT_COUNT; k++) {
                         pos[k * 3] = scene->points[k].position.x;
@@ -319,7 +324,7 @@ void renderer_draw(Renderer *r, const Scene *scene, const AnimationState *anim,
                         col[k * 3] = scene->points[k].color.x;
                         col[k * 3 + 1] = scene->points[k].color.y;
                         col[k * 3 + 2] = scene->points[k].color.z;
-                        inten[k] = scene->points[k].intensity;
+                        inten[k] = scene->points[k].intensity * scene->settings.light_intensity;
                     }
                     glUniform3fv(r->lit.u_point_pos, LIGHT_COUNT, pos);
                     glUniform3fv(r->lit.u_point_color, LIGHT_COUNT, col);
@@ -361,6 +366,7 @@ void renderer_draw(Renderer *r, const Scene *scene, const AnimationState *anim,
                     glUseProgram(r->city.program);
                     current_program_kind = PROG_CITY;
                     glUniform1f(r->city.u_time, time);
+                    glUniform1f(r->city.u_density, scene->settings.city_density);
                 }
                 glUniformMatrix4fv(r->city.u_mvp, 1, GL_FALSE, mvp.m);
                 draw_mesh(r, n->mesh);

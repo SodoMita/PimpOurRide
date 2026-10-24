@@ -544,6 +544,7 @@ static void toplevel_configure(void *data, struct xdg_toplevel *toplevel, int32_
     for (size_t i = 0; i < count; i++)
         if (state[i] == XDG_TOPLEVEL_STATE_FULLSCREEN) fullscreen = true;
     c->fullscreen = fullscreen;
+    c->fullscreen_desired = fullscreen; /* compositor's word is final */
 }
 static void toplevel_close(void *data, struct xdg_toplevel *toplevel) {
     WlClient *c = data;
@@ -689,13 +690,28 @@ void wlclient_apply_pending_resize(WlClient *c) {
         wl_surface_set_buffer_scale(c->surface, scale);
 }
 
-void wlclient_toggle_fullscreen(WlClient *c) {
-    if (!c->toplevel) return;
+void wlclient_set_fullscreen(WlClient *c, bool on) {
+    if (!c->toplevel || c->fullscreen_desired == on) return;
+    c->fullscreen_desired = on;
     /* This is a *request*: the compositor confirms (or not) via the next
      * toplevel.configure states array, which is why c->fullscreen is only
-     * written there, never here. */
-    if (c->fullscreen) xdg_toplevel_unset_fullscreen(c->toplevel);
-    else xdg_toplevel_set_fullscreen(c->toplevel, NULL);
+     * written there, never here. fullscreen_desired merely remembers what
+     * we last asked for so a config reload echoing the same value doesn't
+     * spam requests. */
+    if (on) xdg_toplevel_set_fullscreen(c->toplevel, NULL);
+    else xdg_toplevel_unset_fullscreen(c->toplevel);
+}
+
+void wlclient_toggle_fullscreen(WlClient *c) {
+    wlclient_set_fullscreen(c, !c->fullscreen);
+}
+
+void wlclient_set_scale_override(WlClient *c, int scale) {
+    if (scale < 0) scale = 0;
+    if (scale > 4) scale = 4;
+    if (c->scale_override == scale) return;
+    c->scale_override = scale;
+    c->resize_pending = true; /* applied at the next drawable frame */
 }
 
 /* ------------------------------------------------------------------ dispatch */
@@ -877,7 +893,7 @@ bool wlclient_init(WlClient *c, const AppConfig *cfg) {
     xdg_toplevel_set_title(c->toplevel, cfg->title ? cfg->title : "Garage3D");
     xdg_toplevel_set_app_id(c->toplevel, cfg->app_id ? cfg->app_id : "chromedrive.garage3d");
     xdg_toplevel_set_min_size(c->toplevel, 320, 200);
-    if (cfg->start_fullscreen) xdg_toplevel_set_fullscreen(c->toplevel, NULL);
+    if (cfg->start_fullscreen) { xdg_toplevel_set_fullscreen(c->toplevel, NULL); c->fullscreen_desired = true; }
 
     /* The initial commit carries NO buffer. Its only job is to make the
      * compositor send the first configure with a suggested size - attaching

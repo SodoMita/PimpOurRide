@@ -1,4 +1,5 @@
 #include "chrome.h"
+#include "cdconfig.h"
 #include <errno.h>
 #include <linux/input-event-codes.h>
 #include <math.h>
@@ -15,6 +16,104 @@ static volatile sig_atomic_t interrupted;
 static void on_signal(int sig){interrupted=1;}
 static double clock_now(void){return (double)SDL_GetPerformanceCounter()/SDL_GetPerformanceFrequency();}
 void app_notice(Server *s,const char *fmt,...){va_list args;va_start(args,fmt);vsnprintf(s->notice,sizeof(s->notice),fmt,args);va_end(args);s->notice_until=s->time+4.0;}
+/* ---- persistent configuration (chromedrive.conf, edited by the GUI) ----
+ * Precedence: built-in defaults < config file < command line. The file is
+ * re-read whenever its mtime changes while running (config_poll, 2 Hz), so
+ * `bin/chromedrive-config` edits apply live where that is meaningful:
+ * fps/fov/neon/hud/background hot-apply; size/backend/VNC-port/demo/socket
+ * are startup-only. Invalid values are ignored with a warning - a typo in
+ * a hand-edited config must never kill the compositor. See
+ * docs/configuration.md for the schema. */
+static char config_path[4096];
+static time_t config_mtime_seen;
+static bool config_enabled=true;
+static void apply_config(Server *s,const CdConfig *cfg,bool startup,const char **socket_out){
+ if(startup){
+  long w=cd_config_get_int(cfg,"display","width",s->width),h=cd_config_get_int(cfg,"display","height",s->height);
+  if(w>=640&&w<=7680&&h>=400&&h<=4320){s->width=(int)w;s->height=(int)h;}
+  else if(cd_config_has(cfg,"display","width")||cd_config_has(cfg,"display","height"))fprintf(stderr,"[config] ignoring out-of-range display size\n");
+  s->fullscreen=cd_config_get_bool(cfg,"display","fullscreen",s->fullscreen);
+  s->headless=cd_config_get_bool(cfg,"session","headless",s->headless);
+  long port=cd_config_get_int(cfg,"session","vnc_port",s->vnc_port);
+  if(port>=1&&port<=65535)s->vnc_port=(int)port;else if(cd_config_has(cfg,"session","vnc_port"))fprintf(stderr,"[config] ignoring bad vnc_port\n");
+  s->demo=cd_config_get_bool(cfg,"session","demo",s->demo);
+  static char socket_buf[128];
+  const char *sock=cd_config_get_string(cfg,"session","socket","");
+  if(socket_out&&sock&&*sock){snprintf(socket_buf,sizeof(socket_buf),"%s",sock);*socket_out=socket_buf;}
+ }
+ s->fps_limit=(int)clampf((float)cd_config_get_int(cfg,"display","fps",s->fps_limit),1,120);
+ s->target_fov=clampf((float)cd_config_get_double(cfg,"display","fov",s->target_fov),40,100);
+ if(startup)s->fov=s->target_fov;
+ long neon=cd_config_get_int(cfg,"cockpit","neon",s->theme);neon=((neon%3)+3)%3;
+ if((int)neon!=s->theme){s->theme=(int)neon;s->rebuild_scene=true;}
+ s->hud_visible=cd_config_get_bool(cfg,"cockpit","hud",s->hud_visible);
+ const char *bg=cd_config_get_string(cfg,"cockpit","background",NULL);
+ if(bg){int mode=!strcmp(bg,"texture")?CD_BG_TEXTURE:!strcmp(bg,"none")?CD_BG_NONE:!strcmp(bg,"3d")?CD_BG_3D:-1;
+  if(mode>=0)s->bg_mode=mode;else fprintf(stderr,"[config] unknown background '%s' (want 3d|texture|none)\n",bg);}
+}
+/* ---- Launch Control menu configuration ([app.*]) ----
+ * The KDE-menu-editor half of the config file. Each of the four app slots
+ * has a section ([app.terminal] ... [app.meters]) with:
+ *   name, sub       button label lines (also for [app.neon]/[app.cockpit])
+ *   exec            shell command; "%root%" expands to the install root
+ *   app_id          substring matched to focus an already-running instance
+ *   icon            0..5 (prompt, folder, music, bars, sun, wheel)
+ *   enabled         false greys the button out (click = notice)
+ *   autostart       join the --demo launch set
+ * Everything applies live: relabels regenerate button textures, exec/app_id
+ * take effect on the next click. CHROMEDRIVE_* env vars still win for exec
+ * (they are an explicit launch-time override - the GUI shows this state). */
+static char *expand_root(const char *in,const char *root){
+ const char *needle="%root%";size_t nl=strlen(needle),rl=strlen(root),count=0;
+ for(const char *p=in;(p=strstr(p,needle))!=NULL;p+=nl)count++;
+ char *out=malloc(strlen(in)+count*(rl-nl)+1);if(!out)return NULL;
+ char *w=out;const char *r=in,*hit;
+ while((hit=strstr(r,needle))!=NULL){size_t pre=(size_t)(hit-r);memcpy(w,r,pre);w+=pre;memcpy(w,root,rl);w+=rl;r=hit+nl;}
+ strcpy(w,r);return out;
+}
+static void apply_app_config(Server *s,const CdConfig *cfg){
+ static const char *sections[6]={"app.terminal","app.files","app.audio","app.meters","app.neon","app.cockpit"};
+ static const char *envnames[4]={"CHROMEDRIVE_TERMINAL","CHROMEDRIVE_FILES","CHROMEDRIVE_AUDIO","CHROMEDRIVE_METERS"};
+ for(int i=0;i<6;i++){
+  const char *sec=sections[i];DashButton *b=&s->buttons[i];
+  const char *name=cd_config_get_string(cfg,sec,"name",NULL);
+  if(name&&*name)snprintf(b->name,sizeof(b->name),"%s",name);
+  const char *sub=cd_config_get_string(cfg,sec,"sub",NULL);
+  if(sub)snprintf(b->sub,sizeof(b->sub),"%s",sub);
+  long icon=cd_config_get_int(cfg,sec,"icon",b->icon);
+  if(icon>=0&&icon<=5)b->icon=(int)icon;else if(cd_config_has(cfg,sec,"icon"))fprintf(stderr,"[config] %s icon out of range 0..5\n",sec);
+  b->enabled=cd_config_get_bool(cfg,sec,"enabled",b->enabled);
+  if(i<4){
+   const char *id=cd_config_get_string(cfg,sec,"app_id",NULL);
+   if(id)snprintf(s->app_ids[i],sizeof(s->app_ids[i]),"%s",id);
+   s->app_autostart[i]=cd_config_get_bool(cfg,sec,"autostart",s->app_autostart[i]);
+   const char *exec=cd_config_get_string(cfg,sec,"exec",NULL);
+   if(exec&&*exec&&!getenv(envnames[i])){char *x=expand_root(exec,s->root);if(x){free(s->launch_commands[i]);s->launch_commands[i]=x;}}
+   else if(exec&&*exec)fprintf(stderr,"[config] %s exec ignored: $%s is set\n",sec,envnames[i]);
+  }
+ }
+ ui_refresh_buttons(s);
+}
+static void config_load_startup(Server *s,const char **socket_out){
+ if(!config_enabled||!*config_path){fprintf(stderr,"[config] disabled\n");return;}
+ CdConfig *cfg=cd_config_load(config_path);
+ if(cfg){apply_config(s,cfg,true,socket_out);cd_config_free(cfg);}
+ config_mtime_seen=cd_config_mtime(config_path);
+ fprintf(stderr,"[config] %s (%s)\n",config_path,config_mtime_seen?"loaded":"not present, built-in defaults");
+}
+static void config_poll(Server *s){
+ if(!config_enabled)return;
+ static double next_check;double t=clock_now();if(t<next_check)return;next_check=t+0.5;
+ time_t m=cd_config_mtime(config_path);
+ if(m==config_mtime_seen)return;
+ config_mtime_seen=m;
+ if(!m)return; /* file deleted: keep current values */
+ CdConfig *cfg=cd_config_load(config_path);
+ if(!cfg)return;
+ apply_config(s,cfg,false,NULL);apply_app_config(s,cfg);cd_config_free(cfg);
+ fprintf(stderr,"[config] reloaded %s\n",config_path);
+ app_notice(s,"Configuration reloaded");
+}
 void app_exec(Server *s,const char *command){
  if(!command||!*command)return;
  if(s->child_count>=128){app_notice(s,"Child process limit reached");return;}
@@ -24,11 +123,11 @@ void app_exec(Server *s,const char *command){
  s->children[s->child_count++]=pid;fprintf(stderr,"[launch] pid=%d %s\n",(int)pid,command);app_notice(s,"Connecting a new native Wayland client...");
 }
 void app_launch(Server *s,int action,bool force_new){
+ if(action>=0&&action<6&&!s->buttons[action].enabled){app_notice(s,"%s is disabled in the menu configuration",s->buttons[action].name);return;}
  if(action==4){s->theme=(s->theme+1)%3;s->rebuild_scene=true;app_notice(s,"Underglow / %s",s->theme==0?"ULTRAVIOLET":s->theme==1?"ICE BLUE":"ACID LIME");return;}
  if(action==5){scene_reset_camera(s);app_notice(s,"Driver view restored");return;}
  if(action<0||action>3)return;
- const char *ids[]={"foot","chromedrive.files","chromedrive.audio","chromedrive.telemetry"};
- if(!force_new){for(int i=0;i<CD_MAX_MONITORS;i++){Surface *p=s->monitors[i].surface;if(p&&strstr(p->app_id,ids[action])){server_focus(s,p);scene_focus_monitor(s,i,true);return;}}}
+ if(!force_new&&*s->app_ids[action]){for(int i=0;i<CD_MAX_MONITORS;i++){Surface *p=s->monitors[i].surface;if(p&&strstr(p->app_id,s->app_ids[action])){server_focus(s,p);scene_focus_monitor(s,i,true);return;}}}
  app_exec(s,s->launch_commands[action]);
 }
 static void next_monitor(Server *s){for(int d=1;d<=CD_MAX_MONITORS;d++){int i=(s->active_slot+d)%CD_MAX_MONITORS;if(s->monitors[i].surface){server_focus(s,s->monitors[i].surface);scene_focus_monitor(s,i,s->focus_view);return;}}}
@@ -54,12 +153,23 @@ bool app_global_key(Server *s,uint32_t evdev,bool down){
  }
  return true;
 }
-static void usage(const char *name){printf("ChromeDrive " CD_VERSION " — native, first-person Wayland cockpit\n\nUsage: %s [options]\n  --demo                Start a real terminal + Files + Audio clients\n  --socket NAME         Wayland socket (default: automatic)\n  --exec COMMAND        Launch an extra Wayland client (repeatable)\n  --size WIDTHxHEIGHT   Framebuffer/host window size (default 1600x1000)\n  --fps N               Frame cap, 1..120 (default 60)\n  --headless            Run with no X server: surfaceless EGL + built-in VNC server (default)\n  --windowed            Dev/debug mode: open a real SDL2/GLX window on an X server instead\n  --vnc-port N          VNC port for --headless mode (default 5900)\n  --fullscreen          --windowed only: start fullscreen, F11 to leave\n  --exit-after SECONDS   Useful for automated checks\n  --screenshot PATH     Capture a WebP after 3 seconds\n  --help                Show this help\n\nF1 help | F2 cockpit | F3 focus | F4 neon | F6 next display\nMiddle-drag/VNC-drag to look | Click a screen to focus | Ctrl+Alt+Enter new terminal\n",name);}
+static void usage(const char *name){printf("ChromeDrive " CD_VERSION " — native, first-person Wayland cockpit\n\nUsage: %s [options]\n  --demo                Start a real terminal + Files + Audio clients\n  --socket NAME         Wayland socket (default: automatic)\n  --exec COMMAND        Launch an extra Wayland client (repeatable)\n  --size WIDTHxHEIGHT   Framebuffer/host window size (default 1600x1000)\n  --fps N               Frame cap, 1..120 (default 60)\n  --headless            Run with no X server: surfaceless EGL + built-in VNC server (default)\n  --windowed            Dev/debug mode: open a real SDL2/GLX window on an X server instead\n  --vnc-port N          VNC port for --headless mode (default 5900)\n  --fullscreen          --windowed only: start fullscreen, F11 to leave\n  --exit-after SECONDS   Useful for automated checks\n  --screenshot PATH     Capture a WebP after 3 seconds\n  --config PATH         Config file (default: ~/.config/chromedrive/chromedrive.conf)\n  --no-config           Ignore the config file entirely\n  --help                Show this help\n\nF1 help | F2 cockpit | F3 focus | F4 neon | F6 next display\nMiddle-drag/VNC-drag to look | Click a screen to focus | Ctrl+Alt+Enter new terminal\n",name);}
 int main(int argc,char **argv){
  Server s={.width=1600,.height=1000,.fps_limit=60,.running=true,.hud_visible=true,.hover_button=-1,.keymap_fd=-1,.fov=65,.target_fov=65,.eye={0,1.0f,2.8f},.headless=true,.vnc_port=5900};
  const char *socket_name=NULL;double exit_after=0;bool auto_screenshot=false;
+ /* Config pre-scan: --config/--no-config must be known before the file is
+  * read, and the file must be read before the real option pass below so
+  * command-line options override file values. */
+ if(!cd_config_path(config_path,sizeof(config_path),"chromedrive","chromedrive.conf"))config_enabled=false;
+ for(int i=1;i<argc;i++){
+  if(!strcmp(argv[i],"--no-config"))config_enabled=false;
+  else if(!strcmp(argv[i],"--config")&&i+1<argc){snprintf(config_path,sizeof(config_path),"%s",argv[i+1]);config_enabled=true;}
+ }
+ config_load_startup(&s,&socket_name);
  for(int i=1;i<argc;i++){
   if(!strcmp(argv[i],"--help")){usage(argv[0]);return 0;}
+  else if(!strcmp(argv[i],"--config")&&i+1<argc)i++; /* consumed by the pre-scan */
+  else if(!strcmp(argv[i],"--no-config")){/* consumed by the pre-scan */}
   else if(!strcmp(argv[i],"--demo"))s.demo=true;
   else if(!strcmp(argv[i],"--fullscreen"))s.fullscreen=true;
   else if(!strcmp(argv[i],"--headless"))s.headless=true;
@@ -83,14 +193,23 @@ int main(int argc,char **argv){
  dmabuf_probe(&s);
  if(!server_init(&s,socket_name)){fprintf(stderr,"Could not start Wayland server: %s\n",strerror(errno));server_finish(&s);SDL_Quit();return 1;}
  /* Only after opening the host window/backend do we replace WAYLAND_DISPLAY. */
- char *defaults[4]={0};asprintf(&defaults[0],"foot --config='%s/assets/foot.ini' --title='Terminal' /bin/sh '%s/assets/terminal-welcome.sh'",s.root,s.root);asprintf(&defaults[1],"'%s/bin/chromedrive-demo' files",s.root);asprintf(&defaults[2],"'%s/bin/chromedrive-demo' audio",s.root);asprintf(&defaults[3],"'%s/bin/chromedrive-demo' telemetry",s.root);
- const char *envnames[]={"CHROMEDRIVE_TERMINAL","CHROMEDRIVE_FILES","CHROMEDRIVE_AUDIO","CHROMEDRIVE_METERS"};for(int i=0;i<4;i++)s.launch_commands[i]=getenv(envnames[i])?strdup(getenv(envnames[i])):strdup(defaults[i]);for(int i=0;i<4;i++)free(defaults[i]);
- scene_init(&s);ui_init(&s);s.start_time=clock_now();double last=s.start_time,fps_start=last;uint64_t fps_frames=0;bool initial_focus=false;
- if(s.demo){app_exec(&s,s.launch_commands[0]);app_exec(&s,s.launch_commands[1]);app_exec(&s,s.launch_commands[2]);}for(int i=0;i<s.exec_count;i++)app_exec(&s,s.exec_commands[i]);
+ /* Built-in menu defaults (%root% templates - the same strings the config
+  * GUI shows as the editable starting point) + per-slot app_id/autostart.
+  * [app.*] config (applied after ui_init below) overrides; env vars win. */
+ const char *templates[4]={"foot --config='%root%/assets/foot.ini' --title='Terminal' /bin/sh '%root%/assets/terminal-welcome.sh'","'%root%/bin/chromedrive-demo' files","'%root%/bin/chromedrive-demo' audio","'%root%/bin/chromedrive-demo' telemetry"};
+ const char *def_ids[4]={"foot","chromedrive.files","chromedrive.audio","chromedrive.telemetry"};
+ const bool def_autostart[4]={true,true,true,false};
+ const char *envnames[]={"CHROMEDRIVE_TERMINAL","CHROMEDRIVE_FILES","CHROMEDRIVE_AUDIO","CHROMEDRIVE_METERS"};
+ for(int i=0;i<4;i++){s.launch_commands[i]=getenv(envnames[i])?strdup(getenv(envnames[i])):expand_root(templates[i],s.root);snprintf(s.app_ids[i],sizeof(s.app_ids[i]),"%s",def_ids[i]);s.app_autostart[i]=def_autostart[i];}
+ scene_init(&s);ui_init(&s);
+ if(config_enabled){CdConfig *cfg=cd_config_load(config_path);if(cfg){apply_app_config(&s,cfg);cd_config_free(cfg);}} /* needs buttons+GL: after ui_init */
+ s.start_time=clock_now();double last=s.start_time,fps_start=last;uint64_t fps_frames=0;bool initial_focus=false;
+ if(s.demo){for(int i=0;i<4;i++)if(s.buttons[i].enabled&&s.app_autostart[i])app_exec(&s,s.launch_commands[i]);}for(int i=0;i<s.exec_count;i++)app_exec(&s,s.exec_commands[i]);
  app_notice(&s,"Welcome to the driver's seat. F1 for controls.");
  while(s.running&&!interrupted){
   double frame_start=clock_now();s.time=frame_start-s.start_time;s.dt=frame_start-last;last=frame_start;
   if(s.headless)backend_headless_poll(&s);else backend_sdl_poll(&s);
+  config_poll(&s);
   server_dispatch(&s);
   int status;pid_t pid;while((pid=waitpid(-1,&status,WNOHANG))>0){for(int i=0;i<s.child_count;i++)if(s.children[i]==pid){s.children[i]=s.children[--s.child_count];break;}if(WIFEXITED(status)&&WEXITSTATUS(status)!=0){fprintf(stderr,"[launch] pid %d exited %d\n",(int)pid,WEXITSTATUS(status));app_notice(&s,"Client exited with status %d — see launch log",WEXITSTATUS(status));}}
   if(s.demo&&!initial_focus&&s.time>2.0&&s.monitors[0].surface){server_focus(&s,s.monitors[0].surface);initial_focus=true;}

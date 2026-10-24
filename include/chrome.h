@@ -16,6 +16,12 @@
 #include <cairo/cairo.h>
 #include <xkbcommon/xkbcommon.h>
 #include "math3d.h"
+/* Cockpit backdrop (src/scene.c environment()), selectable in
+ * chromedrive.conf / the config GUI: the real 3D garage (default), the
+ * original flat garage.webp poster, or nothing at all. */
+#define CD_BG_3D 0
+#define CD_BG_TEXTURE 1
+#define CD_BG_NONE 2
 #define CD_MAX_MONITORS 8
 #define CD_APP_W 1000
 #define CD_APP_H 625
@@ -64,7 +70,10 @@ struct Surface {
  char title[256],app_id[256];
 };
 typedef struct { Plane plane;Surface *surface;GLuint label;char label_text[300]; } Monitor;
-typedef struct { Plane plane;const char *name,*sub;int action;GLuint texture; } DashButton;
+/* One Launch Control entry. name/sub/icon/enabled are user-configurable
+ * (chromedrive.conf [app.*], edited by bin/chromedrive-config) and applied
+ * live: DashButton owns copies, ui_refresh_buttons() re-renders textures. */
+typedef struct { Plane plane;char name[48],sub[64];int action,icon;bool enabled;GLuint texture; } DashButton;
 typedef enum {HIT_NONE,HIT_APP,HIT_BUTTON,HIT_CLOSE} HitKind;
 typedef struct { HitKind kind;Surface *surface;int slot,button;float x,y,distance; } Hit;
 typedef struct { uint32_t format;uint64_t modifiers[CD_DMABUF_MAX_MODIFIERS];int modifier_count; } DmabufFormat;
@@ -88,6 +97,7 @@ struct Server {
  int vnc_prev_mask,vnc_prev_x,vnc_prev_y;              /* RFB pointer edge-detection state (no separate down/up events in the protocol) */
  bool dmabuf_supported;int dmabuf_format_count;DmabufFormat dmabuf_formats[CD_DMABUF_MAX_FORMATS];
  int width,height,fps_limit,theme,hover_button,active_slot;
+ int bg_mode; /* CD_BG_*: which environment() backdrop to draw */
  bool running,middle_look,focus_view,show_help,hud_visible,fullscreen,demo,launch_pending;
  float yaw,pitch,target_yaw,target_pitch,fov,target_fov;
  Vec3 eye;
@@ -95,6 +105,10 @@ struct Server {
  uint64_t frames,commits;
  char socket[128],root[4096],runtime[4096],notice[256];
  char *launch_commands[4];char *exec_commands[16];int exec_count;
+ /* Launch-menu configuration per app slot (see [app.*] in chromedrive.conf):
+  * app_ids[s] is the substring matched against a mapped surface's app_id so
+  * re-clicking focuses the running app; app_autostart[s] joins the --demo set. */
+ char app_ids[4][128];bool app_autostart[4];
  pid_t children[128];int child_count;
  GLuint garage_tex,carbon_tex,gauge_tex,console_tex,hub_tex,hud_tex,help_tex,plate_tex;
  GLuint scene_list;bool rebuild_scene;
@@ -126,6 +140,9 @@ void scene_neon_color(Server *s,float *r,float *g,float *b);
 GLuint ui_texture(cairo_surface_t *surface,GLuint reuse);
 GLuint ui_load_webp(const char *path);
 void ui_init(Server *s);
+/* Re-renders the six Launch Control button textures from current
+ * name/sub/icon/enabled - called after a config (re)load changes the menu. */
+void ui_refresh_buttons(Server *s);
 void ui_update(Server *s);
 void ui_monitor_label(Server *s,int slot);
 void ui_draw_overlay(Server *s);

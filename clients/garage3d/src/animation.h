@@ -57,6 +57,11 @@ typedef struct {
 } AnimationState;
 
 void anim_init(AnimationState *a, const Scene *scene);
+/* Config hot-reload helpers: change the active rain population (seeding
+ * new streaks through the volume) and rescale pendulum energy towards a
+ * new configured amplitude without a visible teleport. */
+void anim_set_rain_count(AnimationState *a, int count);
+void anim_rescale_swing(AnimationState *a, float ratio);
 /* Advance everything by one rendered frame's dt (already clamped). */
 void anim_update(AnimationState *a, Scene *scene, float dt);
 /* One fixed physics tick. Exposed (not static) so the unit tests can step

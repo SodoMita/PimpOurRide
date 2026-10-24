@@ -62,7 +62,9 @@ int main(void) {
 
     /* --- scene graph: hierarchy resolves, parents precede children */
     Scene scene;
-    scene_build(&scene, 62.0f);
+    GarageSettings defaults;
+    settings_defaults(&defaults);
+    scene_build(&scene, &defaults);
     CHECK(scene.node_count > 80, "expected a substantial scene, got %d nodes",
           scene.node_count);
     bool ordering = true, finite = true;
@@ -118,12 +120,44 @@ int main(void) {
     CHECK(a2.accumulator < 1.0, "accumulator not drained: %f", a2.accumulator);
     CHECK(isfinite(a2.balls[0].position.y), "post-update ball is non-finite");
 
+    /* --- settings: defaults reproduce the authored scene; load+clamp of
+     *     a hand-written file, incl. colour parse and absurd values. */
+    CHECK(approx(scene.camera.fov_deg, 62.0f, 1e-4f), "default fov=%f", scene.camera.fov_deg);
+    CHECK(approx(scene.fog_density, 0.016f, 1e-6f), "default fog=%f", scene.fog_density);
+    const char *tmp = "/tmp/garage3d-test-settings.conf";
+    FILE *f = fopen(tmp, "w");
+    CHECK(f != NULL, "cannot create %s", tmp);
+    if (f) {
+        fputs("[scene]\nneon_left = #FF8000\nfog_density = 0.03\nrain = 12\n"
+              "[camera]\nfov = 500\n"          /* absurd: must clamp to 90 */
+              "[physics]\nenabled = false\n", f);
+        fclose(f);
+        GarageSettings loaded;
+        CHECK(settings_load(tmp, &loaded), "settings_load failed on %s", tmp);
+        CHECK(approx(loaded.neon_left[0], 1.0f, 1e-6f) &&
+              approx(loaded.neon_left[1], 0x80 / 255.0f, 1e-6f),
+              "neon_left parse: %f %f", loaded.neon_left[0], loaded.neon_left[1]);
+        CHECK(loaded.rain == 12, "rain=%d want 12", loaded.rain);
+        CHECK(approx(loaded.fov, 90.0f, 1e-4f), "fov clamp: %f", loaded.fov);
+        CHECK(!loaded.physics_enabled, "physics_enabled should be false");
+        /* Hot-apply: fog + neon material follow, rain helper respects cap. */
+        scene_apply_settings(&scene, &loaded);
+        CHECK(approx(scene.fog_density, 0.03f, 1e-6f), "applied fog=%f", scene.fog_density);
+        CHECK(scene.nodes[scene.flicker_tube].color_role == 2,
+              "flicker tube should be tagged as right-neon");
+        AnimationState a3;
+        anim_init(&a3, &scene);
+        anim_set_rain_count(&a3, 9999);
+        CHECK(a3.rain_count == MAX_RAIN, "rain cap: %d", a3.rain_count);
+        remove(tmp);
+    }
+
     if (failures) {
         fprintf(stderr, "garage3d tests: %d FAILURE(S)\n", failures);
         return 1;
     }
     printf("PASS: garage3d math (projection/look-at/quaternions), mesh index "
            "bounds, scene-graph hierarchy, 10 s of pendulum/ball/rain physics, "
-           "fixed-step accumulator\n");
+           "fixed-step accumulator, settings load/clamp/apply\n");
     return 0;
 }

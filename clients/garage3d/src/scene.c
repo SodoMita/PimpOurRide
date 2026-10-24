@@ -18,7 +18,11 @@ static Material MAT_CONCRETE, MAT_PILLAR, MAT_CEILING, MAT_FLOOR, MAT_METAL,
     MAT_METAL_DARK, MAT_TEAL, MAT_MAGENTA, MAT_BULB, MAT_CRATE, MAT_BARREL,
     MAT_CITY, MAT_MIST, MAT_BALL_A, MAT_BALL_B, MAT_BALL_C;
 
-static void init_materials(void) {
+static Vec3 settings_color(const float rgb[3], float gain) {
+    return vec3(rgb[0] * gain, rgb[1] * gain, rgb[2] * gain);
+}
+
+static void init_materials(const GarageSettings *g) {
     Vec3 black = vec3(0, 0, 0);
     MAT_CONCRETE = mat(vec3(0.15f, 0.17f, 0.19f), 1, black, 0.25f, 24, 0);
     MAT_PILLAR   = mat(vec3(0.12f, 0.13f, 0.15f), 1, black, 0.20f, 20, 0);
@@ -28,8 +32,11 @@ static void init_materials(void) {
     MAT_FLOOR    = mat(vec3(0.045f, 0.055f, 0.075f), 0.86f, black, 1.3f, 90, 1);
     MAT_METAL    = mat(vec3(0.27f, 0.31f, 0.37f), 1, black, 0.9f, 70, 0);
     MAT_METAL_DARK = mat(vec3(0.07f, 0.08f, 0.10f), 1, black, 0.5f, 40, 0);
-    MAT_TEAL     = mat(black, 1, vec3(0.25f, 2.4f, 2.2f), 0, 1, 0);
-    MAT_MAGENTA  = mat(black, 1, vec3(2.3f, 0.35f, 2.7f), 0, 1, 0);
+    /* Neon emissives come from settings (base colour x HDR gain) so the
+     * config GUI can re-tint the installation; with defaults these are the
+     * original (0.25, 2.4, 2.2) / (2.3, 0.35, 2.7). */
+    MAT_TEAL     = mat(black, 1, settings_color(g->neon_left, g->neon_intensity), 0, 1, 0);
+    MAT_MAGENTA  = mat(black, 1, settings_color(g->neon_right, g->neon_intensity), 0, 1, 0);
     MAT_BULB     = mat(black, 1, vec3(2.6f, 2.3f, 1.7f), 0, 1, 0);
     MAT_CRATE    = mat(vec3(0.16f, 0.13f, 0.09f), 1, black, 0.15f, 12, 0);
     MAT_BARREL   = mat(vec3(0.10f, 0.16f, 0.20f), 1, black, 0.6f, 48, 0);
@@ -59,11 +66,13 @@ static int add_node(Scene *s, const char *name, int parent, int mesh,
     return i;
 }
 
-void scene_build(Scene *s, float fov_deg) {
+void scene_build(Scene *s, const GarageSettings *settings) {
     memset(s, 0, sizeof(*s));
+    s->settings = *settings;
+    settings_clamp(&s->settings);
     s->lamp_pivot = s->lamp_bulb = s->fan_pivot = -1;
     s->flicker_tube = s->flicker_halo = -1;
-    init_materials();
+    init_materials(&s->settings);
 
     const float W = HALL_HALF_W, H = HALL_HEIGHT, ZF = HALL_FAR_Z;
     const float len = HALL_NEAR_Z - ZF;          /* 45 m of hall */
@@ -155,9 +164,14 @@ void scene_build(Scene *s, float fov_deg) {
                 if (!left && bay == 0 && t < 0) { s->flicker_tube = tube; s->flicker_halo = halo; }
                 /* Mirrored tube under the floor = the wet reflection. */
                 float wz = bay_z[bay] + (left ? -t : t) * 1.15f;
-                add_node(s, "tube reflection", -1, MESH_CYLINDER, PROG_NEON, LAYER_REFLECT,
+                int refl = add_node(s, "tube reflection", -1, MESH_CYLINDER, PROG_NEON, LAYER_REFLECT,
                          neon, vec3(side * (W - 0.18f), -3.5f, wz), 0, 0, 0,
                          vec3(0.10f, 3.4f, 0.10f));
+                /* Tag everything this settings colour drives (see color_role). */
+                unsigned char role = left ? 1 : 2;
+                s->nodes[tube].color_role = role;
+                s->nodes[halo].color_role = role;
+                if (refl >= 0) s->nodes[refl].color_role = role;
             }
         }
     }
@@ -252,13 +266,46 @@ void scene_build(Scene *s, float fov_deg) {
     s->points[LIGHT_MAGENTA_FAR]  = (PointLight){ vec3(9.2f, 3.5f, -16.0f), vec3(0.85f, 0.15f, 1.0f), 5.5f };
     s->points[LIGHT_CITY]         = (PointLight){ vec3(0, 3.0f, ZF + 2.0f), vec3(0.35f, 0.50f, 0.95f), 10.0f };
     s->fog_color = vec3(0.045f, 0.045f, 0.10f);
-    s->fog_density = 0.016f;
 
     s->camera.near_z = 0.1f;
     s->camera.far_z = 220.0f;
-    s->camera.fov_deg = clampf_(fov_deg, 30.0f, 90.0f);
+    /* Fog density, camera FOV, light colours, mist, ball visibility all
+     * land via the same path a live config reload takes. */
+    scene_apply_settings(s, &s->settings);
     camera_reset(s);
     scene_update_world(s);
+}
+
+void scene_apply_settings(Scene *s, const GarageSettings *settings) {
+    s->settings = *settings;
+    settings_clamp(&s->settings);
+    const GarageSettings *g = &s->settings;
+
+    /* Re-tint every neon-driven node, and the cluster lights that fake
+     * their wall splash, so emissive tubes and lighting stay in sync. */
+    Vec3 e_left = settings_color(g->neon_left, g->neon_intensity);
+    Vec3 e_right = settings_color(g->neon_right, g->neon_intensity);
+    for (int i = 0; i < s->node_count; i++) {
+        if (s->nodes[i].color_role == 1) s->nodes[i].material.emissive = e_left;
+        else if (s->nodes[i].color_role == 2) s->nodes[i].material.emissive = e_right;
+    }
+    Vec3 c_left = vec3(g->neon_left[0], g->neon_left[1], g->neon_left[2]);
+    Vec3 c_right = vec3(g->neon_right[0], g->neon_right[1], g->neon_right[2]);
+    s->points[LIGHT_TEAL_NEAR].color = c_left;
+    s->points[LIGHT_TEAL_FAR].color = c_left;
+    s->points[LIGHT_MAGENTA_NEAR].color = c_right;
+    s->points[LIGHT_MAGENTA_FAR].color = c_right;
+    /* (Point *intensities* stay as authored; animation.c modulates the
+     * flicker light per frame, and the GUI's light_intensity multiplies
+     * everything at upload time in the renderer.) */
+
+    s->fog_density = g->fog_density;
+    s->camera.fov_deg = g->fov;
+    for (int i = 0; i < s->mist_count; i++)
+        s->nodes[s->mists[i]].material.albedo =
+            vec3(0.55f * g->mist, 0.45f * g->mist, 0.85f * g->mist);
+    for (int i = 0; i < s->ball_count; i++)
+        s->nodes[s->balls[i]].visible = g->balls;
 }
 
 void scene_update_world(Scene *s) {
@@ -305,7 +352,7 @@ void camera_update(Scene *s, const InputState *in, float dt, double time) {
     /* Orbit with short inertial glide. The track-to-target factor
      * 1-exp(-k*dt) is the frame-rate independent form of exponential
      * smoothing: at 30 fps and 120 fps the glide lasts the same seconds. */
-    const float orbit_sens = 0.22f; /* deg per logical pixel */
+    const float orbit_sens = 0.22f * s->settings.orbit_speed; /* deg per logical pixel */
     float want_yaw_vel = in->orbit_dx * orbit_sens / dt;
     float want_pitch_vel = in->orbit_dy * orbit_sens / dt;
     float blend = 1.0f - expf(-18.0f * dt);
@@ -316,18 +363,18 @@ void camera_update(Scene *s, const InputState *in, float dt, double time) {
 
     /* Zoom: exponential so a wheel click / pinch ratio scales distance
      * multiplicatively (equal ratios feel equal at any distance). */
-    c->distance = clampf_(c->distance * expf(in->zoom_delta * 0.10f), 3.5f, 30.0f);
+    c->distance = clampf_(c->distance * expf(in->zoom_delta * 0.10f * s->settings.zoom_speed), 3.5f, 30.0f);
     c->fov_deg = clampf_(c->fov_deg + in->fov_delta * dt * 28.0f, 30.0f, 90.0f);
 
     float yaw = c->yaw_deg * DEG2RAD_F;
     Vec3 fwd = vec3(-sinf(yaw), 0, -cosf(yaw));
     Vec3 right = vec3(cosf(yaw), 0, -sinf(yaw));
     /* Pan: convert pixels to metres at the target's depth. */
-    float pan_scale = c->distance * 0.0016f;
+    float pan_scale = c->distance * 0.0016f * s->settings.pan_speed;
     c->target = vec3_add(c->target, vec3_mul(right, -in->pan_dx * pan_scale));
     c->target.y += in->pan_dy * pan_scale;
-    /* Held-key locomotion (state-based, dt-scaled: 6 m/s). */
-    const float speed = 6.0f;
+    /* Held-key locomotion (state-based, dt-scaled). */
+    const float speed = s->settings.move_speed;
     c->target = vec3_add(c->target, vec3_mul(fwd, in->move_forward * speed * dt));
     c->target = vec3_add(c->target, vec3_mul(right, in->move_strafe * speed * dt));
     c->target.y += in->move_vertical * speed * dt;
@@ -341,8 +388,8 @@ void camera_update(Scene *s, const InputState *in, float dt, double time) {
      * event doesn't cause a jump. */
     double idle = time - in->last_activity;
     float drift_yaw = 0.0f, drift_pitch = 0.0f;
-    if (idle > 6.0) {
-        float t = (float)(idle - 6.0);
+    if (s->settings.attract && idle > s->settings.attract_delay) {
+        float t = (float)(idle - s->settings.attract_delay);
         float fade = fminf(t / 2.0f, 1.0f);
         drift_yaw = sinf(t * 0.21f) * 3.5f * fade;
         drift_pitch = sinf(t * 0.16f + 1.3f) * 1.6f * fade;

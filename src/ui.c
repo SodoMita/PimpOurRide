@@ -45,13 +45,15 @@ static void icon(cairo_t *c,int i,double x,double y){
  if(i==5){cairo_arc(c,17,12,18,0,2*PI);cairo_stroke(c);cairo_arc(c,17,12,5,0,2*PI);cairo_stroke(c);line(c,0,12,12,12);line(c,22,12,35,12);line(c,17,18,17,29);}
  cairo_restore(c);
 }
-static GLuint make_button(DashButton *b,int index){
+static GLuint make_button(DashButton *b){
  cairo_surface_t *im=cairo_image_surface_create(CAIRO_FORMAT_ARGB32,384,224);cairo_t *c=cairo_create(im);
  cairo_pattern_t *grad=cairo_pattern_create_linear(0,0,0,224);cairo_pattern_add_color_stop_rgb(grad,0,.075,.095,.133);cairo_pattern_add_color_stop_rgb(grad,1,.033,.047,.073);cairo_set_source(c,grad);cairo_paint(c);cairo_pattern_destroy(grad);
  rgb(c,.17,.22,.30);cairo_set_line_width(c,2);rounded(c,2,2,380,220,15);cairo_stroke(c);
- icon(c,index,30,40);rgb(c,.83,.89,.94);text(c,29,128,32,b->name,true);rgb(c,.42,.51,.60);mono(c,30,180,20,b->sub);rgb(c,.36,.91,.73);cairo_arc(c,345,43,4,0,2*PI);cairo_fill(c);
+ icon(c,b->icon,30,40);rgb(c,.83,.89,.94);text(c,29,128,32,b->name,true);rgb(c,.42,.51,.60);mono(c,30,180,20,b->sub);rgb(c,.36,.91,.73);cairo_arc(c,345,43,4,0,2*PI);cairo_fill(c);
+ if(!b->enabled){rgba(c,.01,.01,.02,.58);cairo_paint(c);rgb(c,.50,.55,.63);mono(c,246,198,16,"DISABLED");} /* config-disabled entry reads as off, not broken */
  GLuint tex=ui_texture(im,0);cairo_destroy(c);cairo_surface_destroy(im);return tex;
 }
+void ui_refresh_buttons(Server *s){for(int i=0;i<6;i++){if(s->buttons[i].texture)glDeleteTextures(1,&s->buttons[i].texture);s->buttons[i].texture=make_button(&s->buttons[i]);}}
 static void gauges(Server *s){
  cairo_surface_t *im=cairo_image_surface_create(CAIRO_FORMAT_ARGB32,1200,484);cairo_t *c=cairo_create(im);rgb(c,.015,.021,.037);cairo_paint(c);
  int count=0;for(int i=0;i<CD_MAX_MONITORS;i++)if(s->monitors[i].surface)count++;
@@ -120,7 +122,7 @@ static void make_leather(Server *s){
  for(int y=0;y<256;y++)for(int x=0;x<256;x++){seed=1664525u*seed+1013904223u;int n=198+((seed>>24)&31);if((x+y)%6==0)n-=12;data[y*256+x]=0xff000000u|(n<<16)|(n<<8)|n;}
  cairo_surface_mark_dirty(im);s->carbon_tex=ui_texture(im,0);glBindTexture(GL_TEXTURE_2D,s->carbon_tex);glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_WRAP_S,GL_REPEAT);glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_WRAP_T,GL_REPEAT);cairo_surface_destroy(im);
 }
-void ui_init(Server *s){make_leather(s);for(int i=0;i<6;i++)s->buttons[i].texture=make_button(&s->buttons[i],i);make_console(s);make_plate(s);make_hub(s);gauges(s);help(s);hud(s);}
+void ui_init(Server *s){make_leather(s);ui_refresh_buttons(s);make_console(s);make_plate(s);make_hub(s);gauges(s);help(s);hud(s);}
 void ui_update(Server *s){static int old_w,old_h;if(s->time-s->last_ui_time>.24||old_w!=s->width||old_h!=s->height){gauges(s);hud(s);s->last_ui_time=s->time;old_w=s->width;old_h=s->height;}}
 static void overlay_texture(GLuint tex,float x,float y,float w,float h){glBindTexture(GL_TEXTURE_2D,tex);glBegin(GL_QUADS);glTexCoord2f(0,0);glVertex2f(x,y);glTexCoord2f(1,0);glVertex2f(x+w,y);glTexCoord2f(1,1);glVertex2f(x+w,y+h);glTexCoord2f(0,1);glVertex2f(x,y+h);glEnd();}
 /* Custom neon reticle, drawn into the framebuffer itself rather than relying
