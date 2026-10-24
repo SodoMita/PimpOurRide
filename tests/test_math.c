@@ -48,7 +48,30 @@ int main(void){
  float ratio=resized.width/resized.height;
  Plane aspect=plane_uniform_scale(resized,monitor_plane(0),1.1f);
  assert(near(aspect.width/aspect.height,ratio));
+ /* Shift+corner resize: a single factor preserves the drag-start aspect
+  * exactly, stays within both base limits, and keeps the opposite corner
+  * anchored even when one dimension reaches its limit first. */
+ Plane aspect_base=monitor_plane(0);
+ Plane start=(Plane){.center={.4f,1.2f,-1.2f},.width=3.15f,.height=1.3125f,.yaw=12,.pitch=-18};
+ float start_aspect=start.width/start.height;
+ Plane grew=plane_resize_aspect(start,aspect_base,eye,start.width*1.2f,start.height*1.2f,-1,1);
+ assert(near(grew.width/start.width,1.2f)&&near(grew.height/start.height,1.2f));
+ assert(near(grew.width/grew.height,start_aspect));
+ Vec3 gr,gu;plane_axes(start,&gr,&gu,NULL);
+ Vec3 fixed_before=vadd(vsub(start.center,vmul(gr,start.width*.5f)),vmul(gu,start.height*.5f));
+ Vec3 fixed_after=vadd(vsub(grew.center,vmul(gr,grew.width*.5f)),vmul(gu,grew.height*.5f));
+ assert(near(fixed_after.x,fixed_before.x)&&near(fixed_after.y,fixed_before.y)&&near(fixed_after.z,fixed_before.z));
+ Plane shrank=plane_resize_aspect(start,aspect_base,eye,start.width*.6f,start.height*.6f,1,-1);
+ assert(near(shrank.width/start.width,.6f)&&near(shrank.height/start.height,.6f));
+ assert(near(shrank.width/shrank.height,start_aspect));
+ Plane limited=plane_resize_aspect(start,aspect_base,eye,start.width*3.f,start.height*3.f,-1,1);
+ assert(near(limited.width,aspect_base.width*2.75f));
+ assert(near(limited.width/limited.height,start_aspect));
+ assert(limited.height<aspect_base.height*2.75f);
+ fixed_before=vadd(vsub(start.center,vmul(gr,start.width*.5f)),vmul(gu,start.height*.5f));
+ fixed_after=vadd(vsub(limited.center,vmul(gr,limited.width*.5f)),vmul(gu,limited.height*.5f));
+ assert(near(fixed_after.x,fixed_before.x)&&near(fixed_after.y,fixed_before.y)&&near(fixed_after.z,fixed_before.z));
  Plane axis=plane_translate_local(monitor_plane(0),eye,0,0,.5f);
  assert(near(axis.center.z,-1.1f));
- puts("PASS: monitor ray picking, all eight screen transforms, camera axes, tilted/rolled planes, arrange/handle transforms, back-face rejection");return 0;
+ puts("PASS: monitor ray picking, all eight screen transforms, camera axes, tilted/rolled planes, arrange/handle transforms, aspect-locked resize, back-face rejection");return 0;
 }

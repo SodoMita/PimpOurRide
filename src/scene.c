@@ -337,12 +337,23 @@ static void arrange_handle_point(Plane p,float k,int handle,float *x,float *y){
  default:*x=0;*y=0;break;
  }
 }
-static int arrange_handle_at(Plane p,float k,float lx,float ly){
- static const int ids[]={CD_HANDLE_MOVE,CD_HANDLE_AXIS_X,CD_HANDLE_AXIS_Y,CD_HANDLE_AXIS_Z,
+static bool arrange_z_handle_hit(Plane p,float k,Vec3 eye,Vec3 ray,float *lx,float *ly,float *distance){
+ Vec3 normal;plane_axes(p,NULL,NULL,&normal);
+ Plane knob=p;knob.center=vadd(p.center,vmul(normal,.44f*k));
+ float u,v,d;
+ if(!plane_hit(knob,eye,ray,&u,&v,&d,false))return false;
+ if(lx)*lx=(u-.5f)*p.width;if(ly)*ly=(.5f-v)*p.height;if(distance)*distance=d;
+ return true;
+}
+static int arrange_handle_at(Plane p,float k,float lx,float ly,bool z_hit,float zlx,float zly){
+ static const int ids[]={CD_HANDLE_MOVE,CD_HANDLE_AXIS_X,CD_HANDLE_AXIS_Y,
   CD_HANDLE_ROTATE_YAW,CD_HANDLE_ROTATE_PITCH,CD_HANDLE_ROTATE_ROLL,CD_HANDLE_SCALE,
   CD_HANDLE_RESIZE_NW,CD_HANDLE_RESIZE_N,CD_HANDLE_RESIZE_NE,CD_HANDLE_RESIZE_E,
   CD_HANDLE_RESIZE_SE,CD_HANDLE_RESIZE_S,CD_HANDLE_RESIZE_SW,CD_HANDLE_RESIZE_W};
  float tol=.115f*k,best=tol*tol;int found=CD_HANDLE_NONE;
+ /* The blue Z knob is raised .44k along the plane normal; pick it on a
+  * parallel plane at that offset instead of at the base-plane centre. */
+ if(z_hit){float d=zlx*zlx+zly*zly;if(d<=best){best=d;found=CD_HANDLE_AXIS_Z;}}
  for(unsigned i=0;i<sizeof(ids)/sizeof(ids[0]);i++){float x,y;arrange_handle_point(p,k,ids[i],&x,&y);float dx=lx-x,dy=ly-y,d=dx*dx+dy*dy;if(d<=best){best=d;found=ids[i];}}
  if(found!=CD_HANDLE_NONE)return found;
  if(lx>=0&&lx<=.42f*k&&fabsf(ly)<=.055f*k)return CD_HANDLE_AXIS_X;
@@ -439,7 +450,11 @@ Hit scene_pick(Server *s,float x,float y,bool grab){
  for(int i=0;i<CD_MAX_MONITORS;i++){Monitor *m=&s->monitors[i];if(!m->surface)continue;Plane p=m->plane;if(!plane_hit(p,s->eye,ray,&u,&v,&d,false)||d>=best.distance)continue;
   float lx=(u-.5f)*p.width,ly=(.5f-v)*p.height,k=monitor_iso_scale(p,i);
   if(handles_button_at(p,k,lx,ly)){best=(Hit){.kind=HIT_HANDLES_BUTTON,.surface=m->surface,.slot=i,.x=lx,.y=ly,.distance=d};continue;}
-  if(s->arrange_mode&&s->arrange_handles&&s->arrange_slot==i){int handle=arrange_handle_at(p,k,lx,ly);if(handle!=CD_HANDLE_NONE){best=(Hit){.kind=HIT_ARRANGE_HANDLE,.surface=m->surface,.slot=i,.handle=handle,.x=lx,.y=ly,.distance=d};continue;}}
+  if(s->arrange_mode&&s->arrange_handles&&s->arrange_slot==i){
+   float zlx=0,zly=0,zd=0;bool z_hit=arrange_z_handle_hit(p,k,s->eye,ray,&zlx,&zly,&zd);
+   int handle=arrange_handle_at(p,k,lx,ly,z_hit,zlx,zly);
+   if(handle!=CD_HANDLE_NONE){best=(Hit){.kind=HIT_ARRANGE_HANDLE,.surface=m->surface,.slot=i,.handle=handle,.x=lx,.y=ly,.distance=handle==CD_HANDLE_AXIS_Z?zd:d};continue;}
+  }
   if(u>.92&&u<1.01&&v<0&&v>-.12){best=(Hit){.kind=HIT_CLOSE,.surface=m->surface,.slot=i,.distance=d};continue;}
   if(u<0||u>1||v<0||v>1){
    bool frame=lx>=-(p.width*.5f+.07f*k)&&lx<=p.width*.5f+.07f*k&&ly>=-(p.height*.5f+.06f*k)&&ly<=p.height*.5f+.21f*k;
@@ -500,5 +515,5 @@ void scene_save_screenshot(Server *s,const char *path){
  free(flipped);free(pixels);
 }
 void scene_finish(Server *s){
- GLuint textures[]={s->garage_tex,s->carbon_tex,s->gauge_tex,s->console_tex,s->hub_tex,s->hud_tex,s->help_tex,s->plate_tex};glDeleteTextures(sizeof(textures)/sizeof(textures[0]),textures);for(int i=0;i<6;i++)glDeleteTextures(1,&s->buttons[i].texture);for(int i=0;i<CD_MAX_MONITORS;i++)glDeleteTextures(1,&s->monitors[i].label);
+ GLuint textures[]={s->garage_tex,s->carbon_tex,s->gauge_tex,s->console_tex,s->hub_tex,s->hud_tex,s->help_tex,s->plate_tex,s->handles_tex};glDeleteTextures(sizeof(textures)/sizeof(textures[0]),textures);for(int i=0;i<6;i++)glDeleteTextures(1,&s->buttons[i].texture);for(int i=0;i<CD_MAX_MONITORS;i++)glDeleteTextures(1,&s->monitors[i].label);
 }

@@ -77,8 +77,25 @@ bool backend_headless_init(Server *s){
 
 void cd_vnc_ptr(int mask,int x,int y,rfbClientPtr cl){
  Server *s=cl->screen->screenData;uint32_t now=SDL_GetTicks();
- if(x<0||y<0||x>=s->width||y>=s->height){s->vnc_prev_mask=mask;return;}
  bool middle=(mask&CD_VNC_MIDDLE)!=0,prev_middle=(s->vnc_prev_mask&CD_VNC_MIDDLE)!=0;
+ bool left=(mask&CD_VNC_LEFT)!=0,prev_left=(s->vnc_prev_mask&CD_VNC_LEFT)!=0;
+ bool right=(mask&CD_VNC_RIGHT)!=0,prev_right=(s->vnc_prev_mask&CD_VNC_RIGHT)!=0;
+ if(x<0||y<0||x>=s->width||y>=s->height){
+  /* VNC has no separate release event: a button-up outside the framebuffer
+   * must still end grabs/drags instead of being silently consumed. Never
+   * synthesize presses here, only releases/cancels. */
+  if(prev_middle&&!middle)s->middle_look=false;
+  if(prev_left&&!left)server_pointer_button(s,BTN_LEFT,false,now);
+  if(prev_right&&!right)server_pointer_button(s,BTN_RIGHT,false,now);
+  if(s->arrange_dragging&&((s->arrange_drag_button==BTN_LEFT&&!left)||(s->arrange_drag_button==BTN_RIGHT&&!right)))
+   app_arrange_pointer_button(s,(Hit){0},(uint32_t)s->arrange_drag_button,false);
+  if(s->frame_dragging&&!left)app_frame_pointer_button(s,(Hit){0},BTN_LEFT,false);
+  if(!left&&!right&&!middle){
+   s->middle_look=false;s->arrange_dragging=false;s->arrange_drag_button=0;s->arrange_handle=CD_HANDLE_NONE;
+   s->frame_dragging=false;s->frame_drag_slot=-1;server_release_pointer_buttons(s,now);
+  }
+  s->vnc_prev_mask=mask;return;
+ }
  s->mouse_x=x;s->mouse_y=y;
  if(middle){
   if(!prev_middle){s->middle_look=true;server_pointer_motion(s,(Hit){0},now);}
@@ -86,8 +103,6 @@ void cd_vnc_ptr(int mask,int x,int y,rfbClientPtr cl){
  }else{
   if(prev_middle)s->middle_look=false;
   Hit hit=scene_pick(s,x,y,s->pointer_grab!=NULL);
-  bool left=(mask&CD_VNC_LEFT)!=0,prev_left=(s->vnc_prev_mask&CD_VNC_LEFT)!=0;
-  bool right=(mask&CD_VNC_RIGHT)!=0,prev_right=(s->vnc_prev_mask&CD_VNC_RIGHT)!=0;
   bool wu=(mask&CD_VNC_WHEEL_UP)&&!(s->vnc_prev_mask&CD_VNC_WHEEL_UP);
   bool wd=(mask&CD_VNC_WHEEL_DOWN)&&!(s->vnc_prev_mask&CD_VNC_WHEEL_DOWN);
   if(s->arrange_mode){

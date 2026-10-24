@@ -357,8 +357,8 @@ void app_arrange_pointer_motion(Server *s,int x,int y){
    if(hd==CD_HANDLE_RESIZE_N||hd==CD_HANDLE_RESIZE_NE||hd==CD_HANDLE_RESIZE_NW){new_h+=dly;fixed_y=-1;}
    if(hd==CD_HANDLE_RESIZE_S||hd==CD_HANDLE_RESIZE_SE||hd==CD_HANDLE_RESIZE_SW){new_h-=dly;fixed_y=1;}
    bool corner=hd==CD_HANDLE_RESIZE_NW||hd==CD_HANDLE_RESIZE_NE||hd==CD_HANDLE_RESIZE_SE||hd==CD_HANDLE_RESIZE_SW;
-   if(shift&&corner){float f=fmaxf(new_w/start.width,new_h/start.height);new_w=start.width*f;new_h=start.height*f;}
-   out=plane_resize(start,base,s->eye,new_w,new_h,fixed_x,fixed_y);break;
+   if(shift&&corner)out=plane_resize_aspect(start,base,s->eye,new_w,new_h,fixed_x,fixed_y);
+   else out=plane_resize(start,base,s->eye,new_w,new_h,fixed_x,fixed_y);break;
   }
   }
   scene_monitor_set_plane(s,slot,out);

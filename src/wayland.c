@@ -26,7 +26,7 @@ static void surface_unmap(Surface *p){
  Server *s=p->server;
  if(s->keyboard_focus==p)server_focus(s,NULL);
  if(s->pointer_focus==p){s->pointer_focus=NULL;}
- if(s->pointer_grab==p){s->pointer_grab=NULL;s->held_buttons=0;}
+ if(s->pointer_grab==p){s->pointer_grab=NULL;s->held_buttons=0;s->held_button_mask=0;}
  if(p->slot>=0&&s->monitors[p->slot].surface==p){
   if(s->arrange_slot==p->slot){s->arrange_slot=-1;s->arrange_dragging=false;s->arrange_drag_button=0;s->arrange_handle=CD_HANDLE_NONE;}
   if(s->frame_drag_slot==p->slot){s->frame_dragging=false;s->frame_drag_slot=-1;}
@@ -273,11 +273,37 @@ void server_pointer_motion(Server *s,Hit hit,uint32_t time){
  s->pointer_sx=hit.x;s->pointer_sy=hit.y;
  if(next)wl_list_for_each(r,&s->pointers,link)if(wl_resource_get_client(r->resource)==wl_resource_get_client(next->resource)){wl_pointer_send_motion(r->resource,time,wl_fixed_from_double(hit.x),wl_fixed_from_double(hit.y));pointer_frame(r->resource);}
 }
+static uint32_t pointer_button_bit(uint32_t button){
+ switch(button){
+ case BTN_LEFT:return 1u<<0;case BTN_RIGHT:return 1u<<1;case BTN_MIDDLE:return 1u<<2;
+ case BTN_SIDE:return 1u<<3;case BTN_EXTRA:return 1u<<4;default:return 0;
+ }
+}
 void server_pointer_button(Server *s,uint32_t button,bool down,uint32_t time){
+ uint32_t bit=pointer_button_bit(button);
+ if(!down&&bit&&!(s->held_button_mask&bit))return;
  Surface *p=s->pointer_grab?s->pointer_grab:s->pointer_focus;if(!p)return;
- if(down){if(!s->held_buttons)s->pointer_grab=p;s->held_buttons++;server_focus(s,p);}
+ if(down){
+  if(!s->held_buttons)s->pointer_grab=p;
+  if(bit&&!(s->held_button_mask&bit)){s->held_button_mask|=bit;s->held_buttons++;}
+  else if(!bit)s->held_buttons++;
+  server_focus(s,p);
+ }
  Resource *r;uint32_t serial=wl_display_next_serial(s->display);wl_list_for_each(r,&s->pointers,link)if(wl_resource_get_client(r->resource)==wl_resource_get_client(p->resource)){wl_pointer_send_button(r->resource,serial,time,button,down?WL_POINTER_BUTTON_STATE_PRESSED:WL_POINTER_BUTTON_STATE_RELEASED);pointer_frame(r->resource);}
- if(!down){if(s->held_buttons>0)s->held_buttons--;if(!s->held_buttons)s->pointer_grab=NULL;}
+ if(!down){
+  if(bit&&(s->held_button_mask&bit)){s->held_button_mask&=~bit;if(s->held_buttons>0)s->held_buttons--;}
+  else if(!bit&&s->held_buttons>0)s->held_buttons--;
+  if(!s->held_buttons){s->pointer_grab=NULL;s->held_button_mask=0;}
+ }
+}
+void server_release_pointer_buttons(Server *s,uint32_t time){
+ static const uint32_t buttons[]={BTN_LEFT,BTN_RIGHT,BTN_MIDDLE,BTN_SIDE,BTN_EXTRA};
+ Surface *p=s->pointer_grab?s->pointer_grab:s->pointer_focus;
+ for(unsigned i=0;i<sizeof(buttons)/sizeof(buttons[0]);i++){
+  uint32_t bit=pointer_button_bit(buttons[i]);if(!(s->held_button_mask&bit))continue;
+  if(p){Resource *r;uint32_t serial=wl_display_next_serial(s->display);wl_list_for_each(r,&s->pointers,link)if(wl_resource_get_client(r->resource)==wl_resource_get_client(p->resource)){wl_pointer_send_button(r->resource,serial,time,buttons[i],WL_POINTER_BUTTON_STATE_RELEASED);pointer_frame(r->resource);}}
+ }
+ s->held_buttons=0;s->held_button_mask=0;s->pointer_grab=NULL;
 }
 void server_pointer_axis(Server *s,double dx,double dy,uint32_t time){
  if(!s->pointer_focus)return;Resource *r;wl_list_for_each(r,&s->pointers,link)if(wl_resource_get_client(r->resource)==wl_resource_get_client(s->pointer_focus->resource)){

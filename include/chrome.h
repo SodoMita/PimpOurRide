@@ -95,7 +95,7 @@ struct Server {
  struct { Server *server;int index; } output_info[CD_MAX_MONITORS];
  struct xkb_context *xkb_context;struct xkb_keymap *keymap;struct xkb_state *xkb_state;
  int keymap_fd;uint32_t keymap_size;bool keys[256];
- Surface *keyboard_focus,*pointer_focus,*pointer_grab;int held_buttons;
+ Surface *keyboard_focus,*pointer_focus,*pointer_grab;int held_buttons;uint32_t held_button_mask;
  float pointer_sx,pointer_sy;int mouse_x,mouse_y;
  Monitor monitors[CD_MAX_MONITORS];DashButton buttons[6];
  /* The settings cog: a slowly spinning 3D gear medallioned into the sloped
@@ -145,6 +145,7 @@ void server_finish(Server *s);
 void server_frame_done(Server *s,uint32_t time);
 void server_pointer_motion(Server *s,Hit hit,uint32_t time);
 void server_pointer_button(Server *s,uint32_t button,bool down,uint32_t time);
+void server_release_pointer_buttons(Server *s,uint32_t time);
 void server_pointer_axis(Server *s,double dx,double dy,uint32_t time);
 void server_key(Server *s,uint32_t key,bool down,uint32_t time);
 void server_release_keys(Server *s,uint32_t time);

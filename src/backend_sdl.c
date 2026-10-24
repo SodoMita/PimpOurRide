@@ -23,7 +23,7 @@ void backend_sdl_poll(Server *s){
  SDL_Event e;while(SDL_PollEvent(&e)){
   uint32_t now=SDL_GetTicks();
   if(e.type==SDL_QUIT)s->running=false;
-  else if(e.type==SDL_WINDOWEVENT){if(e.window.event==SDL_WINDOWEVENT_SIZE_CHANGED)SDL_GetWindowSize(s->window,&s->width,&s->height);if(e.window.event==SDL_WINDOWEVENT_FOCUS_LOST){server_release_keys(s,now);s->middle_look=false;s->arrange_dragging=false;s->arrange_drag_button=0;s->arrange_handle=CD_HANDLE_NONE;s->frame_dragging=false;s->frame_drag_slot=-1;}}
+  else if(e.type==SDL_WINDOWEVENT){if(e.window.event==SDL_WINDOWEVENT_SIZE_CHANGED)SDL_GetWindowSize(s->window,&s->width,&s->height);if(e.window.event==SDL_WINDOWEVENT_FOCUS_LOST){server_release_keys(s,now);server_release_pointer_buttons(s,now);s->middle_look=false;s->arrange_dragging=false;s->arrange_drag_button=0;s->arrange_handle=CD_HANDLE_NONE;s->frame_dragging=false;s->frame_drag_slot=-1;}}
   else if(e.type==SDL_KEYDOWN||e.type==SDL_KEYUP){
    if(e.key.repeat)continue; /* client-side xkb repeat handles visual repetition, same as a real compositor */
    uint32_t k=sdl_to_evdev(e.key.keysym.scancode);if(!k)continue;

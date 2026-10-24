@@ -99,6 +99,23 @@ Plane plane_resize(Plane p,Plane base,Vec3 eye,float width,float height,int fixe
  p.width=new_w;p.height=new_h;
  return plane_clamp_center(p,eye);
 }
+Plane plane_resize_aspect(Plane p,Plane base,Vec3 eye,float width,float height,int fixed_x,int fixed_y){
+ if(base.width<=0.f||base.height<=0.f||p.width<=0.f||p.height<=0.f)return p;
+ /* Shift+corner resize: one factor for both axes keeps the drag-start
+  * aspect exact even when one dimension reaches its independent limit. */
+ float factor=fmaxf(width/p.width,height/p.height);
+ float lo=fmaxf(base.width*.35f/p.width,base.height*.35f/p.height);
+ float hi=fminf(base.width*2.75f/p.width,base.height*2.75f/p.height);
+ if(lo>hi)return p;
+ factor=clampf(factor,lo,hi);
+ float new_w=p.width*factor,new_h=p.height*factor;
+ float dw=new_w-p.width,dh=new_h-p.height;
+ Vec3 right,up;plane_axes(p,&right,&up,NULL);
+ if(fixed_x)p.center=vadd(p.center,vmul(right,-(float)fixed_x*dw*.5f));
+ if(fixed_y)p.center=vadd(p.center,vmul(up,-(float)fixed_y*dh*.5f));
+ p.width=new_w;p.height=new_h;
+ return plane_clamp_center(p,eye);
+}
 Plane monitor_plane(int index){
  static const float angles[]={0,-30,30,-62,62,-94,94,180};float a=angles[index%8];
  return (Plane){.center={4.4f*sinf(a*RAD),1.32f,2.8f-4.4f*cosf(a*RAD)},.width=2.10f,.height=1.3125f,.yaw=-a,.pitch=0};
