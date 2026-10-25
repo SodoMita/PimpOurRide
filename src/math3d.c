@@ -268,6 +268,14 @@ MonitorManipulator monitor_manipulator_for_plane_on_mount(int index,Plane p,Plan
   .base=manipulator_map_point(manip_base[slot],legacy,mount,scale),
   .shoulder=manipulator_map_point(manip_shoulder[slot],legacy,mount,scale)
  };
+ /* The narrow, forward windshield cannot contain the legacy header gantry:
+  * uniformly mapping it put CD-01's anchor above the actual canopy. Use the
+  * branch's direct cowl hardpoints instead. They remain in shared car space,
+  * behind the screen, and inside vehicle_point_inside_envelope(). */
+ if(slot==0){
+  m.base=v3(-.78f,.34f,-.72f-VEHICLE_COCKPIT_FORWARD);
+  m.shoulder=v3(-.82f,.48f,-.68f-VEHICLE_COCKPIT_FORWARD);
+ }
  /* The wrist and claws follow the actual moved/resized plane. Use independent
   * dimension scales so an edge resize does not leave the wrist at the old
   * bay-space offset; the normal offset keeps it behind the visible surface. */
