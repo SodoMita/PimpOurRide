@@ -42,6 +42,7 @@
 #include "cdconfig.h"
 #include "i18n.h"
 #include "math3d.h"
+#include "textfit_cairo.h"
 #include "xdg-shell-client.h"
 #include <cairo/cairo.h>
 #include <ctype.h>
@@ -239,7 +240,7 @@ typedef struct {
     char path[2][4096];
     bool save_pending[2];
     double last_change;
-    char saved_note[96];
+    char saved_note[192];
     /* ui */
     int tab;
     double scroll[3];
@@ -1010,8 +1011,8 @@ static void picker_assign(Gui *g, int catalog_idx) {
          * truncate with the UTF-8-safe helper and hand tr() a plain %s. */
         char shown[64];
         i18n_utf8_truncate(shown, sizeof(shown), tr(assigned_name), 52);
-        snprintf(g->saved_note, sizeof(g->saved_note),
-                 tr("Assigned %s to Launch Control %d"), shown, slot + 1);
+        cd_utf8_printf(g->saved_note, sizeof(g->saved_note),
+                       tr("Assigned %s to Launch Control %d"), shown, slot + 1);
     }
     g->draw_dirty = true;
 }
@@ -1034,11 +1035,14 @@ static void rr(cairo_t *c, double x, double y, double w, double h, double r) {
 }
 static void fg(cairo_t *c, double r, double g, double b) { cairo_set_source_rgb(c, r, g, b); }
 static void fga(cairo_t *c, double r, double g, double b, double a) { cairo_set_source_rgba(c, r, g, b, a); }
+/* The last font selected. txt_fit()/txt_fit_r() re-select it at a smaller size
+ * when a translated label does not fit its slot, so every call site keeps the
+ * shape "font(...); txt_fit(...)" it already had. */
+static double cur_size = 12;
+static bool cur_bold, cur_mono;
 static void font(cairo_t *c, double size, bool bold, bool mono) {
-    cairo_select_font_face(c, mono ? "DejaVu Sans Mono" : "DejaVu Sans",
-                           CAIRO_FONT_SLANT_NORMAL,
-                           bold ? CAIRO_FONT_WEIGHT_BOLD : CAIRO_FONT_WEIGHT_NORMAL);
-    cairo_set_font_size(c, size);
+    cur_size = size; cur_bold = bold; cur_mono = mono;
+    cd_font(c, size, bold, mono);
 }
 static void txt(cairo_t *c, double x, double y, const char *s) {
     cairo_move_to(c, x, y);
@@ -1052,21 +1056,19 @@ static double txt_w(cairo_t *c, const char *s) {
 static void txt_r(cairo_t *c, double xr, double y, const char *s) {
     txt(c, xr - txt_w(c, s), y, s);
 }
-/* Truncate with ".." until it fits maxw (toy API: byte-wise is fine for the
- * mostly-ASCII labels/paths shown here). */
-static void txt_fit(cairo_t *c, double x, double y, double maxw, const char *s) {
-    if (txt_w(c, s) <= maxw) { txt(c, x, y, s); return; }
-    char buf[640];
-    snprintf(buf, sizeof(buf), "%s", s);
-    for (int n = (int)strlen(buf); n > 3; n--) {
-        /* Back off over UTF-8 continuation bytes so a truncation can never
-         * split a codepoint (Russian already, CJK later). */
-        while (n > 0 && ((unsigned char)buf[n] & 0xC0) == 0x80) n--;
-        buf[n] = 0;
-        char tmp[644];
-        snprintf(tmp, sizeof(tmp), "%s..", buf);
-        if (txt_w(c, tmp) <= maxw) { txt(c, x, y, tmp); return; }
-    }
+/* Draw text fitted into maxw with the font selected by the last font() call:
+ * shrink to 86% first, then ellipsize. Returns the width actually drawn, which
+ * callers that place a follow-on element (the RESTART chip) must use - the raw
+ * label width is what used to push that chip into the value lane. */
+static double txt_fit(cairo_t *c, double x, double y, double maxw, const char *s) {
+    CdFit fit;
+    cd_draw_fit_ex(c, x, y, cur_size, cur_bold, cur_mono, maxw, CD_ALIGN_LEFT, 0.86, s, &fit);
+    return fit.width;
+}
+static double txt_fit_r(cairo_t *c, double xr, double y, double maxw, const char *s) {
+    CdFit fit;
+    cd_draw_fit_ex(c, xr, y, cur_size, cur_bold, cur_mono, maxw, CD_ALIGN_RIGHT, 0.86, s, &fit);
+    return fit.width;
 }
 
 /* The six cockpit glyphs, ported from src/ui.c icon() so previews match. */
@@ -1135,9 +1137,16 @@ static void draw_checkbox(cairo_t *c, double x, double y, bool on) {
         cairo_line_to(c, x + 16, y + 5.5); cairo_stroke(c);
     }
 }
+/* Wide enough for the longest shipped translation ("ПЕРЕЗАПУСК" is 65 px at
+ * 8.5 bold; "RESTART" is 45). The badge is a semantic marker, so it is the
+ * label that shrinks around it, not the other way round. */
+#define RESTART_CHIP_W 78
+/* The chip is a fixed-size badge. Its label is our own header-style text
+ * ("RESTART"), not user data, so it is ellipsized rather than translated wide -
+ * 58 px is reserved for it in the row and the row label is fitted around it. */
 static void draw_restart_chip(cairo_t *c, double x, double y) {
-    fga(c, .45, .30, .10, .9); rr(c, x, y - 11, 58, 15, 4); cairo_fill(c);
-    font(c, 8.5, true, false); fg(c, 1, .80, .45); txt(c, x + 6, y, tr("RESTART"));
+    fga(c, .45, .30, .10, .9); rr(c, x, y - 11, RESTART_CHIP_W, 15, 4); cairo_fill(c);
+    font(c, 8.5, true, false); fg(c, 1, .80, .45); txt_fit(c, x + 6, y, RESTART_CHIP_W - 10, tr("RESTART"));
 }
 
 /* One slider track+knob; returns nothing, registers the hitbox. */
@@ -1165,7 +1174,7 @@ static void draw_schema_tab(Gui *g, cairo_t *c, int file, const Def *defs, int n
             last_group = d->group;
             y += 12;
             font(c, 12, true, false); fg(c, .45, .85, .95);
-            txt(c, 28, y + 12, tr(d->group));
+            txt_fit(c, 28, y + 12, 900, tr(d->group));
             fga(c, .25, .35, .50, .6); cairo_set_line_width(c, 1);
             cairo_move_to(c, 28, y + 20); cairo_line_to(c, 952, y + 20); cairo_stroke(c);
             y += 30;
@@ -1182,8 +1191,16 @@ static void draw_schema_tab(Gui *g, cairo_t *c, int file, const Def *defs, int n
              * config keys, and when enum_is_string the *stored* value is the
              * English label (def_get_enum compares against it verbatim). */
             const char *label = tr(d->label);
-            txt_fit(c, 28, ry + 20, 285, label);
-            if (d->restart) draw_restart_chip(c, 28 + txt_w(c, label) + 10, ry + 20);
+            /* The label lane runs from x=28 to the value lane's hitbox at
+             * vx-6 = 334, so it is 302 px wide - it used to be drawn as if it
+             * were 285, which threw away space the longest Russian labels need.
+             * A "RESTART" badge plus an 8 px gap is carved out of that budget
+             * (the badge is drawn after the text AS DRAWN, not as measured: an
+             * elided label used to leave the badge floating mid-row, and a long
+             * translated label pushed it straight through the slider). */
+            double label_max = d->restart ? 302 - (RESTART_CHIP_W + 8) : 302;
+            double label_w = txt_fit(c, 28, ry + 20, label_max, label);
+            if (d->restart) draw_restart_chip(c, 28 + label_w + 8, ry + 20);
             double vx = 340, vw = 420; /* control lane */
             char val[64];
             switch (d->kind) {
@@ -1191,7 +1208,7 @@ static void draw_schema_tab(Gui *g, cairo_t *c, int file, const Def *defs, int n
                 bool on = def_get_bool(g, file, d);
                 draw_checkbox(c, vx, ry + 4, on);
                 font(c, 13, false, false); fg(c, .65, .74, .88);
-                txt(c, vx + 30, ry + 19, on ? tr("On") : tr("Off"));
+                txt_fit(c, vx + 30, ry + 19, 56, on ? tr("On") : tr("Off"));
                 add_box(g, H_TOGGLE, file, i, 0, vx - 4, ry, 90, 28);
                 break;
             }
@@ -1209,7 +1226,14 @@ static void draw_schema_tab(Gui *g, cairo_t *c, int file, const Def *defs, int n
                     else fg(c, .28, .38, .55);
                     rr(c, vx, ry + 1, 180, 28, 6); cairo_stroke(c);
                     font(c, 14, false, true); fg(c, .88, .94, 1.0);
+                    /* A typed value that outgrows the 180 px box scrolls
+                     * with the caret rather than spilling into the hint. */
+                    cairo_save(c);
+                    cairo_rectangle(c, vx + 2, ry + 2, 176, 26);
+                    cairo_clip(c);
                     txt(c, vx + 11, ry + 20, shown);
+                    cairo_restore(c);
+                    font(c, 14, false, true);
                     if (active && (int)(now_s() * 1.9) % 2 == 0) {
                         int caret = g->num_field.caret;
                         int len = (int)strlen(g->num_field.buf);
@@ -1225,17 +1249,17 @@ static void draw_schema_tab(Gui *g, cairo_t *c, int file, const Def *defs, int n
                     font(c, 12, false, true); fg(c, invalid ? 1 : .52, invalid ? .55 : .66, invalid ? .48 : .82);
                     char range[64];
                     if (d->kind == K_FLOAT_INPUT)
-                        snprintf(range, sizeof(range), tr("%g-%g  (type exact value)"), d->min, d->max);
+                        cd_utf8_printf(range, sizeof(range), tr("%g-%g  (type exact value)"), d->min, d->max);
                     else
-                        snprintf(range, sizeof(range), tr("%.0f-%.0f  (type exact value)"), d->min, d->max);
-                    txt(c, vx + 194, ry + 19, range);
+                        cd_utf8_printf(range, sizeof(range), tr("%.0f-%.0f  (type exact value)"), d->min, d->max);
+                    txt_fit(c, vx + 194, ry + 19, 952 - (vx + 194), range);
                     add_box(g, H_NUM_FIELD, file, i, 0, vx, ry, 180, 30);
                 } else {
                     double frac = (v - d->min) / (d->max - d->min);
                     draw_slider(g, c, H_SLIDER, file, i, 0, vx, ry + 14, vw, frac);
                     snprintf(val, sizeof(val), d->fmt, v);
                     font(c, 13.5, false, true); fg(c, .80, .92, 1.0);
-                    txt(c, vx + vw + 22, ry + 19, val);
+                    txt_fit(c, vx + vw + 22, ry + 19, 952 - (vx + vw + 22), val);
                 }
                 break;
             }
@@ -1267,7 +1291,9 @@ static void draw_schema_tab(Gui *g, cairo_t *c, int file, const Def *defs, int n
                 font(c, 13, false, true); fg(c, .8, .88, .98); txt(c, vx + 64, ry + 19, hex);
                 font(c, 11, false, false); fg(c, .5, .62, .8);
                 bool open = g->exp_color_file == file && g->exp_color_idx == i;
-                txt(c, vx + 138, ry + 18, open ? tr("(tap to close)") : tr("(tap to edit)"));
+                /* The colour row has no slider lane, so it can use the
+                 * space the numeric rows put their readout in. */
+                txt_fit(c, vx + 138, ry + 18, vw + 20, open ? tr("(tap to close)") : tr("(tap to edit)"));
                 add_box(g, H_COLOR, file, i, 0, vx, ry, 240, 28);
                 if (open) {
                     static const char *ch_name[3] = { "R", "G", "B" };
@@ -1279,7 +1305,7 @@ static void draw_schema_tab(Gui *g, cairo_t *c, int file, const Def *defs, int n
                         draw_slider(g, c, H_COLSLIDE, file, i, ch, vx + 34, cy, vw - 60, rgb[ch]);
                         snprintf(val, sizeof(val), "%d", (int)(rgb[ch] * 255 + .5));
                         font(c, 12, false, true); fg(c, .75, .85, .98);
-                        txt(c, vx + vw - 14, cy + 4, val);
+                        txt_fit_r(c, vx + vw + 20, cy + 4, 40, val);
                     }
                 }
                 break;
@@ -1302,7 +1328,7 @@ static void draw_schema_tab(Gui *g, cairo_t *c, int file, const Def *defs, int n
 static void draw_field(Gui *g, cairo_t *c, int fld, double x, double y, double w,
                        const char *label, const char *hint) {
     font(c, 11, true, false); fg(c, .55, .68, .88);
-    txt(c, x, y, label);
+    txt_fit(c, x, y, w, label);
     bool foc = g->focus == fld;
     fga(c, .07, .10, .17, 1); rr(c, x, y + 6, w, 34, 6); cairo_fill(c);
     cairo_set_line_width(c, foc ? 2 : 1.2);
@@ -1359,11 +1385,11 @@ static void draw_apps_tab(Gui *g, cairo_t *c, double top, double bottom) {
         font(c, 10.5, false, false); fg(c, .50, .62, .80);
         char detail[192];
         int act = app_action(g, i);
-        if (act == ACT_NEON) snprintf(detail, sizeof(detail), "%s", tr("Built-in / underglow"));
-        else if (act == ACT_COCKPIT) snprintf(detail, sizeof(detail), "%s", tr("Built-in / driver view"));
+        if (act == ACT_NEON) cd_utf8_printf(detail, sizeof(detail), "%s", tr("Built-in / underglow"));
+        else if (act == ACT_COCKPIT) cd_utf8_printf(detail, sizeof(detail), "%s", tr("Built-in / driver view"));
         else {
             const char *id = app_str(g, i, "app_id", APP_DEFS[i].def_app_id);
-            snprintf(detail, sizeof(detail), tr("App / %s"), *id ? id : APP_DEFS[i].sec);
+            cd_utf8_printf(detail, sizeof(detail), tr("App / %s"), *id ? id : APP_DEFS[i].sec);
         }
         txt_fit(c, lx + 52, ry + 39, lw - 62, detail);
         if (!en) { font(c, 9.5, true, false); fg(c, .75, .55, .35); txt_r(c, lx + lw - 8, ry + 20, tr("OFF")); }
@@ -1373,7 +1399,7 @@ static void draw_apps_tab(Gui *g, cairo_t *c, double top, double bottom) {
     double by = bottom - 52;
     fga(c, .16, .22, .34, 1); rr(c, lx, by, lw, 32, 7); cairo_fill(c);
     font(c, 12.5, false, false); fg(c, .80, .88, .98);
-    txt(c, lx + 14, by + 21, tr("Reset selected entry to defaults"));
+    txt_fit(c, lx + 14, by + 21, lw - 28, tr("Reset selected entry to defaults"));
     add_box(g, H_RESET_ENTRY, 0, 0, 0, lx, by, lw, 32);
 
     /* --- right: editor form */
@@ -1387,7 +1413,7 @@ static void draw_apps_tab(Gui *g, cairo_t *c, double top, double bottom) {
     cairo_set_line_width(c, 1.2); fg(c, .35, .62, .85); rr(c, fx, y, fw, 46, 8); cairo_stroke(c);
     draw_glyph(c, app_icon(g, g->sel_app), fx + 12, y + 10, 0.85);
     font(c, 10.5, true, false); fg(c, .58, .74, .94);
-    txt(c, fx + 54, y + 17, tr("ASSIGNED TO THIS ICON"));
+    txt_fit(c, fx + 54, y + 17, fw - 170, tr("ASSIGNED TO THIS ICON"));
     font(c, 15, true, false); fg(c, .90, .95, 1);
     /* Read-only summaries (this line and the slot list above) translate the
      * label, because built-in defaults are our own English strings. The
@@ -1400,7 +1426,7 @@ static void draw_apps_tab(Gui *g, cairo_t *c, double top, double bottom) {
                                               : tr(g->fields[FLD_NAME].buf);
     txt_fit(c, fx + 54, y + 38, fw - 220, assigned);
     font(c, 13.5, true, false); fg(c, .55, .90, 1);
-    txt_r(c, fx + fw - 16, y + 29, tr("Choose app  >"));
+    txt_fit_r(c, fx + fw - 16, y + 29, 200, tr("Choose app  >"));
     add_box(g, H_CHOOSE_APP, g->sel_app, 0, 0, fx, y, fw, 46);
     y += 58;
     draw_field(g, c, FLD_NAME, fx, y, fw, tr("NAME (button label)"), NULL); y += 62;
@@ -1409,9 +1435,9 @@ static void draw_apps_tab(Gui *g, cairo_t *c, double top, double bottom) {
         const char *envv = d->env_name ? getenv(d->env_name) : NULL;
         char hint[256];
         if (envv)
-            snprintf(hint, sizeof(hint), tr("WARNING: $%s is set in this environment - compositor uses it instead."), d->env_name);
+            cd_utf8_printf(hint, sizeof(hint), tr("WARNING: $%s is set in this environment - compositor uses it instead."), d->env_name);
         else
-            snprintf(hint, sizeof(hint), "%s", tr("Shell command. %root% expands to the ChromeDrive install directory."));
+            cd_utf8_printf(hint, sizeof(hint), "%s", tr("Shell command. %root% expands to the ChromeDrive install directory."));
         draw_field(g, c, FLD_EXEC, fx, y, fw, tr("COMMAND (exec)"), hint); y += 76;
         draw_field(g, c, FLD_APPID, fx, y, fw, tr("APP ID MATCH (focus instead of relaunch)"),
                    tr("Substring of the window's app_id, e.g. org.kde.dolphin. Empty means always launch new."));
@@ -1425,23 +1451,26 @@ static void draw_apps_tab(Gui *g, cairo_t *c, double top, double bottom) {
     font(c, 11, true, false); fg(c, .55, .68, .88); txt(c, fx, y, tr("ICON"));
     int icon = app_icon(g, g->sel_app);
     font(c, 17, true, false); fg(c, .55, .70, .90);
-    txt(c, fx, y + 30, "<"); txt(c, fx + 170, y + 30, ">");
+    txt(c, fx, y + 30, "<"); txt(c, fx + 200, y + 30, ">");
     draw_glyph(c, icon, fx + 34, y + 10, 0.9);
     font(c, 13.5, false, false); fg(c, .85, .92, 1);
-    txt(c, fx + 78, y + 29, tr(ICON_NAMES[icon]));
+    /* The slot between the glyph and the ">" is 114 px wide. It used to be 84,
+     * which was not enough for "Приглашение" and left the text touching the
+     * arrow; the arrow moved right rather than the name being elided. */
+    txt_fit(c, fx + 78, y + 29, 114, tr(ICON_NAMES[icon]));
     add_box(g, H_ICON_DEC, 0, 0, 0, fx - 6, y + 6, 32, 32);
-    add_box(g, H_ICON_INC, 0, 0, 0, fx + 162, y + 6, 32, 32);
+    add_box(g, H_ICON_INC, 0, 0, 0, fx + 192, y + 6, 32, 32);
     y += 58;
     /* toggles */
     bool en = cd_config_get_bool(st, d->sec, "enabled", true);
     draw_checkbox(c, fx, y, en);
     font(c, 13.5, false, false); fg(c, .82, .89, .97);
-    txt(c, fx + 30, y + 15, tr("Enabled (button responds to clicks)"));
+    txt_fit(c, fx + 30, y + 15, 350, tr("Enabled (button responds to clicks)"));
     add_box(g, H_APP_ENABLED, 0, 0, 0, fx - 4, y - 4, 380, 28);
     if (act == ACT_APP) {
         bool as = cd_config_get_bool(st, d->sec, "autostart", d->def_autostart);
         draw_checkbox(c, fx + 400, y, as);
-        txt(c, fx + 430, y + 15, tr("Autostart (--demo set)"));
+        txt_fit(c, fx + 430, y + 15, 180, tr("Autostart (--demo set)"));
         add_box(g, H_APP_AUTOSTART, 0, 0, 0, fx + 396, y - 4, 280, 28);
     }
     g->content_h = bottom - top;
@@ -1463,10 +1492,10 @@ static void draw_picker(Gui *g, cairo_t *c) {
 
     font(c, 10.5, true, true); fg(c, .55, .72, .95);
     char head[96];
-    snprintf(head, sizeof(head), tr("LAUNCH CONTROL / SLOT %d OF 6"), g->picker_slot + 1);
-    txt(c, x + 20, y + 24, head);
+    cd_utf8_printf(head, sizeof(head), tr("LAUNCH CONTROL / SLOT %d OF 6"), g->picker_slot + 1);
+    txt_fit(c, x + 20, y + 24, w - 44, head);
     font(c, 19, true, false); fg(c, .92, .96, 1);
-    txt(c, x + 20, y + 50, tr("Choose an app for this icon"));
+    txt_fit(c, x + 20, y + 50, w - 44, tr("Choose an app for this icon"));
     font(c, 18, true, false); fg(c, .65, .76, .92); txt_r(c, x + w - 18, y + 34, "x");
     add_box(g, H_PICKER_CLOSE, 0, 0, 0, x + w - 44, y + 8, 36, 36);
 
@@ -1475,14 +1504,14 @@ static void draw_picker(Gui *g, cairo_t *c) {
     fga(c, .045, .07, .13, 1); rr(c, x + 18, sy, w - 36, 34, 7); cairo_fill(c);
     cairo_set_line_width(c, 1.3); fg(c, .30, .55, .82); rr(c, x + 18, sy, w - 36, 34, 7); cairo_stroke(c);
     font(c, 13, false, false);
-    if (*g->picker_filter) { fg(c, .90, .95, 1); txt(c, x + 32, sy + 22, g->picker_filter); }
-    else { fg(c, .42, .54, .74); txt(c, x + 32, sy + 22, tr("Type to filter all installed apps...")); }
+    if (*g->picker_filter) { fg(c, .90, .95, 1); txt_fit(c, x + 32, sy + 22, w - 68, g->picker_filter); }
+    else { fg(c, .42, .54, .74); txt_fit(c, x + 32, sy + 22, w - 68, tr("Type to filter all installed apps...")); }
 
     int count = picker_count(g);
     double ly = y + 114, row_h = 31;
     if (!count) {
         font(c, 14, false, false); fg(c, .55, .65, .82);
-        txt(c, x + 24, ly + 28, tr("No installed app matches that filter."));
+        txt_fit(c, x + 24, ly + 28, w - 48, tr("No installed app matches that filter."));
     }
     for (int row = 0; row < PICKER_VISIBLE; row++) {
         int ordinal = g->picker_scroll + row;
@@ -1496,19 +1525,28 @@ static void draw_picker(Gui *g, cairo_t *c) {
             fga(c, .16, .32, .50, hover ? .98 : .88); rr(c, x + 10, ry + 1, w - 48, row_h - 2, 6); cairo_fill(c);
         }
         draw_glyph(c, ch->icon, x + 20, ry + 5, 0.72);
-        font(c, 13.5, true, false); fg(c, .90, .94, 1);
-        txt_fit(c, x + 58, ry + 21, w - 255, tr(ch->name));
-        font(c, 10.5, false, true); fg(c, .50, .64, .84);
+        /* One row, three occupants, right to left: the app-id (or "built-in")
+         * column, then the 20 px check mark that marks the assigned app, then
+         * the name. The name's budget is computed from the app-id as DRAWN, so
+         * a long reverse-DNS id and the check mark can never be drawn over a
+         * translated app name - which is exactly what used to happen once the
+         * catalog was not English. */
         const char *side = ch->kind == CHOICE_APP ? ch->app_id : tr("built-in");
-        txt_r(c, x + w - 48, ry + 20, side);
+        double side_max = 150;
+        double side_w = cd_text_width(c, 10.5, false, true, side);
+        if (side_w > side_max) side_w = side_max;
+        font(c, 10.5, false, true); fg(c, .50, .64, .84);
+        txt_fit_r(c, x + w - 48, ry + 20, side_max, side);
+        double check_x = x + w - 48 - side_w - 24;
+        font(c, 13.5, true, false); fg(c, .90, .94, 1);
+        txt_fit(c, x + 58, ry + 21, check_x - 8 - (x + 58), tr(ch->name));
         if (choice_is_current(g, g->picker_slot, ch)) {
-            font(c, 13, true, false); fg(c, .45, .95, .70);
-            txt_r(c, x + w - 44, ry + 21, "");
-            /* a small check mark before the app-id column */
+            /* a small check mark between the name and the app-id column */
+            fg(c, .45, .95, .70);
             cairo_set_line_width(c, 2);
-            cairo_move_to(c, x + w - 250, ry + 16);
-            cairo_line_to(c, x + w - 244, ry + 22);
-            cairo_line_to(c, x + w - 236, ry + 9);
+            cairo_move_to(c, check_x, ry + 16);
+            cairo_line_to(c, check_x + 6, ry + 22);
+            cairo_line_to(c, check_x + 14, ry + 9);
             cairo_stroke(c);
         }
         add_box(g, H_PICKER_ITEM, idx, 0, 0, x + 10, ry, w - 48, row_h);
@@ -1526,10 +1564,11 @@ static void draw_picker(Gui *g, cairo_t *c) {
     font(c, 13, true, false); fg(c, .60, .74, .94);
     txt(c, tx - 1, ly - 8, "^"); txt(c, tx - 2, ly + th + 17, "v");
 
-    char foot[160];
-    snprintf(foot, sizeof(foot), "%d apps  -  click or Enter assigns  -  wheel/arrows scroll  -  Esc cancels", count);
+    char foot[192];
+    cd_utf8_printf(foot, sizeof(foot),
+                   tr("%d apps  -  click or Enter assigns  -  wheel/arrows scroll  -  Esc cancels"), count);
     font(c, 10.5, false, true); fg(c, .48, .62, .82);
-    txt(c, x + 20, y + h - 16, foot);
+    txt_fit(c, x + 20, y + h - 16, w - 40, foot);
 }
 
 static void draw_ui(Gui *g, cairo_t *c) {
@@ -1545,22 +1584,28 @@ static void draw_ui(Gui *g, cairo_t *c) {
 
     /* header: title + tabs */
     font(c, 19, true, false); fg(c, .92, .95, 1);
-    txt(c, 22, 35, tr("ChromeDrive Settings"));
+    txt_fit(c, 22, 35, 318, tr("ChromeDrive Settings"));
     static const char *TAB_NAMES[3] = { "Launch Menu", "Garage3D", "Compositor" };
     double tx = 352;
     for (int i = 0; i < 3; i++) {
-        font(c, 14.5, i == g->tab, false);
-        double tw = txt_w(c, tr(TAB_NAMES[i])) + 36;
+        /* The tab highlight is sized from the label as it will be DRAWN, so a
+         * longer translation shrinks or elides inside its own pill instead of
+         * pushing the row under the Reset button at x=806. */
+        char lbl[128];
+        double sc = cd_fit_measure(c, 14.5, i == g->tab, false, 106, 0.86,
+                                   tr(TAB_NAMES[i]), lbl, sizeof(lbl));
+        double tw = cd_text_width(c, 14.5 * sc, i == g->tab, false, lbl) + 36;
         if (i == g->tab) { fga(c, .18, .35, .55, .95); rr(c, tx, 12, tw, 34, 8); cairo_fill(c); }
         fg(c, i == g->tab ? .95 : .62, i == g->tab ? .98 : .72, 1);
-        txt(c, tx + 18, 35, tr(TAB_NAMES[i]));
+        font(c, 14.5 * sc, i == g->tab, false);
+        txt(c, tx + 18, 35, lbl);
         add_box(g, H_TAB, i, 0, 0, tx, 10, tw, 38);
         tx += tw + 10;
     }
     if (g->tab != TAB_APPS) {
         fga(c, .16, .22, .34, 1); rr(c, 806, 12, 172, 34, 8); cairo_fill(c);
         font(c, 12, false, false); fg(c, .80, .88, .98);
-        txt(c, 822, 34, tr("Reset tab to defaults"));
+        txt_fit(c, 822, 34, 142, tr("Reset tab to defaults"));
         add_box(g, H_RESET_TAB, 0, 0, 0, 806, 12, 172, 34);
     }
 
@@ -1574,10 +1619,10 @@ static void draw_ui(Gui *g, cairo_t *c) {
     font(c, 10.5, false, true); fg(c, .48, .60, .78);
     txt_fit(c, 22, 599, 560, g->tab == TAB_G3 ? g->path[FILE_G3] : g->path[FILE_CD]);
     font(c, 11, false, false);
-    if (g->save_pending[0] || g->save_pending[1]) { fg(c, .95, .80, .45); txt_r(c, 978, 599, tr("Saving...")); }
-    else { fg(c, .45, .85, .65); txt_r(c, 978, 599, g->saved_note); }
+    if (g->save_pending[0] || g->save_pending[1]) { fg(c, .95, .80, .45); txt_fit_r(c, 978, 599, 380, tr("Saving...")); }
+    else { fg(c, .45, .85, .65); txt_fit_r(c, 978, 599, 380, g->saved_note); }
     font(c, 10.5, false, false); fg(c, .40, .50, .68);
-    txt(c, 22, 617, g->tab == TAB_APPS
+    txt_fit(c, 22, 617, 956, g->tab == TAB_APPS
         ? tr("Right-click a slot (or Choose app) to assign an installed app; changes relabel Launch Control live.")
         : tr("Drag sliders / tap toggles, or click the VNC port and type - files save automatically."));
     draw_picker(g, c);
@@ -2103,9 +2148,12 @@ static bool gui_init(Gui *g, const char *config_dir) {
     i18n_set_language(g->root, g->language_applied);
     gui_load_languages(g);
     gui_load_post_shaders(g);
-    snprintf(g->saved_note, sizeof(g->saved_note), "%s",
-             file_exists(g->path[FILE_CD]) || file_exists(g->path[FILE_G3])
-                 ? tr("Settings loaded") : tr("Defaults (files created on first edit)"));
+    /* Translated text into a fixed buffer: snprintf would cut at a byte count
+     * and can leave a half-written code point, which makes cairo drop every
+     * later draw call in the frame. */
+    cd_utf8_printf(g->saved_note, sizeof g->saved_note, "%s",
+                   file_exists(g->path[FILE_CD]) || file_exists(g->path[FILE_G3])
+                       ? tr("Settings loaded") : tr("Defaults (files created on first edit)"));
     g->measure_surf = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, 4, 4);
     g->measure = cairo_create(g->measure_surf);
     g->num_file = -1;

@@ -6,9 +6,11 @@
 #include <wayland-client.h>
 #include "xdg-shell-client.h"
 #include "i18n.h"
+#include "textfit_cairo.h"
 #include "telemetry.h"
 #include "wheel_input.h"
 #include <cairo/cairo.h>
+#include <webp/encode.h>
 #include <xkbcommon/xkbcommon.h>
 #include <dirent.h>
 #include <errno.h>
@@ -47,9 +49,17 @@ static double now(void){struct timespec t;clock_gettime(CLOCK_MONOTONIC,&t);retu
 static void sig(int n){stop=1;}
 static void rgb(cairo_t *c,double r,double g,double b){cairo_set_source_rgb(c,r,g,b);}
 static void rgba(cairo_t *c,double r,double g,double b,double a){cairo_set_source_rgba(c,r,g,b,a);}
-static void font(cairo_t *c,int size,bool bold,bool mono){cairo_select_font_face(c,mono?"DejaVu Sans Mono":"DejaVu Sans",CAIRO_FONT_SLANT_NORMAL,bold?CAIRO_FONT_WEIGHT_BOLD:CAIRO_FONT_WEIGHT_NORMAL);cairo_set_font_size(c,size);}
-static void text(cairo_t *c,int x,int y,int size,const char *str,bool bold){font(c,size,bold,false);cairo_move_to(c,x,y);cairo_show_text(c,str);}
-static void mono(cairo_t *c,int x,int y,int size,const char *str){font(c,size,false,true);cairo_move_to(c,x,y);cairo_show_text(c,str);}
+/* Bounded text. This window is a fixed 1000x625 surface where every slot has a
+ * neighbour (the 205 px sidebar, the 230 px file cards, the two gauges), and a
+ * translation is routinely 20-40% wider than the English it replaces. These
+ * wrappers measure the string, shrink it to a legibility floor, then ellipsize
+ * - they never clip, and never draw past maxw into the next column. */
+static void text_fit(cairo_t *c,int x,int y,int size,double maxw,const char *str,bool bold){cd_draw_fit(c,x,y,size,bold,false,maxw,CD_ALIGN_LEFT,0.85,str);}
+static void text_fit_r(cairo_t *c,double xr,int y,int size,double maxw,const char *str,bool bold){cd_draw_fit(c,xr,y,size,bold,false,maxw,CD_ALIGN_RIGHT,0.85,str);}
+static void text_fit_c(cairo_t *c,double cx,int y,int size,double maxw,const char *str,bool bold){cd_draw_fit(c,cx,y,size,bold,false,maxw,CD_ALIGN_CENTER,0.85,str);}
+static void mono_fit(cairo_t *c,int x,int y,int size,double maxw,const char *str){cd_draw_fit(c,x,y,size,false,true,maxw,CD_ALIGN_LEFT,0.85,str);}
+static void mono_fit_r(cairo_t *c,double xr,int y,int size,double maxw,const char *str){cd_draw_fit(c,xr,y,size,false,true,maxw,CD_ALIGN_RIGHT,0.85,str);}
+static void mono_fit_c(cairo_t *c,double cx,int y,int size,double maxw,const char *str){cd_draw_fit(c,cx,y,size,false,true,maxw,CD_ALIGN_CENTER,0.85,str);}
 static void rr(cairo_t *c,double x,double y,double w,double h,double r){cairo_new_sub_path(c);cairo_arc(c,x+w-r,y+r,r,-PI/2,0);cairo_arc(c,x+w-r,y+h-r,r,0,PI/2);cairo_arc(c,x+r,y+h-r,r,PI/2,PI);cairo_arc(c,x+r,y+r,r,PI,1.5*PI);cairo_close_path(c);}
 static void line(cairo_t *c,double x,double y,double xx,double yy){cairo_move_to(c,x,y);cairo_line_to(c,xx,yy);cairo_stroke(c);}
 static void folder(cairo_t *c,double x,double y,double size){
@@ -57,44 +67,45 @@ static void folder(cairo_t *c,double x,double y,double size){
  cairo_pattern_t *g=cairo_pattern_create_linear(0,20,0,57);cairo_pattern_add_color_stop_rgb(g,0,.69,.53,.91);cairo_pattern_add_color_stop_rgb(g,1,.37,.27,.56);cairo_set_source(c,g);rr(c,0,23,63,34,5);cairo_fill(c);cairo_pattern_destroy(g);cairo_restore(c);
 }
 static int compare_files(const void *a,const void *b){const FileEntry *aa=a,*bb=b;if(aa->directory!=bb->directory)return bb->directory-aa->directory;return strcasecmp(aa->name,bb->name);}
-static void read_dir(App *a){a->file_count=0;a->scroll=0;a->scroll_axis=0;a->preview_open=false;DIR *dir=opendir(a->directory);if(!dir){snprintf(a->preview,sizeof(a->preview),tr("Cannot open directory: %s"),strerror(errno));a->preview_open=true;a->dirty=true;return;}struct dirent *de;
+static void read_dir(App *a){a->file_count=0;a->scroll=0;a->scroll_axis=0;a->preview_open=false;DIR *dir=opendir(a->directory);if(!dir){cd_utf8_printf(a->preview,sizeof(a->preview),tr("Cannot open directory: %s"),strerror(errno));a->preview_open=true;a->dirty=true;return;}struct dirent *de;
  while((de=readdir(dir))&&a->file_count<MAX_FILES){if(de->d_name[0]=='.')continue;char path[4352];snprintf(path,sizeof(path),"%s/%s",a->directory,de->d_name);struct stat st;if(stat(path,&st))continue;FileEntry *e=&a->files[a->file_count++];snprintf(e->name,sizeof(e->name),"%s",de->d_name);e->directory=S_ISDIR(st.st_mode);e->size=st.st_size;}
  closedir(dir);qsort(a->files,a->file_count,sizeof(FileEntry),compare_files);a->dirty=true;
 }
 static void go_up(App *a){if(a->preview_open){a->preview_open=false;a->dirty=true;return;}char *slash=strrchr(a->directory,'/');if(slash&&slash!=a->directory)*slash=0;else strcpy(a->directory,"/");read_dir(a);}
 static void open_file(App *a,int index){if(index<0||index>=a->file_count)return;FileEntry *e=&a->files[index];char path[4352];snprintf(path,sizeof(path),"%s/%s",a->directory,e->name);if(e->directory){char resolved[4096];if(realpath(path,resolved)){snprintf(a->directory,sizeof(a->directory),"%s",resolved);read_dir(a);}return;}
- snprintf(a->preview_name,sizeof(a->preview_name),"%s",e->name);FILE *f=fopen(path,"rb");if(!f){snprintf(a->preview,sizeof(a->preview),tr("Cannot read: %s"),strerror(errno));}else{size_t n=fread(a->preview,1,sizeof(a->preview)-1,f);a->preview[n]=0;fclose(f);bool binary=false;for(size_t i=0;i<n;i++)if(a->preview[i]==0){binary=true;break;}if(binary)snprintf(a->preview,sizeof(a->preview),"Binary file — preview unavailable.\n\n%s\n%lld bytes\n\nThis browser is intentionally read-only.",e->name,(long long)e->size);else for(size_t i=0;i<n;i++)if((unsigned char)a->preview[i]>=128)a->preview[i]='?';}
+ snprintf(a->preview_name,sizeof(a->preview_name),"%s",e->name);FILE *f=fopen(path,"rb");if(!f){cd_utf8_printf(a->preview,sizeof(a->preview),tr("Cannot read: %s"),strerror(errno));}else{size_t n=fread(a->preview,1,sizeof(a->preview)-1,f);a->preview[n]=0;fclose(f);bool binary=false;for(size_t i=0;i<n;i++)if(a->preview[i]==0){binary=true;break;}if(binary)snprintf(a->preview,sizeof(a->preview),"Binary file — preview unavailable.\n\n%s\n%lld bytes\n\nThis browser is intentionally read-only.",e->name,(long long)e->size);else for(size_t i=0;i<n;i++)if((unsigned char)a->preview[i]>=128)a->preview[i]='?';}
  a->preview_open=true;a->dirty=true;
 }
 static void files_draw(App *a,cairo_t *c){
  rgb(c,.033,.047,.069);cairo_paint(c);rgb(c,.046,.063,.088);cairo_rectangle(c,0,0,205,625);cairo_fill(c);
- rgb(c,.74,.64,.93);text(c,28,53,21,tr("CD FILES"),true);rgb(c,.31,.39,.49);mono(c,30,89,11,tr("YOUR LOCAL WORKSPACE"));
- const char *nav[]={tr("Workspace"),tr("Home"),tr("Up a level")};for(int i=0;i<3;i++){if(!i){rgb(c,.11,.10,.19);rr(c,17,136+i*51,170,41,9);cairo_fill(c);}rgb(c,i?.48:.78,i?.57:.71,i?.68:.93);text(c,44,163+i*51,17,nav[i],!i);}
- rgb(c,.23,.30,.39);cairo_set_line_width(c,1);line(c,27,326,178,326);rgb(c,.36,.45,.55);mono(c,29,366,12,tr("READ ONLY"));text(c,29,395,13,tr("Click folders to explore."),false);text(c,29,420,13,tr("Click files to preview."),false);mono(c,28,583,10,tr("REAL FILES / NATIVE SHM"));
- rgb(c,.89,.93,.97);text(c,239,62,31,a->preview_open?tr("File preview"):tr("Your garage."),true);rgb(c,.40,.50,.61);char path[96];size_t len=strlen(a->directory);char tail[64];i18n_utf8_truncate(tail,sizeof(tail),len>57?a->directory+len-57:a->directory,57);snprintf(path,sizeof(path),"%s%s",len>57?"...":"",tail);mono(c,241,105,14,path);
- rgb(c,.14,.19,.25);rr(c,889,26,79,43,10);cairo_fill(c);rgb(c,.65,.75,.83);text(c,908,55,18,tr("↑  Up"),false);
+ rgb(c,.74,.64,.93);text_fit(c,28,53,21,167,tr("CD FILES"),true);rgb(c,.31,.39,.49);mono_fit(c,30,89,11,165,tr("YOUR LOCAL WORKSPACE"));
+ const char *nav[]={tr("Workspace"),tr("Home"),tr("Up a level")};for(int i=0;i<3;i++){if(!i){rgb(c,.11,.10,.19);rr(c,17,136+i*51,170,41,9);cairo_fill(c);}rgb(c,i?.48:.78,i?.57:.71,i?.68:.93);text_fit(c,44,163+i*51,17,135,nav[i],!i);}
+ rgb(c,.23,.30,.39);cairo_set_line_width(c,1);line(c,27,326,178,326);rgb(c,.36,.45,.55);mono_fit(c,29,366,12,166,tr("READ ONLY"));text_fit(c,29,395,13,166,tr("Click folders to explore."),false);text_fit(c,29,420,13,166,tr("Click files to preview."),false);mono_fit(c,28,583,10,167,tr("REAL FILES / NATIVE SHM"));
+ rgb(c,.89,.93,.97);text_fit(c,239,62,31,641,a->preview_open?tr("File preview"):tr("Your garage."),true);rgb(c,.40,.50,.61);char path[192];size_t len=strlen(a->directory);char tail[160];i18n_utf8_truncate(tail,sizeof(tail),len>150?a->directory+len-150:a->directory,150);snprintf(path,sizeof(path),"%s%s",len>150?"...":"",tail);mono_fit(c,241,105,14,727,path);
+ rgb(c,.14,.19,.25);rr(c,889,26,79,43,10);cairo_fill(c);rgb(c,.65,.75,.83);/* centred, not left-aligned at a magic x: a one-word label in another language must not run into the button edge */text_fit_c(c,928.5,55,18,71,tr("↑  Up"),false);
  rgba(c,.24,.32,.42,.55);line(c,239,132,968,132);
- if(a->preview_open){rgb(c,.56,.82,.77);text(c,242,177,18,a->preview_name,true);rgb(c,.66,.74,.82);char *copy=strdup(a->preview),*save,*ln=strtok_r(copy,"\n",&save);int y=214;while(ln&&y<581){char cut[84];i18n_utf8_truncate(cut,sizeof(cut),ln,79);mono(c,242,y,13,cut);y+=20;ln=strtok_r(NULL,"\n",&save);}free(copy);return;}
- char count[64];snprintf(count,sizeof(count),tr("%d ITEMS"),a->file_count);rgb(c,.44,.55,.65);mono(c,241,163,12,count);
+ if(a->preview_open){rgb(c,.56,.82,.77);text_fit(c,242,177,18,726,a->preview_name,true);rgb(c,.66,.74,.82);char *copy=strdup(a->preview),*save,*ln=strtok_r(copy,"\n",&save);int y=214;while(ln&&y<581){char cut[200];i18n_utf8_truncate(cut,sizeof(cut),ln,190);mono_fit(c,242,y,13,726,cut);y+=20;ln=strtok_r(NULL,"\n",&save);}free(copy);return;}
+ char count[64];cd_utf8_printf(count,sizeof(count),tr("%d ITEMS"),a->file_count);rgb(c,.44,.55,.65);mono_fit(c,241,163,12,300,count);
  for(int n=0;n<9;n++){int i=a->scroll+n;if(i>=a->file_count)break;int x=240+(n%3)*246,y=183+(n/3)*124;FileEntry *e=&a->files[i];
   rgb(c,.052,.073,.102);rr(c,x,y,230,112,10);cairo_fill(c);rgba(c,.26,.32,.43,.45);rr(c,x+.5,y+.5,229,111,10);cairo_set_line_width(c,1);cairo_stroke(c);
   if(e->directory)folder(c,x+17,y+6,42);else{rgb(c,.26,.40,.48);rr(c,x+21,y+15,25,33,3);cairo_fill(c);rgb(c,.59,.81,.83);line(c,x+27,y+26,x+41,y+26);line(c,x+27,y+32,x+39,y+32);}
-  char name[25];i18n_utf8_truncate(name,sizeof(name),e->name,22);rgb(c,.78,.84,.90);text(c,x+18,y+75,16,name,true);rgb(c,.36,.48,.58);char info[40];if(e->directory)strcpy(info,tr("DIRECTORY"));else snprintf(info,sizeof(info),"%.1f KB",(double)e->size/1024);mono(c,x+18,y+97,10,info);
+  char name[96];i18n_utf8_truncate(name,sizeof(name),e->name,90);rgb(c,.78,.84,.90);text_fit(c,x+18,y+75,16,198,name,true);rgb(c,.36,.48,.58);char info[48];if(e->directory)snprintf(info,sizeof(info),"%s",tr("DIRECTORY"));else snprintf(info,sizeof(info),"%.1f KB",(double)e->size/1024);mono_fit(c,x+18,y+97,10,198,info);
  }
- rgb(c,.35,.45,.55);mono(c,241,599,11,tr("SCROLL TO EXPLORE  /  ESC TO GO BACK"));
+ rgb(c,.35,.45,.55);mono_fit(c,241,599,11,727,tr("SCROLL TO EXPLORE  /  ESC TO GO BACK"));
 }
 static const char *tracks[]={"Midnight Circuit","After Hours","Neon Interchange","Backseat Radio"};
 static void audio_draw(App *a,cairo_t *c,double t){
- rgb(c,.031,.047,.067);cairo_paint(c);rgb(c,.39,.87,.75);mono(c,42,42,12,tr("CD AUDIO / VISUAL PLAYER DEMO"));rgb(c,.91,.94,.97);text(c,40,96,35,tr("After hours."),true);rgb(c,.37,.49,.58);text(c,766,88,14,tr("SESSION  /  001"),false);
+ rgb(c,.031,.047,.067);cairo_paint(c);rgb(c,.39,.87,.75);mono_fit(c,42,42,12,700,tr("CD AUDIO / VISUAL PLAYER DEMO"));rgb(c,.91,.94,.97);text_fit(c,40,96,35,700,tr("After hours."),true);
+rgb(c,.37,.49,.58);text_fit_r(c,968,88,14,200,tr("SESSION  /  001"),false);
  int x=43,y=141,cover=326;cairo_pattern_t *grad=cairo_pattern_create_linear(x,y,x+cover,y+cover);cairo_pattern_add_color_stop_rgb(grad,0,.13,.14,.30);cairo_pattern_add_color_stop_rgb(grad,.55,.19,.09,.33);cairo_pattern_add_color_stop_rgb(grad,1,.042,.065,.12);cairo_set_source(c,grad);rr(c,x,y,cover,cover,13);cairo_fill(c);cairo_pattern_destroy(grad);
  cairo_save(c);rr(c,x,y,cover,cover,13);cairo_clip(c);for(int i=0;i<13;i++){double xx=x+70+i*26;rgba(c,.66,.35,1,.14+i*.015);cairo_set_line_width(c,2+i%3);line(c,xx,y,xx-150,y+cover);}for(int i=0;i<8;i++){rgba(c,.3,.89,.89,.28);line(c,x,y+cover-44+i*12,x+cover,y+cover-90+i*7);}cairo_restore(c);
- rgb(c,.83,.75,.99);mono(c,x+23,y+38,12,tr("CHROMEDRIVE SOUND LAB"));rgb(c,.93,.90,1);text(c,x+20,y+169,37,"MIDNIGHT",true);text(c,x+20,y+211,37,"CIRCUIT",true);rgb(c,.64,.60,.78);mono(c,x+24,y+293,12,tr("VOL. 01  /  NO AUDIO"));
- rgb(c,.36,.79,.68);mono(c,419,173,12,tr("NOW VISUALIZING"));rgb(c,.86,.91,.95);text(c,416,228,31,tracks[a->track],true);rgb(c,.42,.54,.63);text(c,419,265,19,tr("ChromeDrive Sound Lab"),false);
+ rgb(c,.83,.75,.99);mono_fit(c,x+23,y+38,12,cover-35,tr("CHROMEDRIVE SOUND LAB"));rgb(c,.93,.90,1);text_fit(c,x+20,y+169,37,cover-34,"MIDNIGHT",true);text_fit(c,x+20,y+211,37,cover-34,"CIRCUIT",true);rgb(c,.64,.60,.78);mono_fit(c,x+24,y+293,12,cover-36,tr("VOL. 01  /  NO AUDIO"));
+ rgb(c,.36,.79,.68);mono_fit(c,419,173,12,549,tr("NOW VISUALIZING"));rgb(c,.86,.91,.95);text_fit(c,416,228,31,552,tracks[a->track],true);rgb(c,.42,.54,.63);text_fit(c,419,265,19,549,tr("ChromeDrive Sound Lab"),false);
  for(int i=0;i<38;i++){double height=a->playing?8+27*(.5+.5*sin(t*3+i*.64))*(.5+.5*sin(t*1.3+i*.91)):6;rgb(c,.30+i*.006,.63+i*.004,.61+i*.006);rr(c,422+i*12,327-height,5,height,2);cairo_fill(c);}
- rgb(c,.14,.23,.28);rr(c,420,354,484,4,2);cairo_fill(c);rgb(c,.39,.88,.75);rr(c,420,354,484*a->progress/195,4,2);cairo_fill(c);rgb(c,.44,.55,.63);char time[20];snprintf(time,sizeof(time),"%02d:%02d",(int)a->progress/60,(int)a->progress%60);mono(c,420,385,12,time);mono(c,867,385,12,"03:15");
+ rgb(c,.14,.23,.28);rr(c,420,354,484,4,2);cairo_fill(c);rgb(c,.39,.88,.75);rr(c,420,354,484*a->progress/195,4,2);cairo_fill(c);rgb(c,.44,.55,.63);char time[20];snprintf(time,sizeof(time),"%02d:%02d",(int)a->progress/60,(int)a->progress%60);mono_fit(c,420,385,12,120,time);mono_fit_r(c,867,385,12,120,"03:15");
  rgb(c,.41,.89,.75);cairo_arc(c,662,431,28,0,2*PI);cairo_fill(c);rgb(c,.03,.08,.09);if(a->playing){cairo_rectangle(c,652,421,6,20);cairo_rectangle(c,665,421,6,20);cairo_fill(c);}else{cairo_move_to(c,655,419);cairo_line_to(c,655,443);cairo_line_to(c,676,431);cairo_close_path(c);cairo_fill(c);}
  rgb(c,.60,.70,.77);cairo_set_line_width(c,2);line(c,588,422,588,440);cairo_move_to(c,608,421);cairo_line_to(c,592,431);cairo_line_to(c,608,441);cairo_close_path(c);cairo_fill(c);line(c,737,422,737,440);cairo_move_to(c,718,421);cairo_line_to(c,734,431);cairo_line_to(c,718,441);cairo_close_path(c);cairo_fill(c);
- rgba(c,.26,.34,.43,.5);line(c,43,502,949,502);rgb(c,.43,.52,.64);mono(c,45,537,11,tr("UP NEXT"));rgb(c,.77,.83,.90);text(c,46,573,17,tracks[(a->track+1)%4],true);rgb(c,.35,.47,.57);text(c,46,600,12,tr("Interactive controls + animation. No audio engine is bundled."),false);mono(c,820,574,13,"CD / 002");
+ rgba(c,.26,.34,.43,.5);line(c,43,502,949,502);rgb(c,.43,.52,.64);mono_fit(c,45,537,11,200,tr("UP NEXT"));rgb(c,.77,.83,.90);text_fit(c,46,573,17,760,tracks[(a->track+1)%4],true);rgb(c,.35,.47,.57);text_fit(c,46,600,12,922,tr("Interactive controls + animation. No audio engine is bundled."),false);mono_fit_r(c,968,574,13,140,"CD / 002");
 }
 static void read_metrics(App *a){
  FILE *f=fopen("/proc/stat","r");if(f){char name[10];unsigned long long user,nice,system,idle,iowait,irq,softirq,steal;if(fscanf(f,"%9s %llu %llu %llu %llu %llu %llu %llu %llu",name,&user,&nice,&system,&idle,&iowait,&irq,&softirq,&steal)==9){unsigned long long total=user+nice+system+idle+iowait+irq+softirq+steal,idle_total=idle+iowait;if(a->last_total&&total>a->last_total)a->cpu=100.0*(1-(double)(idle_total-a->last_idle)/(total-a->last_total));a->last_total=total;a->last_idle=idle_total;}fclose(f);}
@@ -102,9 +113,9 @@ static void read_metrics(App *a){
  a->cpu_history[a->history_head++%80]=a->cpu;
 }
 static void meters_draw(App *a,cairo_t *c,double t){
- rgb(c,.034,.049,.070);cairo_paint(c);rgb(c,.40,.89,.76);mono(c,43,44,12,tr("CD METERS / LIVE HOST TELEMETRY"));rgb(c,.90,.94,.97);text(c,40,103,36,tr("Engine room."),true);rgb(c,.40,.52,.64);text(c,43,139,16,tr("Live readings from /proc — not simulated vehicle data."),false);
- for(int i=0;i<3;i++){int x=43+i*315;rgb(c,.053,.076,.103);rr(c,x,174,288,132,12);cairo_fill(c);rgb(c,.44,.57,.65);mono(c,x+20,208,12,i==0?tr("CPU UTILIZATION"):i==1?tr("MEMORY IN USE"):tr("LOGICAL CORES"));char val[40];if(i==0)snprintf(val,sizeof(val),"%.1f%%",a->cpu);else if(i==1)snprintf(val,sizeof(val),"%.1f GB",a->mem_used);else snprintf(val,sizeof(val),"%ld",sysconf(_SC_NPROCESSORS_ONLN));rgb(c,.74,.93,.87);text(c,x+20,269,39,val,true);}
- rgb(c,.055,.076,.106);rr(c,43,331,918,220,12);cairo_fill(c);rgb(c,.45,.58,.67);mono(c,64,365,12,tr("CPU HISTORY / 40 SECONDS"));cairo_set_line_width(c,1);for(int i=0;i<4;i++){rgba(c,.30,.42,.51,.25);line(c,65,396+i*43,939,396+i*43);}rgb(c,.40,.90,.76);cairo_set_line_width(c,2.5);for(int i=0;i<80;i++){int index=(a->history_head+i)%80;double x=65+i*874.0/79,y=531-a->cpu_history[index]*1.33;if(i==0)cairo_move_to(c,x,y);else cairo_line_to(c,x,y);}cairo_stroke(c);rgb(c,.34,.48,.59);mono(c,45,593,11,"LINUX / PROCFS / READ ONLY");char up[60];snprintf(up,sizeof(up),"SESSION UPTIME  %02d:%02d",(int)t/60,(int)t%60);mono(c,704,593,11,up);
+ rgb(c,.034,.049,.070);cairo_paint(c);rgb(c,.40,.89,.76);mono_fit(c,43,44,12,700,tr("CD METERS / LIVE HOST TELEMETRY"));rgb(c,.90,.94,.97);text_fit(c,40,103,36,700,tr("Engine room."),true);rgb(c,.40,.52,.64);text_fit(c,43,139,16,920,tr("Live readings from /proc — not simulated vehicle data."),false);
+ for(int i=0;i<3;i++){int x=43+i*315;rgb(c,.053,.076,.103);rr(c,x,174,288,132,12);cairo_fill(c);rgb(c,.44,.57,.65);mono_fit(c,x+20,208,12,248,i==0?tr("CPU UTILIZATION"):i==1?tr("MEMORY IN USE"):tr("LOGICAL CORES"));char val[40];if(i==0)snprintf(val,sizeof(val),"%.1f%%",a->cpu);else if(i==1)snprintf(val,sizeof(val),"%.1f GB",a->mem_used);else snprintf(val,sizeof(val),"%ld",sysconf(_SC_NPROCESSORS_ONLN));rgb(c,.74,.93,.87);text_fit(c,x+20,269,39,248,val,true);}
+ rgb(c,.055,.076,.106);rr(c,43,331,918,220,12);cairo_fill(c);rgb(c,.45,.58,.67);mono_fit(c,64,365,12,400,tr("CPU HISTORY / 40 SECONDS"));cairo_set_line_width(c,1);for(int i=0;i<4;i++){rgba(c,.30,.42,.51,.25);line(c,65,396+i*43,939,396+i*43);}rgb(c,.40,.90,.76);cairo_set_line_width(c,2.5);for(int i=0;i<80;i++){int index=(a->history_head+i)%80;double x=65+i*874.0/79,y=531-a->cpu_history[index]*1.33;if(i==0)cairo_move_to(c,x,y);else cairo_line_to(c,x,y);}cairo_stroke(c);rgb(c,.34,.48,.59);mono_fit(c,45,593,11,640,"LINUX / PROCFS / READ ONLY");char up[60];snprintf(up,sizeof(up),"SESSION UPTIME  %02d:%02d",(int)t/60,(int)t%60);mono_fit_r(c,968,593,11,260,up);
 }
 static void cluster_gauge(cairo_t *c,double cx,double cy,double r,double value,const char *label,const char *unit,bool power){
  rgba(c,.26,.31,.42,.35);cairo_set_line_width(c,12);cairo_arc(c,cx,cy,r,.73*PI,2.27*PI);cairo_stroke(c);
@@ -112,23 +123,24 @@ static void cluster_gauge(cairo_t *c,double cx,double cy,double r,double value,c
  rgb(c,power?.67:.30,power?.34:.89,power?.98:.78);cairo_set_line_width(c,7);cairo_arc(c,cx,cy,r,.73*PI,.73*PI+1.54*PI*fraction);cairo_stroke(c);
  for(int i=0;i<=40;i++){double a=.73*PI+i*1.54*PI/40;rgb(c,i%5==0?.68:.27,i%5==0?.74:.33,i%5==0?.80:.40);cairo_set_line_width(c,i%5==0?2.4:1);line(c,cx+(r-14)*cos(a),cy+(r-14)*sin(a),cx+(r-(i%5==0?29:21))*cos(a),cy+(r-(i%5==0?29:21))*sin(a));}
  char text_value[32];if(power)snprintf(text_value,sizeof(text_value),"%+.0f",value);else snprintf(text_value,sizeof(text_value),"%.0f",value);
- rgb(c,.90,.94,.98);font(c,power?57:68,true,false);cairo_text_extents_t ex;cairo_text_extents(c,text_value,&ex);cairo_move_to(c,cx-ex.width/2-ex.x_bearing,cy+22);cairo_show_text(c,text_value);
- rgb(c,.43,.57,.65);font(c,13,false,true);cairo_text_extents(c,unit,&ex);cairo_move_to(c,cx-ex.width/2,cy+53);cairo_show_text(c,unit);
- rgb(c,.40,.51,.60);font(c,11,false,true);cairo_text_extents(c,label,&ex);cairo_move_to(c,cx-ex.width/2,cy+r+23);cairo_show_text(c,label);
+ /* Centred inside the dial, measured: the readout must never cross the arc. */
+ rgb(c,.90,.94,.98);text_fit_c(c,cx,cy+22,power?57:68,2*r-70,text_value,true);
+ rgb(c,.43,.57,.65);mono_fit_c(c,cx,cy+53,13,2*r-40,unit);
+ rgb(c,.40,.51,.60);mono_fit_c(c,cx,cy+r+23,11,2*r+20,label);
 }
 static void cluster_draw(App *a,cairo_t *c){
  rgb(c,.010,.018,.030);cairo_paint(c);rgba(c,.18,.25,.34,.45);cairo_set_line_width(c,1);rr(c,2,2,996,400,18);cairo_stroke(c);
  CdTelemetry t;bool online=cd_telemetry_snapshot(a->telemetry,&t);
- if(!online){rgb(c,.65,.74,.82);text(c,290,190,26,tr("TELEMETRY LINK OFFLINE"),true);rgb(c,.40,.51,.60);mono(c,285,232,14,tr("WAITING FOR COMPOSITOR SHARED STATE"));return;}
- rgb(c,.40,.89,.76);mono(c,25,28,11,tr("EV-01 / INSTRUMENT CLUSTER"));rgb(c,.34,.45,.55);mono(c,738,28,11,"NATIVE WAYLAND");
+ if(!online){rgb(c,.65,.74,.82);text_fit_c(c,500,190,26,640,tr("TELEMETRY LINK OFFLINE"),true);rgb(c,.40,.51,.60);mono_fit_c(c,500,232,14,640,tr("WAITING FOR COMPOSITOR SHARED STATE"));return;}
+ rgb(c,.40,.89,.76);mono_fit(c,25,28,11,470,tr("EV-01 / INSTRUMENT CLUSTER"));rgb(c,.34,.45,.55);mono_fit_r(c,975,28,11,230,"NATIVE WAYLAND");
  cluster_gauge(c,205,202,137,fabs(t.speed_mps)*3.6,tr("GROUND SPEED"),tr("KM/H"),false);
  cluster_gauge(c,795,202,137,t.power_kw,tr("800 V DRIVE / REGEN"),tr("KW"),true);
- char gear[2]={(char)t.gear,0};rgb(c,.38,.90,.75);font(c,62,true,false);cairo_text_extents_t ex;cairo_text_extents(c,gear,&ex);cairo_move_to(c,500-ex.width/2,179);cairo_show_text(c,gear);
- const char *mode=t.drive_mode?(t.braking?tr("REGEN BRAKE"):tr("HOVER DRIVE")):tr("CLIENT / PARKED");rgb(c,.48,.59,.68);font(c,12,false,true);cairo_text_extents(c,mode,&ex);cairo_move_to(c,500-ex.width/2,210);cairo_show_text(c,mode);
- double pack=t.battery_capacity_kwh>0?t.battery_kwh/t.battery_capacity_kwh:0;char value[80];snprintf(value,sizeof(value),tr("%.0f%% / %.1f KWH"),pack*100,t.battery_kwh);rgb(c,.78,.86,.91);font(c,17,true,true);cairo_text_extents(c,value,&ex);cairo_move_to(c,500-ex.width/2,253);cairo_show_text(c,value);
+ char gear[2]={(char)t.gear,0};rgb(c,.38,.90,.75);text_fit_c(c,500,179,62,200,gear,true);
+ const char *mode=t.drive_mode?(t.braking?tr("REGEN BRAKE"):tr("HOVER DRIVE")):tr("CLIENT / PARKED");rgb(c,.48,.59,.68);mono_fit_c(c,500,210,12,200,mode);
+ double pack=t.battery_capacity_kwh>0?t.battery_kwh/t.battery_capacity_kwh:0;char value[80];cd_utf8_printf(value,sizeof(value),tr("%.0f%% / %.1f KWH"),pack*100,t.battery_kwh);rgb(c,.78,.86,.91);mono_fit_c(c,500,253,17,300,value);
  rgba(c,.20,.28,.36,.6);rr(c,413,270,174,7,3);cairo_fill(c);rgb(c,.34,.87,.72);rr(c,413,270,174*fmin(fmax(pack,0),1),7,3);cairo_fill(c);
- snprintf(value,sizeof(value),tr("MOTOR %.0f C"),t.motor_temp_c);rgb(c,.43,.55,.63);mono(c,394,310,12,value);snprintf(value,sizeof(value),tr("ODO %.1f KM"),t.distance_m/1000);mono(c,394,333,12,value);
- snprintf(value,sizeof(value),tr("%02d APPS"),t.connected_screens);mono(c,394,365,11,value);rgb(c,.34,.87,.72);cairo_arc(c,386,360,3,0,2*PI);cairo_fill(c);
+ cd_utf8_printf(value,sizeof(value),tr("MOTOR %.0f C"),t.motor_temp_c);rgb(c,.43,.55,.63);mono_fit(c,394,310,12,256,value);cd_utf8_printf(value,sizeof(value),tr("ODO %.1f KM"),t.distance_m/1000);mono_fit(c,394,333,12,256,value);
+ cd_utf8_printf(value,sizeof(value),tr("%02d APPS"),t.connected_screens);mono_fit(c,394,365,11,256,value);rgb(c,.34,.87,.72);cairo_arc(c,386,360,3,0,2*PI);cairo_fill(c);
 }
 
 static void release_buffer(void *data,struct wl_buffer *wl){((Buffer*)data)->busy=false;}
@@ -148,6 +160,22 @@ static void frame_done(void *data,struct wl_callback *cb,uint32_t time){
  App *a=data;(void)time;wl_callback_destroy(cb);a->frame_ready=true;
 }
 static const struct wl_callback_listener frame_listener={.done=frame_done};
+/* Every mode paints in a 1000x625 user-space box (404 tall for the cluster), so
+ * a fixed layout cannot depend on the configured surface size. */
+static void render_mode(App *a,cairo_t *c,double t){
+ cairo_scale(c,a->w/1000.0,a->h/(a->mode==3?404.0:625.0));
+ if(a->mode==0)files_draw(a,c);else if(a->mode==1)audio_draw(a,c,t);else if(a->mode==2)meters_draw(a,c,t);else cluster_draw(a,c);
+}
+/* Offscreen capture, the demo clients' counterpart to chromedrive-config
+ * --screenshot: it is the only way to inspect a mode's layout without a
+ * compositor mounting the window at an angle, and it is what proves the text
+ * fits at any language. WebP only (AGENTS.md). */
+static bool save_webp(cairo_surface_t *surf,const char *path){
+ cairo_surface_flush(surf);int w=cairo_image_surface_get_width(surf),h=cairo_image_surface_get_height(surf);
+ unsigned char *data=cairo_image_surface_get_data(surf);int stride=cairo_image_surface_get_stride(surf);
+ uint8_t *out=NULL;size_t n=WebPEncodeBGRA(data,w,h,stride,90.0f,&out);if(!n||!out)return false;
+ FILE *f=fopen(path,"wb");bool ok=f&&fwrite(out,1,n,f)==n;if(f)fclose(f);WebPFree(out);return ok;
+}
 static void draw(App *a,double t){
  /* Double-buffered SHM submission sequence:
   * 1. Pick an idle wl_shm buffer (released by the compositor via wl_buffer.release
@@ -157,8 +185,8 @@ static void draw(App *a,double t){
   *    then finalize atomically with wl_surface.commit and mark frame_ready=false
   *    until the compositor's frame_done event arrives. */
  Buffer *b=NULL;for(int i=0;i<2;i++)if(!a->buffers[i].busy){b=&a->buffers[i];break;}if(!b)return;if(!b->wl||b->w!=a->w||b->h!=a->h)if(!make_buffer(a,b)){a->running=false;return;}
- cairo_surface_t *surface=cairo_image_surface_create_for_data(b->pixels,CAIRO_FORMAT_ARGB32,a->w,a->h,a->w*4);cairo_t *c=cairo_create(surface);cairo_scale(c,a->w/1000.0,a->h/(a->mode==3?404.0:625.0));
- if(a->mode==0)files_draw(a,c);else if(a->mode==1)audio_draw(a,c,t);else if(a->mode==2)meters_draw(a,c,t);else cluster_draw(a,c);cairo_destroy(c);cairo_surface_flush(surface);cairo_surface_destroy(surface);
+ cairo_surface_t *surface=cairo_image_surface_create_for_data(b->pixels,CAIRO_FORMAT_ARGB32,a->w,a->h,a->w*4);cairo_t *c=cairo_create(surface);
+ render_mode(a,c,t);cairo_destroy(c);cairo_surface_flush(surface);cairo_surface_destroy(surface);
  wl_surface_attach(a->surface,b->wl,0,0);wl_surface_damage_buffer(a->surface,0,0,a->w,a->h);struct wl_callback *cb=wl_surface_frame(a->surface);wl_callback_add_listener(cb,&frame_listener,a);wl_surface_commit(a->surface);b->busy=true;a->frame_ready=false;a->dirty=false;a->frames++;a->last_draw=now();
 }
 static void wm_ping(void *data,struct xdg_wm_base *wm,uint32_t serial){xdg_wm_base_pong(wm,serial);}
@@ -216,10 +244,24 @@ static void registry_remove(void *data,struct wl_registry *r,uint32_t name){}
 static const struct wl_registry_listener registry_listener={.global=registry_global,.global_remove=registry_remove};
 int main(int argc,char **argv){
  App a={.w=1000,.h=625,.running=true,.frame_ready=true,.dirty=true,.playing=true,.progress=24};const char *mode=argc>1?argv[1]:"files";
- if(!strcmp(mode,"audio"))a.mode=1;else if(!strcmp(mode,"telemetry"))a.mode=2;else if(!strcmp(mode,"cluster")){a.mode=3;a.h=404;}else if(strcmp(mode,"files")){fprintf(stderr,"Usage: %s files|audio|telemetry|cluster\n",argv[0]);return 2;}
+ if(!strcmp(mode,"audio"))a.mode=1;else if(!strcmp(mode,"telemetry"))a.mode=2;else if(!strcmp(mode,"cluster")){a.mode=3;a.h=404;}else if(strcmp(mode,"files")){fprintf(stderr,"Usage: %s files|audio|telemetry|cluster [--screenshot OUT.webp]\n"
+                     "  --screenshot renders the mode offscreen to a WebP and exits\n"
+                     "               (no Wayland connection, so text-fitting checks\n"
+                     "               do not depend on a compositor)\n",argv[0]);return 2;}
  /* Catalogs live in <root>/assets/locale; a demo client is launched from the
   * cockpit, so it must speak the same language the compositor does. */
  {char root[4096];if(i18n_root_from_exe(root,sizeof(root))){const char *want=getenv("CHROMEDRIVE_LANG");i18n_init(root,want&&*want?want:"auto");}}
+ /* Offscreen render: no Wayland connection, no compositor, no mount angle.
+  * Used by tools/check-client-overflow.sh to verify the text fitting. */
+ for(int i=2;i<argc;i++)if(!strcmp(argv[i],"--screenshot")&&i+1<argc){
+  if(a.mode==0){if(!getcwd(a.directory,sizeof(a.directory)))strcpy(a.directory,"/");snprintf(a.workspace,sizeof(a.workspace),"%s",a.directory);read_dir(&a);}
+  a.started=now();
+  cairo_surface_t *s=cairo_image_surface_create(CAIRO_FORMAT_ARGB32,a.w,a.h);
+  cairo_t *c=cairo_create(s);render_mode(&a,c,0);cairo_destroy(c);
+  bool ok=save_webp(s,argv[i+1]);cairo_surface_destroy(s);
+  fprintf(stderr,"chromedrive-demo: %s %s\n",ok?"wrote":"FAILED to write",argv[i+1]);
+  return ok?0:1;
+ }
  signal(SIGINT,sig);signal(SIGTERM,sig);
  if(a.mode==3){
   const char *fd_text=getenv("CHROMEDRIVE_TELEMETRY_FD");int fd=fd_text?atoi(fd_text):-1;struct stat st;
