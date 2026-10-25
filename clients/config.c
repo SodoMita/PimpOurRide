@@ -153,7 +153,7 @@ static Def CD_DEFS[] = {
     { "Cockpit", "cockpit", "neon", "Underglow colour", K_ENUM, 0, 2, 1, NULL, "0", { "Ultraviolet", "Ice Blue", "Acid Lime" }, 3, false, false },
     { "Cockpit", "cockpit", "hud", "HUD overlay", K_BOOL, 0, 0, 0, NULL, "true", {0}, 0, false, false },
     { "Cockpit", "cockpit", "background", "Garage backdrop", K_ENUM, 0, 2, 1, NULL, "3d", { "3d", "texture", "none" }, 3, true, false },
-    { "Session", "session", "backend", "Display backend", K_ENUM, 0, 2, 1, NULL, "headless", { "headless", "windowed", "fbdev" }, 3, true, true },
+    { "Session", "session", "backend", "Display backend", K_ENUM, 0, 3, 1, NULL, "headless", { "headless", "windowed", "fbdev", "drm" }, 4, true, true },
     { "Session", "session", "headless", "Legacy headless (if backend unset)", K_BOOL, 0, 0, 0, NULL, "true", {0}, 0, false, true },
     { "Session", "session", "vnc_port", "VNC port (headless/mirror)", K_INT_INPUT, 1024, 65535, 1, "%.0f", "5900", {0}, 0, false, true },
     { "Session", "session", "demo", "Launch autostart apps at start", K_BOOL, 0, 0, 0, NULL, "false", {0}, 0, false, true },

@@ -1,0 +1,285 @@
+/* Direct DRM/KMS presentation through a GBM surface and desktop EGL.
+ *
+ * scene_render() still targets s->target_fbo (zero here, the EGL default
+ * framebuffer), so Wayland uploads, RTT/post-FX, HUD and screenshots share the
+ * windowed backend's GL contract. This file owns only the display lifecycle:
+ * connected output + CRTC selection, GBM/EGL setup, KMS framebuffer handles,
+ * event-driven page flips, and restoration of the previous CRTC at exit.
+ * There is no glReadPixels/CPU scanout blit on this path. */
+#include "chrome.h"
+
+#include <errno.h>
+#include <fcntl.h>
+#include <gbm.h>
+#include <poll.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#include <xf86drm.h>
+#include <xf86drmMode.h>
+
+typedef struct {
+ struct gbm_bo *bo;
+ uint32_t fb_id;
+} DrmFramebuffer;
+
+typedef struct {
+ int fd;
+ bool master,mode_set,page_flip_pending,warned_event;
+ char path[256],connector_name[64];
+ uint32_t connector_id,crtc_id;
+ drmModeModeInfo mode;
+ drmModeCrtcPtr saved_crtc;
+ struct gbm_device *gbm;
+ struct gbm_surface *surface;
+ EGLSurface egl_surface;
+ DrmFramebuffer framebuffers[2]; /* current scanout + optional pending flip */
+ int framebuffer_count;
+ struct gbm_bo *current_bo,*pending_bo;
+} DrmState;
+
+static DrmState *drm_state(Server *s){return s?(DrmState*)s->drm_state:NULL;}
+
+static void drm_release_bo(DrmState *st,struct gbm_bo *bo){
+ if(!st||!bo)return;
+ for(int i=0;i<st->framebuffer_count;i++){
+  if(st->framebuffers[i].bo!=bo)continue;
+  if(drmModeRmFB(st->fd,st->framebuffers[i].fb_id)<0)
+   fprintf(stderr,"[drm] drmModeRmFB %u failed: %s\n",st->framebuffers[i].fb_id,strerror(errno));
+  st->framebuffers[i]=st->framebuffers[--st->framebuffer_count];
+  st->framebuffers[st->framebuffer_count]=(DrmFramebuffer){0};
+  break;
+ }
+ if(st->surface)gbm_surface_release_buffer(st->surface,bo);
+}
+
+static uint32_t drm_bo_framebuffer(DrmState *st,struct gbm_bo *bo){
+ for(int i=0;i<st->framebuffer_count;i++)if(st->framebuffers[i].bo==bo)return st->framebuffers[i].fb_id;
+ if(st->framebuffer_count>=2){fprintf(stderr,"[drm] more than two locked GBM buffers\n");return 0;}
+ uint32_t handle=gbm_bo_get_handle(bo).u32,stride=gbm_bo_get_stride(bo),fb_id=0;
+ uint32_t width=gbm_bo_get_width(bo),height=gbm_bo_get_height(bo);
+ /* GBM_FORMAT_XRGB8888 is depth 24 with a 32-bit scanout word. */
+ if(drmModeAddFB(st->fd,width,height,24,32,stride,handle,&fb_id)<0){
+  fprintf(stderr,"[drm] drmModeAddFB %ux%u stride=%u failed: %s\n",width,height,stride,strerror(errno));return 0;
+ }
+ st->framebuffers[st->framebuffer_count++]=(DrmFramebuffer){.bo=bo,.fb_id=fb_id};
+ return fb_id;
+}
+
+static void drm_page_flipped(int fd,unsigned sequence,unsigned seconds,unsigned usec,void *user_data){
+ DrmState *st=user_data;(void)fd;(void)sequence;(void)seconds;(void)usec;
+ if(!st||!st->page_flip_pending)return;
+ struct gbm_bo *old=st->current_bo;
+ st->current_bo=st->pending_bo;st->pending_bo=NULL;st->page_flip_pending=false;
+ /* The vblank event proves old is no longer scanned out. Only now may its
+  * kernel FB be removed and its GBM buffer return to the EGL surface. */
+ if(old)drm_release_bo(st,old);
+}
+
+/* 1 = consumed an event, 0 = timeout/no event, -1 = polling/driver error. */
+static int drm_wait_event(DrmState *st,int timeout_ms){
+ struct pollfd pfd={.fd=st->fd,.events=POLLIN};
+ int ready;
+ do ready=poll(&pfd,1,timeout_ms);while(ready<0&&errno==EINTR);
+ if(ready==0)return 0;
+ if(ready<0||(pfd.revents&(POLLERR|POLLHUP|POLLNVAL)))return -1;
+ if(!(pfd.revents&POLLIN))return 0;
+ drmEventContext context={.version=DRM_EVENT_CONTEXT_VERSION,.page_flip_handler=drm_page_flipped};
+ return drmHandleEvent(st->fd,&context)==0?1:-1;
+}
+
+static bool drm_wait_for_flip(DrmState *st){
+ while(st->page_flip_pending){
+  int result=drm_wait_event(st,1000);
+  if(result>0)continue;
+  if(result==0)fprintf(stderr,"[drm] timed out waiting for page-flip completion\n");
+  else fprintf(stderr,"[drm] page-flip event wait failed: %s\n",strerror(errno));
+  return false;
+ }
+ return true;
+}
+
+static uint32_t drm_find_crtc(int fd,drmModeResPtr resources,drmModeConnectorPtr connector){
+ /* Retaining the current encoder/CRTC avoids unnecessary output handoff. */
+ if(connector->encoder_id){
+  drmModeEncoderPtr encoder=drmModeGetEncoder(fd,connector->encoder_id);
+  if(encoder){
+   uint32_t current=encoder->crtc_id;drmModeFreeEncoder(encoder);
+   if(current)return current;
+  }
+ }
+ for(int e=0;e<connector->count_encoders;e++){
+  drmModeEncoderPtr encoder=drmModeGetEncoder(fd,connector->encoders[e]);
+  if(!encoder)continue;
+  for(int c=0;c<resources->count_crtcs;c++)if(encoder->possible_crtcs&(1u<<c)){
+   uint32_t id=resources->crtcs[c];drmModeFreeEncoder(encoder);return id;
+  }
+  drmModeFreeEncoder(encoder);
+ }
+ return 0;
+}
+
+static bool drm_choose_mode(DrmState *st,drmModeConnectorPtr connector,drmModeCrtcPtr current,int request_w,int request_h){
+ if(request_w>0&&request_h>0){
+  for(int i=0;i<connector->count_modes;i++)if(connector->modes[i].hdisplay==request_w&&connector->modes[i].vdisplay==request_h){
+   st->mode=connector->modes[i];return true;
+  }
+  return false;
+ }
+ if(current&&current->mode_valid&&current->mode.hdisplay&&current->mode.vdisplay){st->mode=current->mode;return true;}
+ for(int i=0;i<connector->count_modes;i++)if(connector->modes[i].type&DRM_MODE_TYPE_PREFERRED){st->mode=connector->modes[i];return true;}
+ if(connector->count_modes>0){st->mode=connector->modes[0];return true;}
+ return false;
+}
+
+static bool drm_select_output(Server *s,DrmState *st){
+ drmModeResPtr resources=drmModeGetResources(st->fd);
+ if(!resources){fprintf(stderr,"[drm] drmModeGetResources failed on %s: %s\n",st->path,strerror(errno));return false;}
+ for(int i=0;i<resources->count_connectors;i++){
+  drmModeConnectorPtr connector=drmModeGetConnector(st->fd,resources->connectors[i]);
+  if(!connector)continue;
+  if(connector->connection!=DRM_MODE_CONNECTED||connector->count_modes==0){drmModeFreeConnector(connector);continue;}
+  uint32_t crtc_id=drm_find_crtc(st->fd,resources,connector);
+  if(!crtc_id){drmModeFreeConnector(connector);continue;}
+  drmModeCrtcPtr current=drmModeGetCrtc(st->fd,crtc_id);
+  if(!drm_choose_mode(st,connector,current,s->drm_mode_width,s->drm_mode_height)){
+   if(current)drmModeFreeCrtc(current);drmModeFreeConnector(connector);continue;
+  }
+  st->connector_id=connector->connector_id;st->crtc_id=crtc_id;st->saved_crtc=current;
+  const char *type=drmModeGetConnectorTypeName(connector->connector_type);
+  snprintf(st->connector_name,sizeof(st->connector_name),"%s-%u",type?type:"connector",connector->connector_type_id);
+  drmModeFreeConnector(connector);drmModeFreeResources(resources);return true;
+ }
+ if(s->drm_mode_width>0&&s->drm_mode_height>0)
+  fprintf(stderr,"[drm] requested mode %dx%d is unavailable on every connected output of %s\n",s->drm_mode_width,s->drm_mode_height,st->path);
+ else fprintf(stderr,"[drm] no connected connector with a usable CRTC/mode on %s\n",st->path);
+ drmModeFreeResources(resources);return false;
+}
+
+static bool drm_egl_init(Server *s,DrmState *st){
+ st->gbm=gbm_create_device(st->fd);
+ if(!st->gbm){fprintf(stderr,"[drm] gbm_create_device failed\n");return false;}
+ PFNEGLGETPLATFORMDISPLAYEXTPROC get_platform=(PFNEGLGETPLATFORMDISPLAYEXTPROC)eglGetProcAddress("eglGetPlatformDisplayEXT");
+ if(!get_platform){fprintf(stderr,"[drm] EGL_EXT_platform_base is unavailable\n");return false;}
+ s->egl_display=get_platform(EGL_PLATFORM_GBM_KHR,st->gbm,NULL);
+ EGLint major=0,minor=0;
+ if(s->egl_display==EGL_NO_DISPLAY||!eglInitialize(s->egl_display,&major,&minor)){
+  fprintf(stderr,"[drm] eglInitialize(GBM) failed: 0x%x\n",eglGetError());return false;
+ }
+ if(!eglBindAPI(EGL_OPENGL_API)){fprintf(stderr,"[drm] eglBindAPI(EGL_OPENGL_API) failed\n");return false;}
+ EGLint attributes[]={EGL_SURFACE_TYPE,EGL_WINDOW_BIT,EGL_RED_SIZE,8,EGL_GREEN_SIZE,8,EGL_BLUE_SIZE,8,
+  EGL_RENDERABLE_TYPE,EGL_OPENGL_BIT,EGL_NONE};
+ EGLConfig configs[64];EGLint count=0;
+ if(!eglChooseConfig(s->egl_display,attributes,configs,64,&count)||count<1){
+  fprintf(stderr,"[drm] no desktop-GL GBM EGL configs\n");return false;
+ }
+ EGLConfig config=NULL;
+ for(EGLint i=0;i<count;i++){
+  EGLint visual=0;eglGetConfigAttrib(s->egl_display,configs[i],EGL_NATIVE_VISUAL_ID,&visual);
+  if((uint32_t)visual==GBM_FORMAT_XRGB8888){config=configs[i];break;}
+ }
+ if(!config){fprintf(stderr,"[drm] no EGL config matching GBM_FORMAT_XRGB8888\n");return false;}
+ s->egl_context=eglCreateContext(s->egl_display,config,EGL_NO_CONTEXT,NULL);
+ if(s->egl_context==EGL_NO_CONTEXT){fprintf(stderr,"[drm] eglCreateContext failed: 0x%x\n",eglGetError());return false;}
+ st->surface=gbm_surface_create(st->gbm,st->mode.hdisplay,st->mode.vdisplay,GBM_FORMAT_XRGB8888,GBM_BO_USE_SCANOUT|GBM_BO_USE_RENDERING);
+ if(!st->surface){fprintf(stderr,"[drm] gbm_surface_create failed\n");return false;}
+ st->egl_surface=eglCreateWindowSurface(s->egl_display,config,(EGLNativeWindowType)st->surface,NULL);
+ if(st->egl_surface==EGL_NO_SURFACE){fprintf(stderr,"[drm] eglCreateWindowSurface(GBM) failed: 0x%x\n",eglGetError());return false;}
+ if(!eglMakeCurrent(s->egl_display,st->egl_surface,st->egl_surface,s->egl_context)){
+  fprintf(stderr,"[drm] eglMakeCurrent(GBM) failed: 0x%x\n",eglGetError());return false;
+ }
+ eglSwapInterval(s->egl_display,0); /* KMS page-flip events, not a second EGL throttle, pace scanout. */
+ s->target_fbo=s->fbo_color_rb=s->fbo_depth_rb=0;s->readback_pixels=NULL;
+ s->width=(int)st->mode.hdisplay;s->height=(int)st->mode.vdisplay;s->mouse_x=s->width/2;s->mouse_y=s->height/2;
+ fprintf(stderr,"[backend] DRM/KMS + GBM/EGL (direct scanout, no readback) — %s / %s\n",glGetString(GL_RENDERER),glGetString(GL_VERSION));
+ return true;
+}
+
+bool backend_drm_init(Server *s){
+ DrmState *st=calloc(1,sizeof(*st));if(!st){fprintf(stderr,"[drm] out of memory\n");return false;}
+ st->fd=-1;st->egl_surface=EGL_NO_SURFACE;s->drm_state=st;
+ s->egl_display=EGL_NO_DISPLAY;s->egl_context=EGL_NO_CONTEXT;s->target_fbo=0;s->readback_pixels=NULL;
+ snprintf(st->path,sizeof(st->path),"%s",s->drm_path[0]?s->drm_path:"/dev/dri/card0");
+ st->fd=open(st->path,O_RDWR|O_CLOEXEC);
+ if(st->fd<0){fprintf(stderr,"[drm] cannot open %s: %s (use a KMS card node and video-group/udev access)\n",st->path,strerror(errno));goto fail;}
+ if(drmSetMaster(st->fd)<0){fprintf(stderr,"[drm] drmSetMaster failed on %s: %s (stop the active KMS compositor or grant logind seat access)\n",st->path,strerror(errno));goto fail;}
+ st->master=true;
+ if(!drm_select_output(s,st))goto fail;
+ if(!drm_egl_init(s,st))goto fail;
+ fprintf(stderr,"[drm] %s: connector %s (%u), CRTC %u, %ux%u@%u\n",st->path,
+  st->connector_name,st->connector_id,st->crtc_id,st->mode.hdisplay,st->mode.vdisplay,st->mode.vrefresh);
+ if(s->fbdev_evdev&&!backend_evdev_init(s))goto fail;
+ if(s->fbdev_evdev&&(!s->evdev_state||((EvdevState*)s->evdev_state)->device_count==0))
+  fprintf(stderr,"[drm] no local evdev devices opened; display continues without local input\n");
+ return true;
+fail:
+ backend_drm_shutdown(s);return false;
+}
+
+void backend_drm_poll(Server *s){
+ DrmState *st=drm_state(s);if(!st)return;
+ if(s->fbdev_evdev)backend_evdev_poll(s);
+ int result;
+ while((result=drm_wait_event(st,0))>0){}
+ if(result<0&&!st->warned_event){fprintf(stderr,"[drm] DRM event polling failed: %s\n",strerror(errno));st->warned_event=true;}
+}
+
+void backend_drm_present(Server *s){
+ DrmState *st=drm_state(s);if(!st||st->egl_surface==EGL_NO_SURFACE)return;
+ /* Rendering a third frame before the prior flip completes would lock too
+  * many GBM buffers. Wait before swapping, never after locking a new buffer. */
+ if(!drm_wait_for_flip(st))return;
+ if(!eglSwapBuffers(s->egl_display,st->egl_surface)){fprintf(stderr,"[drm] eglSwapBuffers failed: 0x%x\n",eglGetError());return;}
+ struct gbm_bo *bo=gbm_surface_lock_front_buffer(st->surface);
+ if(!bo){fprintf(stderr,"[drm] gbm_surface_lock_front_buffer failed\n");return;}
+ uint32_t fb_id=drm_bo_framebuffer(st,bo);
+ if(!fb_id){drm_release_bo(st,bo);return;}
+ if(!st->mode_set){
+  if(drmModeSetCrtc(st->fd,st->crtc_id,fb_id,0,0,&st->connector_id,1,&st->mode)<0){
+   fprintf(stderr,"[drm] initial drmModeSetCrtc failed: %s\n",strerror(errno));drm_release_bo(st,bo);return;
+  }
+  st->mode_set=true;st->current_bo=bo;return;
+ }
+ if(drmModePageFlip(st->fd,st->crtc_id,fb_id,DRM_MODE_PAGE_FLIP_EVENT,st)<0){
+  fprintf(stderr,"[drm] drmModePageFlip failed: %s\n",strerror(errno));drm_release_bo(st,bo);return;
+ }
+ st->pending_bo=bo;st->page_flip_pending=true;
+ /* main emits wl_callback.done immediately after backend_*_present. Waiting
+  * for the flip here preserves its contract: clients are paced to completed
+  * scanout, not merely to an ioctl that queued a future frame. */
+ drm_wait_for_flip(st);
+}
+
+static void drm_restore_crtc(DrmState *st){
+ if(!st->mode_set)return;
+ int result;
+ if(st->saved_crtc&&st->saved_crtc->mode_valid)
+  result=drmModeSetCrtc(st->fd,st->crtc_id,st->saved_crtc->buffer_id,st->saved_crtc->x,st->saved_crtc->y,
+   &st->connector_id,1,&st->saved_crtc->mode);
+ else result=drmModeSetCrtc(st->fd,st->crtc_id,0,0,0,NULL,0,NULL);
+ if(result<0)fprintf(stderr,"[drm] failed to restore the previous CRTC: %s\n",strerror(errno));
+ else st->mode_set=false;
+}
+
+void backend_drm_shutdown(Server *s){
+ DrmState *st=drm_state(s);if(!st)return;
+ if(s->evdev_state)backend_evdev_shutdown(s);
+ if(st->fd>=0){
+  if(st->page_flip_pending)drm_wait_for_flip(st);
+  drm_restore_crtc(st);
+  if(st->current_bo){drm_release_bo(st,st->current_bo);st->current_bo=NULL;}
+  if(st->pending_bo){drm_release_bo(st,st->pending_bo);st->pending_bo=NULL;st->page_flip_pending=false;}
+ }
+ if(s->egl_display!=EGL_NO_DISPLAY){
+  eglMakeCurrent(s->egl_display,EGL_NO_SURFACE,EGL_NO_SURFACE,EGL_NO_CONTEXT);
+  if(st->egl_surface!=EGL_NO_SURFACE)eglDestroySurface(s->egl_display,st->egl_surface);
+  if(s->egl_context!=EGL_NO_CONTEXT)eglDestroyContext(s->egl_display,s->egl_context);
+  eglTerminate(s->egl_display);
+ }
+ st->egl_surface=EGL_NO_SURFACE;s->egl_display=EGL_NO_DISPLAY;s->egl_context=EGL_NO_CONTEXT;s->target_fbo=0;
+ if(st->surface)gbm_surface_destroy(st->surface);
+ if(st->gbm)gbm_device_destroy(st->gbm);
+ if(st->saved_crtc)drmModeFreeCrtc(st->saved_crtc);
+ if(st->fd>=0){if(st->master)drmDropMaster(st->fd);close(st->fd);}
+ free(st);s->drm_state=NULL;
+}

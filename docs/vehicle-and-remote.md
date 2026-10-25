@@ -27,6 +27,11 @@ RFB input ─► backend_egl (shared) ──► scene + spline EV + fixed-step p
           static noVNC tools/viewer/index.html   current kernel fb mode
 ```
 
+The alternate `--drm` path uses the same scene and GL-context ownership but a
+GBM window surface/default framebuffer instead of the surfaceless output FBO.
+It performs direct KMS modesetting and page-flip scanout, with no per-frame
+`glReadPixels` or fbdev format-conversion blit.
+
 `tools/run-web.sh` is the fullstack launcher. It builds the C programs, stages
 the operating system's noVNC assets, starts the headless compositor, and serves
 the browser UI on the same origin as its WebSocket bridge. There is no Node
@@ -36,7 +41,7 @@ Wayland protocol implementation.
 ```sh
 sudo apt-get install -y libsdl2-dev libwayland-dev wayland-protocols \
   libgl-dev libegl-dev libxkbcommon-dev libwebp-dev libcairo2-dev \
-  libdrm-dev libvncserver-dev novnc websockify foot
+  libdrm-dev libgbm-dev libvncserver-dev novnc websockify foot
 ./tools/run-web.sh
 # http://localhost:8080/
 
@@ -397,6 +402,19 @@ creation, and makes a context current with `EGL_NO_SURFACE` for draw/read. Its
 color+depth renderbuffer FBO is the output; there is no window surface and
 therefore no `eglSwapBuffers` in this path.
 
+The DRM backend instead selects `EGL_PLATFORM_GBM_KHR`, matches an EGL config
+to `GBM_FORMAT_XRGB8888`, and makes a GBM window surface current. Its default
+framebuffer is the scene destination (`target_fbo = 0`). After
+`eglSwapBuffers`, it registers the locked GBM buffer as a KMS framebuffer and
+uses `drmModeSetCrtc` for the first frame and `DRM_MODE_PAGE_FLIP_EVENT`
+thereafter. At most the current and pending buffers stay locked; the previous
+buffer is released only after its flip-completion event. `backend_drm_present`
+waits for that event before returning, preserving the main loop's rule that
+Wayland `wl_callback.done` follows actual presentation rather than submission.
+This sandbox has no `/dev/dri`, so only compilation and missing/invalid-device
+cleanup are testable here; connector selection, real scanout, flip cadence, and
+CRTC restoration require a target-hardware run.
+
 Backend initialization precedes Wayland server dispatch. This ordering matters
 because a client commit can upload `wl_shm` pixels with `glTexImage2D`, and a
 linux-dmabuf commit can reference an `EGLImage` texture. Those are GL calls,
@@ -413,13 +431,23 @@ treating `FBIO_WAITFORVSYNC` as best-effort. By default it adopts the current
 kernel mode; with `--fbdev-modeset` or `--fbdev-mode` it requests a modeset via
 `FBIOPUT_VSCREENINFO` and restores the original mode on exit. The driver may
 adjust timings or reject the request. Local evdev input (keyboard, mouse,
-touchscreen) is enabled by default for fbdev; `--no-fbdev-evdev` disables it.
-`--fbdev-grab-input` opts in to `EVIOCGRAB` (warns about VT lockout). Explicit
-device restriction via `--fbdev-input-device PATH` (repeatable, max 8). During
-shutdown, clients and scene textures are destroyed before the EGL context is
-unbound and terminated; fbdev also restores the original video mode (or pan
-offset if no modeset occurred) before unmapping. No physics code, browser code,
-or worker thread owns a GL context.
+touchscreen) is enabled by default for fbdev and DRM; `--no-evdev` (or
+`--no-fbdev-evdev`) disables it. `--grab-input` opts in to `EVIOCGRAB` (with a
+VT-lockout warning), and `--input-device PATH` restricts enumeration (up to 8;
+older fbdev-named aliases remain valid). A single epoll worker reads devices
+and queues plain events with `CLOCK_MONOTONIC` kernel timestamps where
+supported. It never calls Wayland, scene, physics, or GL code. The compositor
+thread drains the bounded queue through the existing dispatch handlers. A full
+queue blocks further production until the old prefix is drained and every
+potentially latched key, touch, pointer button, and driving control is safely
+released; device slots are never compacted underneath queued events.
+
+During shutdown, direct input is stopped and released before Wayland/xkb state
+is destroyed. Clients and scene textures are then destroyed before the EGL
+context is unbound and terminated. fbdev restores the original video mode (or
+pan offset) before unmapping; DRM waits for outstanding flips, restores the
+previous CRTC, releases locked GBM buffers, and drops DRM master. No physics
+code, browser code, or worker thread owns a GL context.
 
 ## Validation
 
@@ -437,7 +465,8 @@ hover/body finiteness, and identical results under different render cadences.
 `tests/test_fbdev.c` exercises packed 16/24/32bpp conversion, LUT quantization,
 bottom-up row flips, independent strides/padding, geometry validation, and page
 offsets without opening `/dev/fb0` (so `make test` also runs in CI/sandboxes),
-plus `evdev_util` absolute scaling and touch-id pool.
+plus `evdev_util` absolute scaling/touch-id pool and the asynchronous queue's
+FIFO ordering, stable device IDs, overflow blocking, and post-reset resume.
 `tests/test_keymap.c` pins the exact RFB/X11-to-evdev table, including the
 non-contiguous letter codes needed by WASD. `tests/test_math.c` covers all nine
 output transforms plus stowed/mid-travel/deployed picking, and

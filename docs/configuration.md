@@ -39,11 +39,12 @@ Three tabs:
 1. **Launch Menu** — the app-menu editor (next section). This is the main event.
 2. **Garage3D** — window/camera/scene/physics of the 3D client.
 3. **Compositor** — display/cockpit/session of ChromeDrive itself. The
-   display backend is a restart-only enum (`headless`, `windowed`, `fbdev`);
+   display backend is a restart-only enum (`headless`, `windowed`, `fbdev`, `drm`);
    the VNC port is a typed numeric field (1024–65535), not a slider: click it,
    type the exact port, press Enter; Escape cancels and invalid values are
-   not saved. The fbdev device path and fbdev vsync/pan/mirror toggles are
-   file-only (the GUI has no free-text session path editor).
+   not saved. The fbdev/DRM device paths, exact DRM mode, and fbdev
+   vsync/pan/mirror toggles are file-only (the GUI has no free-text session
+   path editor).
 
 Sliders, toggles, colour pickers and the entry list work with pointer and
 touch. Text fields need a physical keyboard (there is no text-input/OSK
@@ -188,8 +189,8 @@ and a later config edit hot-reloads `[cockpit] hud` back over the runtime choice
   `display.post_shader`, `cockpit.*`
   (neon/hud/background), all `[app.*]` menu keys.
   **Restart:** `display.width/height/fullscreen`, and every `session.*` key,
-  including `backend`, `headless` (legacy), `fbdev_device`, `fbdev_vsync`,
-  `fbdev_pan`, and `fbdev_vnc_mirror`.
+  including `backend`, `headless` (legacy), `drm_device`, `drm_mode`,
+  `fbdev_device`, `fbdev_vsync`, `fbdev_pan`, and `fbdev_vnc_mirror`.
 - **Spatial window transforms:** titlebar/frame dragging and F6 Arrange
   position, yaw/pitch/roll, uniform scale and corner/edge resize dimensions
   are intentionally session-only. Corner/edge grips request a real new logical
@@ -350,15 +351,17 @@ hud = true            # HUD overlay visible (Meta+H / dash HUD button at runtime
 background = 3d       # 3d | texture (flat poster) | none
 
 [session]
-backend = headless    # headless | windowed | fbdev; wins over legacy headless (restart; GUI enum)
+backend = headless    # headless | windowed | fbdev | drm; wins over legacy headless (restart; GUI enum)
 headless = true       # legacy alias, used only when backend is absent (restart)
+drm_device = /dev/dri/card0  # DRM/KMS card node (restart; file-only)
+drm_mode =                 # optional exact WIDTHxHEIGHT; empty = current/preferred (restart; file-only)
 fbdev_device = /dev/fb0  # fbdev output path (restart; file-only)
 fbdev_modeset = false      # opt-in modeset via FBIOPUT_VSCREENINFO (restart; file-only)
 fbdev_mode =               # modeset target "WIDTHxHEIGHT[@BPP]" (restart; file-only; invalid value warns and disables modeset)
 fbdev_vsync = true         # best-effort FBIO_WAITFORVSYNC (restart; file-only)
 fbdev_pan = true           # use FBIOPAN_DISPLAY only if yres_virtual has >=2 pages (restart; file-only)
 fbdev_vnc_mirror = false   # opt-in loopback-only RFB mirror/control for fbdev (restart; file-only)
-fbdev_evdev = true         # enable local evdev input for fbdev (restart; file-only)
+fbdev_evdev = true         # enable asynchronous local evdev input for fbdev and DRM (restart; file-only)
 fbdev_grab_input = false   # grab evdev devices via EVIOCGRAB (restart; file-only; warns about VT lockout)
 fbdev_input_devices =      # comma/whitespace-separated explicit device paths (max 8); replaces auto-enumeration (restart; file-only)
 vnc_port = 5900       # headless VNC or fbdev mirror, 1..65535; GUI typed field 1024..65535 (restart)
@@ -376,6 +379,18 @@ enabled = true
 autostart = true
 ```
 
+`backend = drm` opens `drm_device` (default `/dev/dri/card0`) with DRM-master
+access, selects a connected connector/compatible CRTC, and creates a GBM
+`XRGB8888` EGL surface for direct KMS page-flip scanout. With `drm_mode` empty
+it retains a valid current mode or selects the connector's preferred mode;
+`drm_mode = "WIDTHxHEIGHT"` requires an exact advertised mode and rejects a
+missing mode instead of silently choosing another. The old CRTC is restored on
+exit. A missing device, active KMS master, unsupported EGL configuration, or
+unavailable output is a fatal backend-init error—there is no implicit fbdev
+fallback. Use `--drm [DEVICE]`, `--drm-device PATH`, or `--drm-mode WxH` on the
+command line. Actual scanout requires KMS hardware and appropriate seat/udev
+access.
+
 `backend = fbdev` adopts the mode already programmed on the framebuffer
 (`var.xres`/`var.yres`) by default; `display.width/height` are ignored with a
 warning because the default behavior does not call `FBIOPUT_VSCREENINFO`. With
@@ -386,7 +401,11 @@ is normally granted through the `video` group or a udev rule, not by running as
 root. Panning is used only when the existing `yres_virtual` already has at
 least two pages; vsync and pan failures degrade to a warning once. Local evdev
 input (keyboard, relative/absolute pointer, multitouch type B, single-touch) is
-enabled by default (`fbdev_evdev = true`); set `fbdev_evdev = false` to disable.
+enabled by default for both direct backends (`fbdev_evdev = true`); set
+`fbdev_evdev = false` to disable. An epoll worker queues events with monotonic
+kernel timestamps; only the compositor thread dispatches them to Wayland and
+vehicle state. The bounded queue has a safe release barrier on overflow, and
+device loss cannot leave driving controls latched.
 `fbdev_grab_input = true` opts in to `EVIOCGRAB` (warns about VT/console
 lockout; ungrabbed keys can still reach the VT console). `fbdev_input_devices`
 accepts a comma/whitespace-separated list of explicit `/dev/input/event*` paths
@@ -396,11 +415,13 @@ Enumeration is startup-only; no hotplug rescans. Non-direct multitouch devices
 to `wl_touch`. `wl_touch` is advertised only when a direct-touch device is
 present at startup. Without `fbdev_vnc_mirror` and no evdev devices opened,
 fbdev is output-only; with it, RFB binds `127.0.0.1` on `vnc_port`. Use
-`--backend headless|windowed|fbdev`, `--fbdev [DEVICE]`, `--fbdev-device
+`--backend headless|windowed|fbdev|drm`, `--fbdev [DEVICE]`, `--fbdev-device
 PATH`, `--fbdev-modeset`, `--fbdev-mode WxH[@BPP]`, `--no-fbdev-vsync`,
-`--no-fbdev-pan`, `--fbdev-evdev`, `--no-fbdev-evdev`, `--fbdev-grab-input`,
-`--fbdev-input-device PATH`, and `--fbdev-vnc-mirror` (`--vnc-mirror`) on the
-command line; the old `--headless`/`--windowed` aliases still set the same enum.
+`--no-fbdev-pan`, `--drm [DEVICE]`, `--drm-device PATH`, `--drm-mode WxH`, and
+`--fbdev-vnc-mirror` (`--vnc-mirror`) on the command line. Generic input aliases
+`--evdev`, `--no-evdev`, `--grab-input`, and `--input-device PATH` work for both
+fbdev and DRM alongside the older fbdev-named options. The old
+`--headless`/`--windowed` aliases still set the same enum.
 
 ### garage3d.conf
 

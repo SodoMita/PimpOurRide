@@ -115,7 +115,7 @@ int main(void){
   xdg_toplevel_destroy(dt);xdg_surface_destroy(dx);wl_surface_destroy(ds);wl_buffer_destroy(dbuf);zwp_linux_buffer_params_v1_destroy(dp);assert(wl_display_roundtrip(display)>=0);
  }
  if(touch)printf("PASS: wl_seat advertised touch and wl_touch resource created (touch events down=%d up=%d motion=%d frame=%d cancel=%d)\n",touch_downs,touch_ups,touch_motions,touch_frames,touch_cancels);
- else printf("INFO: wl_touch not advertised by this backend (headless/fbdev without SDL input is pointer-only; --windowed/SDL advertises touchscreen touch)\n");
+ else printf("INFO: wl_touch not advertised by this headless probe (SDL touch and direct-evdev touch devices advertise it when present)\n");
  printf("PASS: outputs=%d, configures=%d, frames=%d, buffer_releases=%d, output_enters=%d, keyboard_enters=%d, keymaps=%d; synchronized subsurface + xdg popup + unmap/remap\n",outputs,configured,frames,releases,enters,keyboard_enters,keymaps);fflush(stdout);
  xdg_toplevel_destroy(top);xdg_surface_destroy(xdg);wl_surface_destroy(surface);wl_buffer_destroy(buffer);wl_shm_pool_destroy(pool);if(touch)wl_touch_release(touch);wl_keyboard_release(keyboard);wl_seat_release(seat);assert(wl_display_roundtrip(display)>=0);munmap(pixels,size);close(fd);
  /* Structural dma-buf parameter validation runs entirely in our own code

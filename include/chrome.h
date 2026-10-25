@@ -25,8 +25,9 @@
 #define CD_BG_TEXTURE 1
 #define CD_BG_NONE 2
 /* Startup display backend. HEADLESS and FBDEV share the surfaceless-EGL/FBO
- * renderer; WINDOWED is the nested SDL2/GLX development window. */
-typedef enum { CD_BACKEND_HEADLESS=0,CD_BACKEND_WINDOWED=1,CD_BACKEND_FBDEV=2 } Backend;
+ * renderer; DRM uses a GBM window surface/default framebuffer with explicit
+ * KMS page flips; WINDOWED is the nested SDL2/GLX development window. */
+typedef enum { CD_BACKEND_HEADLESS=0,CD_BACKEND_WINDOWED=1,CD_BACKEND_FBDEV=2,CD_BACKEND_DRM=3 } Backend;
 #define CD_APP_BAYS 8
 #define CD_CLUSTER_SLOT 8
 #define CD_MAX_MONITORS 9 /* eight app mounts + one fixed instrument cluster */
@@ -164,6 +165,7 @@ SdlTouchFinger sdl_touch[CD_MAX_TOUCH_POINTS];int sdl_touch_chrome_id;
  void *headless_state;                                 /* asynchronous pixel-pack ring, owned by backend_headless.c */
  int vnc_prev_mask,vnc_prev_x,vnc_prev_y;              /* RFB pointer edge-detection state (no separate down/up events in the protocol) */
  char fbdev_path[256];bool fbdev_vsync,fbdev_pan,fbdev_vnc_mirror,fbdev_modeset,fbdev_evdev,fbdev_grab_input;int fbdev_mode_width,fbdev_mode_height,fbdev_mode_bpp;void *fbdev_state;char fbdev_input_devices[8][256];int fbdev_input_device_count;void *evdev_state;
+ char drm_path[256];int drm_mode_width,drm_mode_height;void *drm_state;
  bool dmabuf_supported;int dmabuf_format_count;DmabufFormat dmabuf_formats[CD_DMABUF_MAX_FORMATS];
  int width,height,fps_limit,theme,hover_button,hover_close,active_slot;
  int bg_mode; /* CD_BG_*: which environment() backdrop to draw */
@@ -320,7 +322,12 @@ bool backend_fbdev_init(Server *s);
 void backend_fbdev_poll(Server *s);
 void backend_fbdev_present(Server *s);
 void backend_fbdev_shutdown(Server *s);
-/* backend_evdev.c: raw evdev input for fbdev backend (keyboard, pointer, touch). */
+/* backend_drm.c: direct GBM/EGL output with DRM/KMS modesetting + page flips. */
+bool backend_drm_init(Server *s);
+void backend_drm_poll(Server *s);
+void backend_drm_present(Server *s);
+void backend_drm_shutdown(Server *s);
+/* backend_evdev.c: asynchronous raw evdev input for direct-display backends. */
 bool backend_evdev_init(Server *s);
 void backend_evdev_poll(Server *s);
 void backend_evdev_shutdown(Server *s);
