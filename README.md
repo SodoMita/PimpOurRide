@@ -215,8 +215,9 @@ from the system's desktop-entry databases. You can still hand-tune the command
 instance instead of relaunching, toggle entries on/off, and choose the
 `--demo` autostart set. The other tabs cover every Garage3D tunable (neon
 colours, fog, rain, physics…) and every compositor setting (size/FPS/FOV,
-render scale, upscale/downscale sampling, underglow, 3D-vs-texture backdrop,
-and the VNC port as an exact typed number—not a slider). `render_scale` is a
+render scale, upscale/downscale sampling, post shader selection, underglow,
+3D-vs-texture backdrop, and the VNC port as an exact typed number—not a
+slider). `render_scale` is a
 typed number (`0.001`–`100`, `1` = 100%) rather than a slider, and the two
 sampling keys take `nearest`/`linear` (upscale) or those plus the four
 `*_mipmap_*` combinations (downscale). The default downscale filter is
@@ -241,7 +242,9 @@ larger than the GL texture/renderbuffer limits are proportionally clamped.
 
 `display.post_shader` names a fragment-only GLSL 1.20 file applied to the 3D
 world after the RTT resolve and before the native-resolution HUD. It is
-config-file-only (the settings GUI has no free-text field for it). While it is
+selectable in Settings (Display > Post shader: `off` plus the bundled shaders).
+Arbitrary `.frag` paths still go in the config file; when one is set the GUI
+shows that custom path in the row so it stays selected. While it is
 loaded the compositor forces the offscreen path even at `render_scale = 1`,
 bypassing the direct/windowed-MSAA path; the shader samples the finished world
 image through `u_src`/`u_size` and the scaled world image through

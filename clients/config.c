@@ -134,6 +134,9 @@ static const Def G3_DEFS[] = {
 /* Row 0 is filled in at runtime by gui_load_languages(): its choices are the
  * catalogs actually installed, which is not knowable at compile time. */
 #define CD_LANGUAGE_ROW 0
+/* Filled in at runtime by gui_load_post_shaders(): bundled shader presets plus
+ * a currently stored custom path so it stays selected in the row. */
+#define CD_POST_SHADER_ROW 9
 static Def CD_DEFS[] = {
     { "Interface", "ui", "language", "Interface language", K_ENUM, 0, 0, 1, NULL, "auto", {0}, 0, true, false },
     { "Display", "display", "width", "Framebuffer width", K_INT, 640, 3840, 10, "%.0f", "1600", {0}, 0, false, true },
@@ -144,6 +147,7 @@ static Def CD_DEFS[] = {
     { "Display", "display", "render_scale", "3D render scale (HUD stays native)", K_FLOAT_INPUT, 0.001, 100, 0, "%.6g", "1", {0}, 0, false, false },
     { "Display", "display", "render_upscale", "Render upscale sampling", K_ENUM, 0, 1, 1, NULL, "linear", { "nearest", "linear" }, 2, true, false },
     { "Display", "display", "render_downscale", "Render downscale sampling", K_ENUM, 0, 5, 1, NULL, "linear_mipmap_linear", { "nearest", "linear", "nearest_mipmap_nearest", "linear_mipmap_nearest", "nearest_mipmap_linear", "linear_mipmap_linear" }, 6, true, false },
+    { "Display", "display", "post_shader", "Post shader (.frag, 3D world only)", K_ENUM, 0, 0, 1, NULL, "off", {0}, 0, true, false },
     { "Display", "display", "fullscreen", "Start fullscreen (windowed)", K_BOOL, 0, 0, 0, NULL, "false", {0}, 0, false, true },
     { "Cockpit", "cockpit", "neon", "Underglow colour", K_ENUM, 0, 2, 1, NULL, "0", { "Ultraviolet", "Ice Blue", "Acid Lime" }, 3, false, false },
     { "Cockpit", "cockpit", "hud", "HUD overlay", K_BOOL, 0, 0, 0, NULL, "true", {0}, 0, false, false },
@@ -2020,6 +2024,44 @@ static void gui_load_languages(Gui *g) {
     d->min = 0;
 }
 
+/* Backing store for the post-shader row's labels, same lifetime rule as
+ * language_tags: Def keeps bare pointers, so these must outlive the table. */
+static char post_shader_paths[8][1024];
+
+/* The built-in presets are fixed; a hand-edited custom path is appended when
+ * it is non-empty and not already a preset, so the row shows it instead of
+ * silently falling back to "off". Picking another choice overwrites it. */
+static void gui_load_post_shaders(Gui *g) {
+    static const char *const presets[] = {
+        "off",
+        "shaders/khronos-pbr-neutral.frag",
+        "shaders/ssim-downscale.frag",
+        "shaders/hermite-downscale.frag",
+        "shaders/hermite-downscale-mipmap.frag",
+    };
+    Def *d = &CD_DEFS[CD_POST_SHADER_ROW];
+    int n = 0;
+    for (size_t i = 0; i < sizeof presets / sizeof presets[0]; i++) {
+        snprintf(post_shader_paths[n], sizeof post_shader_paths[0], "%s", presets[i]);
+        d->enums[n] = post_shader_paths[n];
+        n++;
+    }
+    const char *cur = cd_config_get_string(g->store[FILE_CD], d->sec, d->key, d->def);
+    if (cur && *cur && strcmp(cur, "off") != 0) {
+        bool known = false;
+        for (int i = 0; i < n; i++)
+            if (!strcmp(cur, d->enums[i])) { known = true; break; }
+        if (!known && n < (int)(sizeof d->enums / sizeof d->enums[0])) {
+            snprintf(post_shader_paths[n], sizeof post_shader_paths[0], "%s", cur);
+            d->enums[n] = post_shader_paths[n];
+            n++;
+        }
+    }
+    d->enum_count = n;
+    d->max = (double)(n - 1);
+    d->min = 0;
+}
+
 /* The GUI edits the config file live and the compositor reloads it, but this
  * process has to relabel itself too. Cheap enough to poll once a frame: it is
  * one string compare. */
@@ -2060,6 +2102,7 @@ static bool gui_init(Gui *g, const char *config_dir) {
                                      : cd_config_get_string(g->store[FILE_CD], "ui", "language", "auto"));
     i18n_set_language(g->root, g->language_applied);
     gui_load_languages(g);
+    gui_load_post_shaders(g);
     snprintf(g->saved_note, sizeof(g->saved_note), "%s",
              file_exists(g->path[FILE_CD]) || file_exists(g->path[FILE_G3])
                  ? tr("Settings loaded") : tr("Defaults (files created on first edit)"));
@@ -2268,6 +2311,31 @@ static int selftest(const char *config_dir_arg) {
     img = render_tab_image(&g, TAB_CD); cairo_surface_destroy(img);
     for (int i = 0; i < N_CD_DEFS; i++)
         if (!strcmp(CD_DEFS[i].key, "background")) def_set_enum(&g, FILE_CD, &CD_DEFS[i], 1);
+    /* Post shader row: bundled presets cycle through the real widget, and a
+     * hand-edited custom path is injected so it displays (and is preserved). */
+    int psi = -1;
+    for (int i = 0; i < N_CD_DEFS; i++) if (!strcmp(CD_DEFS[i].key, "post_shader")) psi = i;
+    CHECK(psi >= 0 && CD_DEFS[psi].kind == K_ENUM && CD_DEFS[psi].enum_is_string &&
+          CD_DEFS[psi].enum_count == 5 &&
+          !strcmp(CD_DEFS[psi].enums[0], "off") &&
+          !strcmp(CD_DEFS[psi].enums[4], "shaders/hermite-downscale-mipmap.frag"),
+          "post_shader presets missing");
+    img = render_tab_image(&g, TAB_CD); cairo_surface_destroy(img);
+    CHECK(click_box(&g, H_ENUM_INC, FILE_CD, psi), "no post_shader enum + hitbox");
+    CHECK(!strcmp(cd_config_get_string(g.store[FILE_CD], "display", "post_shader", ""),
+                  "shaders/khronos-pbr-neutral.frag"),
+          "post_shader cycle did not write next preset");
+    cd_config_set_string(g.store[FILE_CD], "display", "post_shader", "custom/hello.frag");
+    gui_load_post_shaders(&g);
+    CHECK(CD_DEFS[psi].enum_count == 6 &&
+          !strcmp(CD_DEFS[psi].enums[5], "custom/hello.frag") &&
+          def_get_enum(&g, FILE_CD, &CD_DEFS[psi]) == 5,
+          "custom post_shader path not injected/selected");
+    def_set_enum(&g, FILE_CD, &CD_DEFS[psi], 0);
+    CHECK(!strcmp(cd_config_get_string(g.store[FILE_CD], "display", "post_shader", ""), "off"),
+          "post_shader off not written");
+    gui_load_post_shaders(&g);
+    CHECK(CD_DEFS[psi].enum_count == 5, "post_shader custom value not dropped after reset");
     /* VNC port is a typed input, never a 1024..65535 slider. */
     int pi = -1;
     for (int i = 0; i < N_CD_DEFS; i++) if (!strcmp(CD_DEFS[i].key, "vnc_port")) pi = i;
@@ -2333,6 +2401,7 @@ static int selftest(const char *config_dir_arg) {
     CHECK(v && !strcmp(cd_config_get_string(v, "cockpit", "background", ""), "texture"), "background not saved");
     CHECK(v && cd_config_get_int(v, "session", "vnc_port", -1) == 5917, "VNC port not saved");
     CHECK(v && fabs(cd_config_get_double(v, "display", "render_scale", -1) - 2.5) < 1e-9, "render_scale not saved");
+    CHECK(v && !strcmp(cd_config_get_string(v, "display", "post_shader", ""), "off"), "post_shader not saved");
     CHECK(v && !strcmp(cd_config_get_string(v, "app.cockpit", "action", ""), "app") &&
           !strcmp(cd_config_get_string(v, "app.cockpit", "name", ""), "Garage3D") &&
           strstr(cd_config_get_string(v, "app.cockpit", "exec", ""), "garage3d") &&

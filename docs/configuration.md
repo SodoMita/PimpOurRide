@@ -243,9 +243,11 @@ configured output size after the blit.
 
 `display.post_shader` is a filesystem path to a **fragment-only GLSL 1.20**
 shader applied to the 3D world only, after the legacy filter resolve and
-before the native-resolution HUD. It is set in the config file only: the
-settings GUI has no free-text field for it this round. Empty or missing means
-off.
+before the native-resolution HUD. Settings exposes it under
+Display > Post shader: `off` plus the bundled shaders. Arbitrary `.frag` paths
+are still set in the config file (the GUI has no free-text field for them);
+when one is stored, the row shows that custom path so it stays selected.
+`off`, empty or missing means disabled.
 
 The compositor supplies the vertex shader (the post quad) and these uniforms:
 
@@ -336,7 +338,7 @@ render_to_texture = true # gate for the scaled 3D pass; HUD stays native (live)
 render_scale = 1      # 0.001..100, 1 = 100%; typed field in GUI (live)
 render_upscale = linear   # nearest | linear (live)
 render_downscale = linear_mipmap_linear # nearest | linear | *_mipmap_nearest | *_mipmap_linear (live)
-post_shader =         # GLSL 1.20 fragment file for the 3D world; empty = off (live)
+post_shader =         # GLSL 1.20 fragment file for the 3D world; off/empty = off (live)
 fullscreen = false    # --windowed only      (restart)
 
 [ui]

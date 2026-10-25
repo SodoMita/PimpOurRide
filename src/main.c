@@ -72,6 +72,7 @@ static void apply_render_config(Server *s,const CdConfig *cfg){
   * effect off on the next reload. */
  v=cd_config_get_string(cfg,"display","post_shader",NULL);
  if(!v)v="";
+ if(!strcmp(v,"off"))v="";   /* settings GUI's explicit "off" preset */
  if(strcmp(v,s->post_shader_path)){
   snprintf(s->post_shader_path,sizeof(s->post_shader_path),"%s",v);
   s->post_dirty=true;
