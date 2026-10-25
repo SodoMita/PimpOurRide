@@ -74,7 +74,9 @@ $(BIN)/test-i18n: tests/test_i18n.c src/i18n.c include/i18n.h | $(BIN)
 	$(CC) -Iinclude $(CFLAGS) tests/test_i18n.c src/i18n.c -o $@
 $(BIN)/test-textfit: tests/test_textfit.c src/textfit.c include/textfit.h | $(BIN)
 	$(CC) -Iinclude $(CFLAGS) tests/test_textfit.c src/textfit.c -o $@
-test: $(BIN)/test-math $(BIN)/test-config $(BIN)/test-vehicle $(BIN)/test-city $(BIN)/test-telemetry $(BIN)/test-keymap $(BIN)/test-wheel-input $(BIN)/test-fbdev $(BIN)/test-i18n $(BIN)/test-textfit $(BIN)/chromedrive-config
+$(BIN)/test-drm: tests/test_drm.c src/backend_drm.c include/chrome.h | $(BIN)
+	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_drm.c src/backend_drm.c -o $@
+test: $(BIN)/test-math $(BIN)/test-config $(BIN)/test-vehicle $(BIN)/test-city $(BIN)/test-telemetry $(BIN)/test-keymap $(BIN)/test-wheel-input $(BIN)/test-fbdev $(BIN)/test-i18n $(BIN)/test-textfit $(BIN)/test-drm $(BIN)/chromedrive-config
 	./$(BIN)/test-math
 	./$(BIN)/test-config
 	./$(BIN)/test-vehicle
@@ -85,6 +87,7 @@ test: $(BIN)/test-math $(BIN)/test-config $(BIN)/test-vehicle $(BIN)/test-city $
 	./$(BIN)/test-fbdev
 	./$(BIN)/test-i18n
 	./$(BIN)/test-textfit
+	./$(BIN)/test-drm
 	./$(BIN)/chromedrive-config --selftest
 	# Report-only here: an ellipsis means a slot is too small for a shipped
 	# language, which is a layout bug, but it must not block a translation
