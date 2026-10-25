@@ -10,9 +10,11 @@
  * Three tabs, in order of importance:
  *
  *   1. Launch Menu - a KDE-menu-editor-style two-pane editor for the six
- *      Launch Control entries: name, description, icon, enabled, and for
- *      the four app slots also shell command, app-id focus matching and
- *      autostart. Saved values hot-relabel the cockpit buttons.
+ *      Launch Control entries. Every slot can hold an installed app or a
+ *      built-in cockpit action: right-click a slot (or use "Choose app")
+ *      for the searchable app-picker popup, then adjust name, description,
+ *      command, app-id focus matching, icon, enabled and autostart. Saved
+ *      values hot-relabel the cockpit buttons.
  *   2. Garage3D - scene/camera/physics sliders, toggles and colour pickers.
  *   3. Compositor - display/cockpit/session settings (some need a restart,
  *      marked with a RESTART chip).
@@ -40,6 +42,8 @@
 #include "cdconfig.h"
 #include "xdg-shell-client.h"
 #include <cairo/cairo.h>
+#include <ctype.h>
+#include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <math.h>
@@ -78,7 +82,7 @@ static bool file_exists(const char *p) { struct stat st; return p && stat(p, &st
 /* ------------------------------------------------- schema for slider tabs */
 
 enum { FILE_G3 = 0, FILE_CD = 1 };
-typedef enum { K_FLOAT, K_INT, K_BOOL, K_COLOR, K_ENUM } Kind;
+typedef enum { K_FLOAT, K_INT, K_BOOL, K_COLOR, K_ENUM, K_INT_INPUT } Kind;
 
 typedef struct {
     const char *group;          /* heading drawn when it changes */
@@ -133,21 +137,23 @@ static const Def CD_DEFS[] = {
     { "Cockpit", "cockpit", "hud", "HUD overlay", K_BOOL, 0, 0, 0, NULL, "true", {0}, 0, false, false },
     { "Cockpit", "cockpit", "background", "Garage backdrop", K_ENUM, 0, 2, 1, NULL, "3d", { "3d", "texture", "none" }, 3, true, false },
     { "Session", "session", "headless", "Headless backend (EGL+VNC)", K_BOOL, 0, 0, 0, NULL, "true", {0}, 0, false, true },
-    { "Session", "session", "vnc_port", "VNC port (headless)", K_INT, 1024, 65535, 1, "%.0f", "5900", {0}, 0, false, true },
+    { "Session", "session", "vnc_port", "VNC port (headless)", K_INT_INPUT, 1024, 65535, 1, "%.0f", "5900", {0}, 0, false, true },
     { "Session", "session", "demo", "Launch autostart apps at start", K_BOOL, 0, 0, 0, NULL, "false", {0}, 0, false, true },
 };
 #define N_CD_DEFS ((int)(sizeof(CD_DEFS) / sizeof(CD_DEFS[0])))
 
 /* -------------------------------------------------- launch-menu app slots */
 
+enum { ACT_APP = 0, ACT_NEON = 1, ACT_COCKPIT = 2 };
+
 typedef struct {
     const char *sec;            /* [app.terminal] ... */
     const char *def_name, *def_sub;
     int def_icon;
-    const char *def_exec;       /* %root% template, NULL for built-ins */
-    const char *def_app_id;     /* NULL for built-ins */
+    const char *def_exec;       /* %root% template, NULL for default built-ins */
+    const char *def_app_id;     /* NULL for default built-ins */
     bool def_autostart;
-    bool builtin;               /* NEON / COCKPIT: labels+icon+enabled only */
+    int def_action;             /* ACT_*: any slot may be reassigned later */
     const char *builtin_desc;
     const char *env_name;       /* CHROMEDRIVE_* override var, or NULL */
 } AppDef;
@@ -155,19 +161,36 @@ typedef struct {
 static const AppDef APP_DEFS[6] = {
     { "app.terminal", "TERMINAL", "01 / SHELL", 0,
       "foot --config='%root%/assets/foot.ini' --title='Terminal' /bin/sh '%root%/assets/terminal-welcome.sh'",
-      "foot", true, false, NULL, "CHROMEDRIVE_TERMINAL" },
+      "foot", true, ACT_APP, NULL, "CHROMEDRIVE_TERMINAL" },
     { "app.files", "FILES", "02 / EXPLORE", 1,
-      "'%root%/bin/chromedrive-demo' files", "chromedrive.files", true, false, NULL, "CHROMEDRIVE_FILES" },
+      "'%root%/bin/chromedrive-demo' files", "chromedrive.files", true, ACT_APP, NULL, "CHROMEDRIVE_FILES" },
     { "app.audio", "AUDIO", "03 / SESSION", 2,
-      "'%root%/bin/chromedrive-demo' audio", "chromedrive.audio", true, false, NULL, "CHROMEDRIVE_AUDIO" },
-    { "app.meters", "METERS", "04 / EV", 3,
-      "'%root%/bin/chromedrive-demo' cluster", "chromedrive.cluster", false, false, NULL, "CHROMEDRIVE_METERS" },
-    { "app.neon", "NEON", "05 / COLOR", 4, NULL, NULL, false, true,
+      "'%root%/bin/chromedrive-demo' audio", "chromedrive.audio", true, ACT_APP, NULL, "CHROMEDRIVE_AUDIO" },
+    { "app.meters", "METERS", "04 / LIVE", 3,
+      "'%root%/bin/chromedrive-demo' telemetry", "chromedrive.telemetry", false, ACT_APP, NULL, "CHROMEDRIVE_METERS" },
+    { "app.neon", "NEON", "05 / COLOR", 4, NULL, NULL, false, ACT_NEON,
       "Built-in action: cycles the underglow colour (same as F4).", NULL },
-    { "app.cockpit", "COCKPIT", "06 / HOME", 5, NULL, NULL, false, true,
+    { "app.cockpit", "COCKPIT", "06 / HOME", 5, NULL, NULL, false, ACT_COCKPIT,
       "Built-in action: resets the driver camera (same as F2).", NULL },
 };
 static const char *ICON_NAMES[6] = { "Prompt", "Folder", "Music", "Meters", "Sun", "Wheel" };
+
+/* One entry in the right-click "assign an app to this icon" popup. The
+ * catalog is the two cockpit built-ins, the ChromeDrive programs, then every
+ * visible Type=Application desktop entry found in an XDG applications
+ * directory, in that order; desktop entries are name-sorted. */
+enum { CHOICE_APP = 0, CHOICE_NEON = 1, CHOICE_COCKPIT = 2 };
+typedef struct {
+    char name[128];
+    char comment[192];
+    char exec[512];             /* shell-ready command; empty for built-ins */
+    char app_id[256];
+    char desktop_id[256];       /* basename without .desktop (dedupe key) */
+    char categories[256];
+    int kind;                   /* CHOICE_* */
+    int icon;                   /* nearest of the six cockpit glyphs */
+    bool terminal;
+} AppChoice;
 
 /* ------------------------------------------------------------- GUI state */
 
@@ -175,8 +198,9 @@ enum { TAB_APPS = 0, TAB_G3 = 1, TAB_CD = 2 };
 enum { FLD_NAME = 0, FLD_SUB, FLD_EXEC, FLD_APPID, FLD_COUNT };
 enum {
     H_NONE = 0, H_TAB, H_SLIDER, H_TOGGLE, H_COLOR, H_COLSLIDE,
-    H_ENUM_DEC, H_ENUM_INC, H_APP_ROW, H_FIELD, H_ICON_DEC, H_ICON_INC,
-    H_APP_ENABLED, H_APP_AUTOSTART, H_RESET_TAB, H_RESET_ENTRY
+    H_ENUM_DEC, H_ENUM_INC, H_APP_ROW, H_FIELD, H_NUM_FIELD, H_ICON_DEC, H_ICON_INC,
+    H_APP_ENABLED, H_APP_AUTOSTART, H_RESET_TAB, H_RESET_ENTRY,
+    H_CHOOSE_APP, H_PICKER_ITEM, H_PICKER_UP, H_PICKER_DOWN, H_PICKER_CLOSE
 };
 
 typedef struct {
@@ -205,6 +229,21 @@ typedef struct {
     int focus;                  /* FLD_* or -1 */
     int field_app;              /* app index the fields currently show */
     bool field_dirty;
+    TextField num_field;        /* schema numeric text input (the VNC port) */
+    int num_file, num_idx;      /* def being edited, num_idx < 0 = inactive */
+    bool num_dirty;
+    AppChoice *choices;         /* installed-app catalog for the picker */
+    int choice_count, choice_cap;
+    bool picker_open;
+    int picker_slot;            /* Launch Control slot being assigned */
+    double picker_x, picker_y;  /* requested popup anchor (virtual coords) */
+    int picker_scroll;          /* first visible filtered entry */
+    int picker_sel;             /* selected filtered entry */
+    char picker_filter[96];
+    char picker_request_path[4096]; /* compositor -> GUI "open picker" IPC */
+    char picker_request_seen[64];   /* last consumed request nonce */
+    time_t picker_request_mtime;
+    long picker_request_mtime_ns;
     int drag_kind, drag_a, drag_b, drag_c; /* active slider drag (H_* + ids) */
     int exp_color_file, exp_color_idx;     /* expanded colour editor, -1 none */
     double px, py;              /* pointer (virtual coords) */
@@ -272,7 +311,7 @@ static int def_get_enum(Gui *g, int file, const Def *d) {
 static void def_set_num(Gui *g, int file, const Def *d, double v) {
     v = clampd(v, d->min, d->max);
     if (d->step > 0) v = floor(v / d->step + 0.5) * d->step;
-    if (d->kind == K_INT) cd_config_set_int(store_of(g, file), d->sec, d->key, (long)llround(v));
+    if (d->kind == K_INT || d->kind == K_INT_INPUT) cd_config_set_int(store_of(g, file), d->sec, d->key, (long)llround(v));
     else cd_config_set_double(store_of(g, file), d->sec, d->key, v);
     touch_file(g, file);
 }
@@ -283,6 +322,66 @@ static void def_set_enum(Gui *g, int file, const Def *d, int idx) {
     touch_file(g, file);
 }
 
+/* Numeric text input for wide-range integers (the VNC port): dragging a
+ * slider across 1024..65535 cannot land on an exact copied/typed port, so
+ * this def is a real field. Enter/blur commits, Escape reverts; an invalid
+ * or out-of-range value is never written. */
+static const Def *num_def(Gui *g) {
+    if (g->num_idx < 0) return NULL;
+    return g->num_file == FILE_G3 ? &G3_DEFS[g->num_idx] : &CD_DEFS[g->num_idx];
+}
+static bool num_parse(const char *s, long *out) {
+    if (!s || !*s) return false;
+    errno = 0;
+    char *end = NULL;
+    long v = strtol(s, &end, 10);
+    if (errno || !end || *end) return false;
+    *out = v;
+    return true;
+}
+static bool num_value_valid(Gui *g, long *out) {
+    const Def *d = num_def(g);
+    long v;
+    if (!d || !num_parse(g->num_field.buf, &v)) return false;
+    if (v < (long)ceil(d->min) || v > (long)floor(d->max)) return false;
+    if (out) *out = v;
+    return true;
+}
+static void num_begin(Gui *g, int file, int idx) {
+    const Def *d = file == FILE_G3 ? &G3_DEFS[idx] : &CD_DEFS[idx];
+    g->num_file = file;
+    g->num_idx = idx;
+    snprintf(g->num_field.buf, sizeof(g->num_field.buf), "%lld",
+             llround(def_get_num(g, file, d)));
+    g->num_field.caret = (int)strlen(g->num_field.buf);
+    g->num_dirty = false;
+    g->focus = -1;
+    g->draw_dirty = true;
+}
+static bool num_commit(Gui *g) {
+    const Def *d = num_def(g);
+    if (!d) return true;
+    if (!g->num_dirty) { g->num_idx = -1; g->draw_dirty = true; return true; }
+    long v;
+    if (!num_value_valid(g, &v)) {
+        snprintf(g->saved_note, sizeof(g->saved_note),
+                 "Enter a whole number from %.0f to %.0f", d->min, d->max);
+        g->draw_dirty = true;
+        return false;
+    }
+    int file = g->num_file;
+    g->num_idx = -1;
+    g->num_dirty = false;
+    def_set_num(g, file, d, (double)v);
+    flush_saves(g, true);
+    return true;
+}
+static void num_cancel(Gui *g) {
+    g->num_idx = -1;
+    g->num_dirty = false;
+    g->draw_dirty = true;
+}
+
 /* App-entry accessors (compositor store, [app.*] sections). */
 static const char *app_str(Gui *g, int app, const char *key, const char *fallback) {
     const char *v = cd_config_get_string(store_of(g, FILE_CD), APP_DEFS[app].sec, key, NULL);
@@ -291,6 +390,22 @@ static const char *app_str(Gui *g, int app, const char *key, const char *fallbac
 static int app_icon(Gui *g, int app) {
     long v = cd_config_get_int(store_of(g, FILE_CD), APP_DEFS[app].sec, "icon", APP_DEFS[app].def_icon);
     return (int)clampd((double)v, 0, 5);
+}
+static const char *action_key(int action) {
+    return action == ACT_NEON ? "neon" : action == ACT_COCKPIT ? "cockpit" : "app";
+}
+static int app_action(Gui *g, int app) {
+    const char *a = cd_config_get_string(store_of(g, FILE_CD), APP_DEFS[app].sec, "action", NULL);
+    if (!a) return APP_DEFS[app].def_action;
+    if (!strcmp(a, "neon")) return ACT_NEON;
+    if (!strcmp(a, "cockpit")) return ACT_COCKPIT;
+    if (!strcmp(a, "app")) return ACT_APP;
+    return APP_DEFS[app].def_action;
+}
+static const char *action_desc(int action) {
+    if (action == ACT_NEON) return "Built-in action: cycles the underglow colour (same as F4).";
+    if (action == ACT_COCKPIT) return "Built-in action: resets the driver camera (same as F2).";
+    return "";
 }
 static void app_load_fields(Gui *g, int app) {
     static const struct { int fld; const char *key; const char *def; } map[FLD_COUNT] = { 0 };
@@ -311,7 +426,7 @@ static void app_commit_fields(Gui *g) {
     const char *sec = APP_DEFS[app].sec;
     if (*g->fields[FLD_NAME].buf) cd_config_set_string(st, sec, "name", g->fields[FLD_NAME].buf);
     cd_config_set_string(st, sec, "sub", g->fields[FLD_SUB].buf);
-    if (!APP_DEFS[app].builtin) {
+    if (app_action(g, app) == ACT_APP) {
         cd_config_set_string(st, sec, "exec", g->fields[FLD_EXEC].buf);
         cd_config_set_string(st, sec, "app_id", g->fields[FLD_APPID].buf);
     }
@@ -326,6 +441,542 @@ static void app_select(Gui *g, int app) {
     g->focus = -1;
     app_load_fields(g, app);
     g->draw_dirty = true;
+}
+
+/* ------------------------------------------------ installed-app catalog */
+
+#define PICKER_VISIBLE 11
+
+static bool choice_push(Gui *g, const AppChoice *ch) {
+    if (g->choice_count == g->choice_cap) {
+        int cap = g->choice_cap ? g->choice_cap * 2 : 64;
+        AppChoice *next = realloc(g->choices, (size_t)cap * sizeof(*next));
+        if (!next) return false;
+        g->choices = next;
+        g->choice_cap = cap;
+    }
+    g->choices[g->choice_count++] = *ch;
+    return true;
+}
+static bool push_choice_values(Gui *g, int kind, const char *name, const char *comment,
+                               const char *exec, const char *app_id,
+                               const char *desktop_id, int icon) {
+    AppChoice ch;
+    memset(&ch, 0, sizeof(ch));
+    snprintf(ch.name, sizeof(ch.name), "%s", name ? name : "");
+    snprintf(ch.comment, sizeof(ch.comment), "%s", comment ? comment : "");
+    snprintf(ch.exec, sizeof(ch.exec), "%s", exec ? exec : "");
+    snprintf(ch.app_id, sizeof(ch.app_id), "%s", app_id ? app_id : "");
+    snprintf(ch.desktop_id, sizeof(ch.desktop_id), "%s", desktop_id ? desktop_id : "");
+    ch.kind = kind;
+    ch.icon = (int)clampd(icon, 0, 5);
+    return choice_push(g, &ch);
+}
+static void trim_inplace(char *s) {
+    if (!s) return;
+    size_t n = strlen(s);
+    while (n && isspace((unsigned char)s[n - 1])) s[--n] = 0;
+    size_t b = 0;
+    while (s[b] && isspace((unsigned char)s[b])) b++;
+    if (b) memmove(s, s + b, strlen(s + b) + 1);
+}
+static bool desktop_bool(const char *v) {
+    return v && (!strcasecmp(v, "true") || !strcmp(v, "1"));
+}
+static void desktop_unescape(char *s) {
+    char *r = s, *w = s;
+    while (*r) {
+        if (*r == '\\' && r[1]) {
+            r++;
+            *w++ = *r == 's' ? ' ' : *r == 'n' ? '\n' : *r == 't' ? '\t' :
+                   *r == 'r' ? '\r' : *r;
+            r++;
+        } else *w++ = *r++;
+    }
+    *w = 0;
+}
+static bool localized_key(const char *key, const char *base, const char *lang) {
+    size_t bl = strlen(base);
+    if (!lang || strlen(lang) < 2) return false;
+    if (strncmp(key, base, bl) != 0 || key[bl] != '[') return false;
+    return strncmp(key + bl + 1, lang, 2) == 0 &&
+           (key[bl + 3] == ']' || key[bl + 3] == '_' || key[bl + 3] == '@');
+}
+static int infer_icon(const char *categories, const char *name, const char *exec) {
+    const char *all[3] = { categories, name, exec };
+    static const struct { const char *needle; int icon; } map[] = {
+        { "TerminalEmulator", 0 }, { "Development", 0 }, { "ConsoleOnly", 0 },
+        { "AudioVideo", 2 }, { "Audio", 2 }, { "Music", 2 },
+        { "FileManager", 1 }, { "FileTools", 1 },
+        { "Graphics", 4 }, { "Photography", 4 }, { "Image", 4 },
+        { "Game", 5 }, { "3DGraphics", 5 },
+        { "Monitor", 3 }, { "Settings", 3 }, { "System", 3 },
+        { "Network", 1 }, { "WebBrowser", 1 },
+    };
+    for (size_t i = 0; i < sizeof(map) / sizeof(map[0]); i++)
+        for (int j = 0; j < 3; j++)
+            if (all[j] && strcasestr(all[j], map[i].needle)) return map[i].icon;
+    return 0;
+}
+static bool program_available(const char *prog) {
+    if (!prog || !*prog) return true;
+    if (strchr(prog, '/')) return access(prog, X_OK) == 0;
+    const char *path = getenv("PATH");
+    if (!path || !*path) path = "/usr/local/bin:/usr/bin:/bin";
+    char *copy = strdup(path);
+    if (!copy) return true;
+    bool found = false;
+    char *save = NULL;
+    for (char *dir = strtok_r(copy, ":", &save); dir && !found; dir = strtok_r(NULL, ":", &save)) {
+        char full[4096];
+        if (snprintf(full, sizeof(full), "%s/%s", *dir ? dir : ".", prog) < (int)sizeof(full))
+            found = access(full, X_OK) == 0;
+    }
+    free(copy);
+    return found;
+}
+static void clean_desktop_exec(const char *in, char *out, size_t outsz) {
+    size_t o = 0;
+    if (!outsz) return;
+    for (const char *p = in ? in : ""; *p && o + 1 < outsz; p++) {
+        if (*p == '%' && p[1]) {
+            if (p[1] == '%') { out[o++] = '%'; p++; continue; }
+            if (strchr("fFuUdDnNickvm", p[1])) { p++; continue; }
+        }
+        out[o++] = *p;
+    }
+    out[o] = 0;
+    trim_inplace(out);
+}
+static bool shell_quote(const char *in, char *out, size_t outsz) {
+    size_t o = 0;
+    if (outsz < 3) return false;
+    out[o++] = '\'';
+    for (const char *p = in ? in : ""; *p; p++) {
+        if (*p == '\'') {
+            if (o + 5 >= outsz) return false;
+            memcpy(out + o, "'\\''", 4); o += 4;
+        } else {
+            if (o + 2 >= outsz) return false;
+            out[o++] = *p;
+        }
+    }
+    if (o + 2 > outsz) return false;
+    out[o++] = '\'';
+    out[o] = 0;
+    return true;
+}
+static bool parse_desktop_file(const char *path, const char *desktop_id,
+                               const char *lang, AppChoice *out) {
+    FILE *f = fopen(path, "r");
+    if (!f) return false;
+    char name[128] = "", loc_name[128] = "", comment[192] = "", loc_comment[192] = "";
+    char generic[192] = "", exec_raw[512] = "", tryexec[512] = "", wmclass[256] = "";
+    char categories[256] = "", type[64] = "";
+    bool in_entry = false, nodisplay = false, hidden = false, terminal = false;
+    bool dbus_activatable = false;
+    char line[4096];
+    while (fgets(line, sizeof(line), f)) {
+        line[strcspn(line, "\r\n")] = 0;
+        char *s = line;
+        while (isspace((unsigned char)*s)) s++;
+        if (!*s || *s == '#') continue;
+        if (*s == '[') {
+            char *e = strchr(s, ']');
+            if (e) *e = 0;
+            in_entry = strcmp(s + 1, "Desktop Entry") == 0;
+            continue;
+        }
+        if (!in_entry) continue;
+        char *eq = strchr(s, '=');
+        if (!eq) continue;
+        *eq = 0;
+        char *key = s, *value = eq + 1;
+        trim_inplace(key);
+        trim_inplace(value);
+        if (!strcmp(key, "Type")) snprintf(type, sizeof(type), "%s", value);
+        else if (!strcmp(key, "Name")) snprintf(name, sizeof(name), "%s", value);
+        else if (localized_key(key, "Name", lang)) snprintf(loc_name, sizeof(loc_name), "%s", value);
+        else if (!strcmp(key, "Comment")) snprintf(comment, sizeof(comment), "%s", value);
+        else if (localized_key(key, "Comment", lang)) snprintf(loc_comment, sizeof(loc_comment), "%s", value);
+        else if (!strcmp(key, "GenericName")) snprintf(generic, sizeof(generic), "%s", value);
+        else if (!strcmp(key, "Exec")) snprintf(exec_raw, sizeof(exec_raw), "%s", value);
+        else if (!strcmp(key, "TryExec")) snprintf(tryexec, sizeof(tryexec), "%s", value);
+        else if (!strcmp(key, "StartupWMClass")) snprintf(wmclass, sizeof(wmclass), "%s", value);
+        else if (!strcmp(key, "Categories")) snprintf(categories, sizeof(categories), "%s", value);
+        else if (!strcmp(key, "NoDisplay")) nodisplay = desktop_bool(value);
+        else if (!strcmp(key, "Hidden")) hidden = desktop_bool(value);
+        else if (!strcmp(key, "Terminal")) terminal = desktop_bool(value);
+        else if (!strcmp(key, "DBusActivatable")) dbus_activatable = desktop_bool(value);
+    }
+    fclose(f);
+    if (strcmp(type, "Application") || nodisplay || hidden) return false;
+    if (!*name && !*loc_name) return false;
+    char clean[512];
+    clean_desktop_exec(exec_raw, clean, sizeof(clean));
+    if (!program_available(tryexec)) return false;
+    if (!*clean && !(dbus_activatable && program_available("gio"))) return false;
+    memset(out, 0, sizeof(*out));
+    snprintf(out->name, sizeof(out->name), "%s", *loc_name ? loc_name : name);
+    snprintf(out->comment, sizeof(out->comment), "%s",
+             *loc_comment ? loc_comment : *comment ? comment : generic);
+    desktop_unescape(out->name);
+    desktop_unescape(out->comment);
+    if (!*clean) {
+        /* DBusActivatable entries may legitimately have no Exec key. */
+        char qpath[4400];
+        if (!shell_quote(path, qpath, sizeof(qpath)) ||
+            snprintf(out->exec, sizeof(out->exec), "gio launch %s", qpath) >= (int)sizeof(out->exec))
+            return false;
+    } else if (terminal) {
+        char qexec[1024], qname[512];
+        if (!shell_quote(clean, qexec, sizeof(qexec)) ||
+            !shell_quote(out->name, qname, sizeof(qname)) ||
+            snprintf(out->exec, sizeof(out->exec), "foot --title=%s -- sh -lc %s", qname, qexec) >= (int)sizeof(out->exec))
+            snprintf(out->exec, sizeof(out->exec), "%s", clean);
+    } else snprintf(out->exec, sizeof(out->exec), "%s", clean);
+    snprintf(out->app_id, sizeof(out->app_id), "%s", *wmclass ? wmclass : desktop_id);
+    snprintf(out->desktop_id, sizeof(out->desktop_id), "%s", desktop_id);
+    snprintf(out->categories, sizeof(out->categories), "%s", categories);
+    out->kind = CHOICE_APP;
+    out->icon = infer_icon(categories, out->name, clean);
+    out->terminal = terminal;
+    return true;
+}
+/* Desktop-file IDs already claimed by a higher-precedence directory. An ID
+ * is claimed before parsing, so a user-level Hidden/NoDisplay override masks
+ * the system copy instead of letting it reappear in the picker. */
+typedef struct {
+    char (*ids)[256];
+    int count, cap;
+} DesktopSeen;
+static bool desktop_seen_contains(const DesktopSeen *seen, const char *id) {
+    for (int i = 0; i < seen->count; i++)
+        if (!strcmp(seen->ids[i], id)) return true;
+    return false;
+}
+static bool desktop_seen_add(DesktopSeen *seen, const char *id) {
+    if (desktop_seen_contains(seen, id)) return true;
+    if (seen->count == seen->cap) {
+        int cap = seen->cap ? seen->cap * 2 : 128;
+        char (*next)[256] = realloc(seen->ids, (size_t)cap * sizeof(*next));
+        if (!next) return false;
+        seen->ids = next;
+        seen->cap = cap;
+    }
+    snprintf(seen->ids[seen->count++], sizeof(seen->ids[0]), "%s", id);
+    return true;
+}
+/* Recurse a little: desktop files may live in subdirectories, in which case
+ * the relative path with '-' for '/' is their desktop-file ID. */
+static void scan_desktop_dir(Gui *g, const char *dir, const char *id_prefix,
+                             const char *lang, DesktopSeen *seen, int depth) {
+    DIR *d = opendir(dir);
+    if (!d) return;
+    struct dirent *e;
+    while ((e = readdir(d)) != NULL) {
+        if (e->d_name[0] == '.') continue; /* ., .., and hidden dirs/files */
+        char path[4096];
+        if (snprintf(path, sizeof(path), "%s/%s", dir, e->d_name) >= (int)sizeof(path)) continue;
+        struct stat st;
+        if (stat(path, &st) != 0) continue;
+        if (S_ISDIR(st.st_mode)) {
+            if (depth >= 4) continue;
+            char child_prefix[256];
+            if (id_prefix && *id_prefix) {
+                if (snprintf(child_prefix, sizeof(child_prefix), "%s-%s", id_prefix, e->d_name) >= (int)sizeof(child_prefix)) continue;
+            } else {
+                if (snprintf(child_prefix, sizeof(child_prefix), "%s", e->d_name) >= (int)sizeof(child_prefix)) continue;
+            }
+            scan_desktop_dir(g, path, child_prefix, lang, seen, depth + 1);
+            continue;
+        }
+        size_t n = strlen(e->d_name);
+        if (n <= 8 || strcmp(e->d_name + n - 8, ".desktop")) continue;
+        char desktop_id[256], base_id[256];
+        if (n - 8 >= sizeof(base_id)) continue;
+        memcpy(base_id, e->d_name, n - 8);
+        base_id[n - 8] = 0;
+        if (id_prefix && *id_prefix) {
+            if (snprintf(desktop_id, sizeof(desktop_id), "%s-%s", id_prefix, base_id) >= (int)sizeof(desktop_id)) continue;
+        } else {
+            if (snprintf(desktop_id, sizeof(desktop_id), "%s", base_id) >= (int)sizeof(desktop_id)) continue;
+        }
+        if (desktop_seen_contains(seen, desktop_id)) continue;
+        if (!desktop_seen_add(seen, desktop_id)) break;
+        /* Claim before this check so a higher-precedence .desktop symlink to
+         * /dev/null (the usual "hide this app" override) still masks the ID. */
+        if (!S_ISREG(st.st_mode)) continue;
+        AppChoice ch;
+        if (parse_desktop_file(path, desktop_id, lang, &ch) && !choice_push(g, &ch)) break;
+    }
+    closedir(d);
+}
+static void scan_applications_base(Gui *g, const char *base, const char *lang, DesktopSeen *seen) {
+    if (!base || !*base) return;
+    char dir[4096];
+    if (snprintf(dir, sizeof(dir), "%s/applications", base) < (int)sizeof(dir))
+        scan_desktop_dir(g, dir, "", lang, seen, 0);
+}
+static int choice_cmp(const void *a, const void *b) {
+    int c = strcasecmp(((const AppChoice *)a)->name, ((const AppChoice *)b)->name);
+    return c ? c : strcmp(((const AppChoice *)a)->desktop_id, ((const AppChoice *)b)->desktop_id);
+}
+static bool catalog_load(Gui *g) {
+    /* Built-ins first: these remain assignable even on a host with no
+     * desktop-entry database at all. */
+    if (!push_choice_values(g, CHOICE_NEON, "Built-in - Cycle underglow", "ChromeDrive action", "", "", "chromedrive.builtin.neon", 4) ||
+        !push_choice_values(g, CHOICE_COCKPIT, "Built-in - Driver view", "ChromeDrive action", "", "", "chromedrive.builtin.cockpit", 5) ||
+        !push_choice_values(g, CHOICE_APP, "TERMINAL", "SHELL", APP_DEFS[0].def_exec, "foot", "chromedrive.terminal", 0) ||
+        !push_choice_values(g, CHOICE_APP, "FILES", "EXPLORE", APP_DEFS[1].def_exec, "chromedrive.files", "chromedrive.files", 1) ||
+        !push_choice_values(g, CHOICE_APP, "AUDIO", "SESSION", APP_DEFS[2].def_exec, "chromedrive.audio", "chromedrive.audio", 2) ||
+        !push_choice_values(g, CHOICE_APP, "METERS", "LIVE", APP_DEFS[3].def_exec, "chromedrive.telemetry", "chromedrive.meters", 3) ||
+        !push_choice_values(g, CHOICE_APP, "Garage3D", "Native 3D garage", "'%root%/clients/garage3d/bin/garage3d'", "chromedrive.garage3d", "chromedrive.garage3d", 5) ||
+        !push_choice_values(g, CHOICE_APP, "ChromeDrive Settings", "Launch Menu and settings", "'%root%/bin/chromedrive-config'", "chromedrive.config", "chromedrive.settings", 3))
+        return false;
+    const char *loc = getenv("LC_ALL");
+    if (!loc || !*loc) loc = getenv("LC_MESSAGES");
+    if (!loc || !*loc) loc = getenv("LANG");
+    char lang[16] = "";
+    if (loc) {
+        size_t i = 0;
+        while (loc[i] && loc[i] != '.' && loc[i] != '@' && i + 1 < sizeof(lang)) { lang[i] = loc[i]; i++; }
+        lang[i] = 0;
+    }
+    int desktop_start = g->choice_count;
+    DesktopSeen seen = { 0 };
+    for (int i = 0; i < g->choice_count; i++)
+        if (!desktop_seen_add(&seen, g->choices[i].desktop_id)) { free(seen.ids); return false; }
+    const char *home = getenv("HOME");
+    const char *data_home = getenv("XDG_DATA_HOME");
+    if (data_home && *data_home) scan_applications_base(g, data_home, lang, &seen);
+    else if (home) {
+        char base[4096];
+        if (snprintf(base, sizeof(base), "%s/.local/share", home) < (int)sizeof(base))
+            scan_applications_base(g, base, lang, &seen);
+    }
+    const char *data_dirs = getenv("XDG_DATA_DIRS");
+    if (!data_dirs || !*data_dirs) data_dirs = "/usr/local/share:/usr/share";
+    char *copy = strdup(data_dirs);
+    if (copy) {
+        char *save = NULL;
+        for (char *base = strtok_r(copy, ":", &save); base; base = strtok_r(NULL, ":", &save))
+            scan_applications_base(g, base, lang, &seen);
+        free(copy);
+    }
+    /* Flatpak/Snap export dirs are normally in XDG_DATA_DIRS, but a bare
+     * SSH/headless environment often lacks a desktop-session environment.
+     * Seen-ID masking makes these fallbacks harmless if already scanned. */
+    if (home) {
+        char base[4096];
+        if (snprintf(base, sizeof(base), "%s/.local/share/flatpak/exports/share", home) < (int)sizeof(base))
+            scan_applications_base(g, base, lang, &seen);
+    }
+    scan_applications_base(g, "/var/lib/flatpak/exports/share", lang, &seen);
+    scan_applications_base(g, "/var/lib/snapd/desktop", lang, &seen);
+    free(seen.ids);
+    if (g->choice_count > desktop_start)
+        qsort(g->choices + desktop_start, (size_t)(g->choice_count - desktop_start),
+              sizeof(AppChoice), choice_cmp);
+    return true;
+}
+
+static bool choice_matches(const AppChoice *ch, const char *filter) {
+    if (!filter || !*filter) return true;
+    return strcasestr(ch->name, filter) || strcasestr(ch->comment, filter) ||
+           strcasestr(ch->app_id, filter) || strcasestr(ch->desktop_id, filter) ||
+           strcasestr(ch->exec, filter);
+}
+static int picker_count(Gui *g) {
+    int n = 0;
+    for (int i = 0; i < g->choice_count; i++)
+        if (choice_matches(&g->choices[i], g->picker_filter)) n++;
+    return n;
+}
+static AppChoice *picker_at(Gui *g, int ordinal, int *catalog_idx) {
+    int n = 0;
+    for (int i = 0; i < g->choice_count; i++) {
+        if (!choice_matches(&g->choices[i], g->picker_filter)) continue;
+        if (n++ == ordinal) {
+            if (catalog_idx) *catalog_idx = i;
+            return &g->choices[i];
+        }
+    }
+    return NULL;
+}
+static bool choice_is_current(Gui *g, int slot, const AppChoice *ch) {
+    int act = app_action(g, slot);
+    if (act == ACT_NEON) return ch->kind == CHOICE_NEON;
+    if (act == ACT_COCKPIT) return ch->kind == CHOICE_COCKPIT;
+    if (ch->kind != CHOICE_APP) return false;
+    const char *exec = app_str(g, slot, "exec", APP_DEFS[slot].def_exec);
+    return exec && !strcmp(exec, ch->exec);
+}
+static void picker_clamp(Gui *g) {
+    int n = picker_count(g);
+    if (n <= 0) { g->picker_sel = 0; g->picker_scroll = 0; return; }
+    if (g->picker_sel < 0) g->picker_sel = 0;
+    if (g->picker_sel >= n) g->picker_sel = n - 1;
+    int max_scroll = n > PICKER_VISIBLE ? n - PICKER_VISIBLE : 0;
+    if (g->picker_scroll > max_scroll) g->picker_scroll = max_scroll;
+    if (g->picker_scroll < 0) g->picker_scroll = 0;
+    if (g->picker_sel < g->picker_scroll) g->picker_scroll = g->picker_sel;
+    if (g->picker_sel >= g->picker_scroll + PICKER_VISIBLE)
+        g->picker_scroll = g->picker_sel - PICKER_VISIBLE + 1;
+}
+static void picker_close(Gui *g) {
+    g->picker_open = false;
+    g->draw_dirty = true;
+}
+static void picker_open(Gui *g, int slot, double x, double y) {
+    if (slot < 0 || slot > 5) slot = g->sel_app;
+    app_commit_fields(g);
+    if (g->num_idx >= 0 && !num_commit(g)) num_cancel(g);
+    if (g->sel_app != slot || g->field_app != slot) app_select(g, slot);
+    g->tab = TAB_APPS;
+    g->picker_open = true;
+    g->picker_slot = slot;
+    g->picker_x = x;
+    g->picker_y = y;
+    g->picker_filter[0] = 0;
+    g->picker_sel = 0;
+    g->picker_scroll = 0;
+    for (int i = 0; i < g->choice_count; i++) {
+        if (choice_is_current(g, slot, &g->choices[i])) { g->picker_sel = i; break; }
+    }
+    picker_clamp(g);
+    g->focus = -1;
+    g->draw_dirty = true;
+}
+/* A running Settings window cannot receive new argv when the compositor's
+ * cog/right-click handler wants to deep-link it to a slot. The compositor
+ * therefore atomically writes a one-line request ("<slot> <nonce>") in the
+ * private runtime dir; run_gui polls it and opens the picker. The filename
+ * is keyed by the Wayland socket basename to avoid cross-session requests. */
+static bool picker_request_read(Gui *g, int *slot, char nonce[64]) {
+    if (!*g->picker_request_path) return false;
+    FILE *f = fopen(g->picker_request_path, "r");
+    if (!f) return false;
+    int s = -1;
+    char n[64] = "";
+    bool ok = fscanf(f, "%d %63s", &s, n) == 2 && s >= 0 && s < 6 && *n;
+    fclose(f);
+    if (!ok) return false;
+    *slot = s;
+    snprintf(nonce, 64, "%s", n);
+    return true;
+}
+static void picker_request_prime(Gui *g) {
+    int slot;
+    char nonce[64];
+    if (picker_request_read(g, &slot, nonce))
+        snprintf(g->picker_request_seen, sizeof(g->picker_request_seen), "%s", nonce);
+    struct stat st;
+    if (*g->picker_request_path && stat(g->picker_request_path, &st) == 0) {
+        g->picker_request_mtime = st.st_mtim.tv_sec;
+        g->picker_request_mtime_ns = st.st_mtim.tv_nsec;
+    }
+}
+static void picker_request_set_path(Gui *g, const char *path) {
+    snprintf(g->picker_request_path, sizeof(g->picker_request_path), "%s", path ? path : "");
+    g->picker_request_seen[0] = 0;
+    g->picker_request_mtime = 0;
+    g->picker_request_mtime_ns = 0;
+    picker_request_prime(g);
+}
+static void picker_request_init(Gui *g) {
+    const char *runtime = getenv("XDG_RUNTIME_DIR");
+    char runtime_buf[4096];
+    if (!runtime || !*runtime) {
+        snprintf(runtime_buf, sizeof(runtime_buf), "/tmp/chromedrive-%d", (int)getuid());
+        runtime = runtime_buf;
+    }
+    const char *display = getenv("WAYLAND_DISPLAY");
+    if (!display || !*display) display = "wayland-0";
+    const char *base = strrchr(display, '/');
+    base = base ? base + 1 : display;
+    char safe[128];
+    size_t j = 0;
+    for (size_t i = 0; base[i] && j + 1 < sizeof(safe); i++) {
+        unsigned char ch = (unsigned char)base[i];
+        safe[j++] = (isalnum(ch) || ch == '.' || ch == '_' || ch == '-') ? (char)ch : '_';
+    }
+    safe[j] = 0;
+    if (!*safe) snprintf(safe, sizeof(safe), "wayland-0");
+    char path[4400];
+    if (snprintf(path, sizeof(path), "%s/chromedrive-config.%s.picker-request", runtime, safe) < (int)sizeof(path))
+        picker_request_set_path(g, path);
+}
+static void picker_request_poll(Gui *g) {
+    if (!*g->picker_request_path) return;
+    struct stat st;
+    if (stat(g->picker_request_path, &st) != 0) return;
+    if (st.st_mtim.tv_sec == g->picker_request_mtime &&
+        st.st_mtim.tv_nsec == g->picker_request_mtime_ns) return;
+    g->picker_request_mtime = st.st_mtim.tv_sec;
+    g->picker_request_mtime_ns = st.st_mtim.tv_nsec;
+    int slot;
+    char nonce[64];
+    if (!picker_request_read(g, &slot, nonce)) return;
+    if (!strcmp(nonce, g->picker_request_seen)) return;
+    snprintf(g->picker_request_seen, sizeof(g->picker_request_seen), "%s", nonce);
+    picker_open(g, slot, 292, 92);
+}
+
+static int utf8_prefix_len(const char *s, int max_bytes) {
+    int len = (int)strlen(s);
+    int n = len < max_bytes ? len : max_bytes;
+    if (n < len) while (n > 0 && (s[n] & 0xC0) == 0x80) n--;
+    return n;
+}
+static void picker_assign(Gui *g, int catalog_idx) {
+    if (catalog_idx < 0 || catalog_idx >= g->choice_count) return;
+    AppChoice *ch = &g->choices[catalog_idx];
+    int slot = g->picker_slot;
+    if (g->sel_app != slot || g->field_app != slot) app_select(g, slot);
+    CdConfig *st = store_of(g, FILE_CD);
+    const char *sec = APP_DEFS[slot].sec;
+    if (ch->kind == CHOICE_NEON || ch->kind == CHOICE_COCKPIT) {
+        int act = ch->kind == CHOICE_NEON ? ACT_NEON : ACT_COCKPIT;
+        char sub[64];
+        snprintf(sub, sizeof(sub), "%02d / %s", slot + 1, act == ACT_NEON ? "COLOR" : "HOME");
+        cd_config_set_string(st, sec, "action", action_key(act));
+        cd_config_set_string(st, sec, "name", act == ACT_NEON ? "NEON" : "COCKPIT");
+        cd_config_set_string(st, sec, "sub", sub);
+        cd_config_set_string(st, sec, "exec", "");
+        cd_config_set_string(st, sec, "app_id", "");
+        cd_config_set_int(st, sec, "icon", act == ACT_NEON ? 4 : 5);
+    } else {
+        char sub[96];
+        const char *detail = *ch->comment ? ch->comment : *ch->app_id ? ch->app_id : "APP";
+        snprintf(sub, sizeof(sub), "%02d / %.*s", slot + 1,
+                 utf8_prefix_len(detail, 28), detail);
+        for (char *p = sub; *p; p++) if (*p >= 'a' && *p <= 'z') *p -= 'a' - 'A';
+        cd_config_set_string(st, sec, "action", "app");
+        cd_config_set_string(st, sec, "name", ch->name);
+        cd_config_set_string(st, sec, "sub", sub);
+        cd_config_set_string(st, sec, "exec", ch->exec);
+        cd_config_set_string(st, sec, "app_id", ch->app_id);
+        cd_config_set_int(st, sec, "icon", ch->icon);
+    }
+    cd_config_set_bool(st, sec, "enabled", true);
+    char assigned_name[128];
+    snprintf(assigned_name, sizeof(assigned_name), "%s", ch->name);
+    g->picker_open = false;
+    g->focus = -1;
+    app_load_fields(g, slot);
+    touch_file(g, FILE_CD);
+    flush_saves(g, true);
+    if (!g->save_pending[FILE_CD])
+        snprintf(g->saved_note, sizeof(g->saved_note), "Assigned %.*s to Launch Control %d",
+                 utf8_prefix_len(assigned_name, 52), assigned_name, slot + 1);
+    g->draw_dirty = true;
+}
+static void picker_geometry(Gui *g, double *x, double *y, double *w, double *h) {
+    *w = 560;
+    *h = 486;
+    *x = clampd(g->picker_x, 12, 1000 - *w - 12);
+    *y = clampd(g->picker_y, 58, 625 - *h - 10);
 }
 
 /* ------------------------------------------------------------ cairo paint */
@@ -494,13 +1145,45 @@ static void draw_schema_tab(Gui *g, cairo_t *c, int file, const Def *defs, int n
                 add_box(g, H_TOGGLE, file, i, 0, vx - 4, ry, 90, 28);
                 break;
             }
-            case K_FLOAT: case K_INT: {
+            case K_FLOAT: case K_INT: case K_INT_INPUT: {
                 double v = def_get_num(g, file, d);
-                double frac = (v - d->min) / (d->max - d->min);
-                draw_slider(g, c, H_SLIDER, file, i, 0, vx, ry + 14, vw, frac);
-                snprintf(val, sizeof(val), d->fmt, v);
-                font(c, 13.5, false, true); fg(c, .80, .92, 1.0);
-                txt(c, vx + vw + 22, ry + 19, val);
+                if (d->kind == K_INT_INPUT) {
+                    bool active = g->num_file == file && g->num_idx == i;
+                    bool invalid = active && g->num_dirty && !num_value_valid(g, NULL);
+                    snprintf(val, sizeof(val), d->fmt, v);
+                    const char *shown = active ? g->num_field.buf : val;
+                    fga(c, .07, .10, .17, 1); rr(c, vx, ry + 1, 180, 28, 6); cairo_fill(c);
+                    cairo_set_line_width(c, active ? 2 : 1.2);
+                    if (invalid) fg(c, .95, .38, .32);
+                    else if (active) fg(c, .30, .85, .95);
+                    else fg(c, .28, .38, .55);
+                    rr(c, vx, ry + 1, 180, 28, 6); cairo_stroke(c);
+                    font(c, 14, false, true); fg(c, .88, .94, 1.0);
+                    txt(c, vx + 11, ry + 20, shown);
+                    if (active && (int)(now_s() * 1.9) % 2 == 0) {
+                        int caret = g->num_field.caret;
+                        int len = (int)strlen(g->num_field.buf);
+                        if (caret < 0) caret = 0;
+                        if (caret > len) caret = len;
+                        char save = g->num_field.buf[caret];
+                        g->num_field.buf[caret] = 0;
+                        double cx = vx + 11 + txt_w(c, g->num_field.buf) + 1;
+                        g->num_field.buf[caret] = save;
+                        fg(c, .85, .95, 1.0); cairo_set_line_width(c, 1.5);
+                        cairo_move_to(c, cx, ry + 7); cairo_line_to(c, cx, ry + 24); cairo_stroke(c);
+                    }
+                    font(c, 12, false, true); fg(c, invalid ? 1 : .52, invalid ? .55 : .66, invalid ? .48 : .82);
+                    char range[64];
+                    snprintf(range, sizeof(range), "%.0f-%.0f  (type exact value)", d->min, d->max);
+                    txt(c, vx + 194, ry + 19, range);
+                    add_box(g, H_NUM_FIELD, file, i, 0, vx, ry, 180, 30);
+                } else {
+                    double frac = (v - d->min) / (d->max - d->min);
+                    draw_slider(g, c, H_SLIDER, file, i, 0, vx, ry + 14, vw, frac);
+                    snprintf(val, sizeof(val), d->fmt, v);
+                    font(c, 13.5, false, true); fg(c, .80, .92, 1.0);
+                    txt(c, vx + vw + 22, ry + 19, val);
+                }
                 break;
             }
             case K_ENUM: {
@@ -621,7 +1304,15 @@ static void draw_apps_tab(Gui *g, cairo_t *c, double top, double bottom) {
                                              : app_str(g, i, "name", APP_DEFS[i].def_name);
         txt_fit(c, lx + 52, ry + 22, lw - 105, nm);
         font(c, 10.5, false, false); fg(c, .50, .62, .80);
-        txt(c, lx + 52, ry + 39, APP_DEFS[i].builtin ? "built-in action" : APP_DEFS[i].sec);
+        char detail[192];
+        int act = app_action(g, i);
+        if (act == ACT_NEON) snprintf(detail, sizeof(detail), "Built-in / underglow");
+        else if (act == ACT_COCKPIT) snprintf(detail, sizeof(detail), "Built-in / driver view");
+        else {
+            const char *id = app_str(g, i, "app_id", APP_DEFS[i].def_app_id);
+            snprintf(detail, sizeof(detail), "App / %s", *id ? id : APP_DEFS[i].sec);
+        }
+        txt_fit(c, lx + 52, ry + 39, lw - 62, detail);
         if (!en) { font(c, 9.5, true, false); fg(c, .75, .55, .35); txt_r(c, lx + lw - 8, ry + 20, "OFF"); }
         add_box(g, H_APP_ROW, i, 0, 0, lx, ry, lw, 50);
     }
@@ -635,10 +1326,26 @@ static void draw_apps_tab(Gui *g, cairo_t *c, double top, double bottom) {
     /* --- right: editor form */
     double fx = 330, fw = 612;
     const AppDef *d = &APP_DEFS[g->sel_app];
+    int act = app_action(g, g->sel_app);
     double y = top + 16;
+    /* The essential mapping, stated first: which app this icon launches.
+     * Clicking opens the same popup as right-clicking the slot. */
+    fga(c, .11, .24, .38, 1); rr(c, fx, y, fw, 46, 8); cairo_fill(c);
+    cairo_set_line_width(c, 1.2); fg(c, .35, .62, .85); rr(c, fx, y, fw, 46, 8); cairo_stroke(c);
+    draw_glyph(c, app_icon(g, g->sel_app), fx + 12, y + 10, 0.85);
+    font(c, 10.5, true, false); fg(c, .58, .74, .94);
+    txt(c, fx + 54, y + 17, "ASSIGNED TO THIS ICON");
+    font(c, 15, true, false); fg(c, .90, .95, 1);
+    const char *assigned = act == ACT_NEON ? "Built-in - Cycle underglow" :
+                           act == ACT_COCKPIT ? "Built-in - Driver view" : g->fields[FLD_NAME].buf;
+    txt_fit(c, fx + 54, y + 38, fw - 220, assigned);
+    font(c, 13.5, true, false); fg(c, .55, .90, 1);
+    txt_r(c, fx + fw - 16, y + 29, "Choose app  >");
+    add_box(g, H_CHOOSE_APP, g->sel_app, 0, 0, fx, y, fw, 46);
+    y += 58;
     draw_field(g, c, FLD_NAME, fx, y, fw, "NAME (button label)", NULL); y += 62;
     draw_field(g, c, FLD_SUB, fx, y, fw, "DESCRIPTION (small second line)", NULL); y += 62;
-    if (!d->builtin) {
+    if (act == ACT_APP) {
         const char *envv = d->env_name ? getenv(d->env_name) : NULL;
         char hint[256];
         if (envv)
@@ -651,7 +1358,7 @@ static void draw_apps_tab(Gui *g, cairo_t *c, double top, double bottom) {
         y += 76;
     } else {
         font(c, 12.5, false, false); fg(c, .60, .72, .92);
-        txt_fit(c, fx, y + 12, fw, d->builtin_desc);
+        txt_fit(c, fx, y + 12, fw, action_desc(act));
         y += 40;
     }
     /* icon cycler */
@@ -671,13 +1378,98 @@ static void draw_apps_tab(Gui *g, cairo_t *c, double top, double bottom) {
     font(c, 13.5, false, false); fg(c, .82, .89, .97);
     txt(c, fx + 30, y + 15, "Enabled (button responds to clicks)");
     add_box(g, H_APP_ENABLED, 0, 0, 0, fx - 4, y - 4, 380, 28);
-    if (!d->builtin) {
+    if (act == ACT_APP) {
         bool as = cd_config_get_bool(st, d->sec, "autostart", d->def_autostart);
         draw_checkbox(c, fx + 400, y, as);
         txt(c, fx + 430, y + 15, "Autostart (--demo set)");
         add_box(g, H_APP_AUTOSTART, 0, 0, 0, fx + 396, y - 4, 280, 28);
     }
     g->content_h = bottom - top;
+}
+
+/* The right-click app picker: an anchored, modal, searchable list of every
+ * assignable app, drawn last so its hitboxes win over the editor beneath. */
+static void draw_picker(Gui *g, cairo_t *c) {
+    if (!g->picker_open) return;
+    picker_clamp(g);
+    double x, y, w, h;
+    picker_geometry(g, &x, &y, &w, &h);
+    fga(c, .005, .008, .02, .58); cairo_rectangle(c, 0, 0, 1000, 625); cairo_fill(c);
+    cairo_pattern_t *grad = cairo_pattern_create_linear(0, y, 0, y + h);
+    cairo_pattern_add_color_stop_rgba(grad, 0, .055, .085, .15, .99);
+    cairo_pattern_add_color_stop_rgba(grad, 1, .025, .045, .09, .99);
+    rr(c, x, y, w, h, 12); cairo_set_source(c, grad); cairo_fill(c); cairo_pattern_destroy(grad);
+    cairo_set_line_width(c, 1.6); fg(c, .35, .65, .90); rr(c, x, y, w, h, 12); cairo_stroke(c);
+
+    font(c, 10.5, true, true); fg(c, .55, .72, .95);
+    char head[96];
+    snprintf(head, sizeof(head), "LAUNCH CONTROL / SLOT %d OF 6", g->picker_slot + 1);
+    txt(c, x + 20, y + 24, head);
+    font(c, 19, true, false); fg(c, .92, .96, 1);
+    txt(c, x + 20, y + 50, "Choose an app for this icon");
+    font(c, 18, true, false); fg(c, .65, .76, .92); txt_r(c, x + w - 18, y + 34, "x");
+    add_box(g, H_PICKER_CLOSE, 0, 0, 0, x + w - 44, y + 8, 36, 36);
+
+    /* Type-to-filter field */
+    double sy = y + 66;
+    fga(c, .045, .07, .13, 1); rr(c, x + 18, sy, w - 36, 34, 7); cairo_fill(c);
+    cairo_set_line_width(c, 1.3); fg(c, .30, .55, .82); rr(c, x + 18, sy, w - 36, 34, 7); cairo_stroke(c);
+    font(c, 13, false, false);
+    if (*g->picker_filter) { fg(c, .90, .95, 1); txt(c, x + 32, sy + 22, g->picker_filter); }
+    else { fg(c, .42, .54, .74); txt(c, x + 32, sy + 22, "Type to filter all installed apps..."); }
+
+    int count = picker_count(g);
+    double ly = y + 114, row_h = 31;
+    if (!count) {
+        font(c, 14, false, false); fg(c, .55, .65, .82);
+        txt(c, x + 24, ly + 28, "No installed app matches that filter.");
+    }
+    for (int row = 0; row < PICKER_VISIBLE; row++) {
+        int ordinal = g->picker_scroll + row;
+        if (ordinal >= count) break;
+        int idx = -1;
+        AppChoice *ch = picker_at(g, ordinal, &idx);
+        if (!ch) break;
+        double ry = ly + row * row_h;
+        bool hover = g->px >= x + 10 && g->px <= x + w - 38 && g->py >= ry && g->py < ry + row_h;
+        if (ordinal == g->picker_sel || hover) {
+            fga(c, .16, .32, .50, hover ? .98 : .88); rr(c, x + 10, ry + 1, w - 48, row_h - 2, 6); cairo_fill(c);
+        }
+        draw_glyph(c, ch->icon, x + 20, ry + 5, 0.72);
+        font(c, 13.5, true, false); fg(c, .90, .94, 1);
+        txt_fit(c, x + 58, ry + 21, w - 255, ch->name);
+        font(c, 10.5, false, true); fg(c, .50, .64, .84);
+        const char *side = ch->kind == CHOICE_APP ? ch->app_id : "built-in";
+        txt_r(c, x + w - 48, ry + 20, side);
+        if (choice_is_current(g, g->picker_slot, ch)) {
+            font(c, 13, true, false); fg(c, .45, .95, .70);
+            txt_r(c, x + w - 44, ry + 21, "");
+            /* a small check mark before the app-id column */
+            cairo_set_line_width(c, 2);
+            cairo_move_to(c, x + w - 250, ry + 16);
+            cairo_line_to(c, x + w - 244, ry + 22);
+            cairo_line_to(c, x + w - 236, ry + 9);
+            cairo_stroke(c);
+        }
+        add_box(g, H_PICKER_ITEM, idx, 0, 0, x + 10, ry, w - 48, row_h);
+    }
+    /* scrollbar + page controls */
+    double tx = x + w - 28, th = PICKER_VISIBLE * row_h;
+    fga(c, .10, .16, .26, 1); rr(c, tx, ly, 10, th, 5); cairo_fill(c);
+    if (count > PICKER_VISIBLE) {
+        double sh = th * PICKER_VISIBLE / count;
+        double syy = ly + th * g->picker_scroll / count;
+        fga(c, .38, .58, .82, 1); rr(c, tx, syy, 10, sh, 5); cairo_fill(c);
+    } else { fga(c, .30, .42, .62, .55); rr(c, tx, ly, 10, th, 5); cairo_fill(c); }
+    add_box(g, H_PICKER_UP, 0, 0, 0, tx - 4, ly - 24, 20, 22);
+    add_box(g, H_PICKER_DOWN, 0, 0, 0, tx - 4, ly + th + 2, 20, 22);
+    font(c, 13, true, false); fg(c, .60, .74, .94);
+    txt(c, tx - 1, ly - 8, "^"); txt(c, tx - 2, ly + th + 17, "v");
+
+    char foot[160];
+    snprintf(foot, sizeof(foot), "%d apps  -  click or Enter assigns  -  wheel/arrows scroll  -  Esc cancels", count);
+    font(c, 10.5, false, true); fg(c, .48, .62, .82);
+    txt(c, x + 20, y + h - 16, foot);
 }
 
 static void draw_ui(Gui *g, cairo_t *c) {
@@ -724,8 +1516,9 @@ static void draw_ui(Gui *g, cairo_t *c) {
     else { fg(c, .45, .85, .65); txt_r(c, 978, 599, g->saved_note); }
     font(c, 10.5, false, false); fg(c, .40, .50, .68);
     txt(c, 22, 617, g->tab == TAB_APPS
-        ? "Click a field and type; Enter commits. Changes relabel the cockpit Launch Control live."
-        : "Drag sliders / tap toggles - files save automatically; RESTART chips take effect at next start.");
+        ? "Right-click a slot (or Choose app) to assign an installed app; changes relabel Launch Control live."
+        : "Drag sliders / tap toggles, or click the VNC port and type - files save automatically.");
+    draw_picker(g, c);
 }
 
 /* --------------------------------------------------------- input handling */
@@ -776,13 +1569,54 @@ static int field_caret_at(Gui *g, int fld, double x) {
     (void)save;
     return best;
 }
+static HitBox *hit_at(Gui *g, double x, double y) {
+    for (int i = g->box_count - 1; i >= 0; i--) {
+        HitBox *b = &g->boxes[i];
+        if (x >= b->x && x <= b->x + b->w && y >= b->y && y <= b->y + b->h) return b;
+    }
+    return NULL;
+}
+static int num_caret_at(Gui *g, double x) {
+    HitBox *b = find_box(g, H_NUM_FIELD, g->num_file, g->num_idx);
+    if (!b || !g->measure) return (int)strlen(g->num_field.buf);
+    cairo_t *c = g->measure;
+    font(c, 14, false, true);
+    TextField *f = &g->num_field;
+    double target = x - (b->x + 11);
+    int len = (int)strlen(f->buf);
+    for (int i = 0; i <= len; i++) {
+        char t = f->buf[i]; f->buf[i] = 0;
+        double wdt = txt_w(c, f->buf);
+        f->buf[i] = t;
+        if (wdt >= target) return i;
+    }
+    return len;
+}
 
 static void gui_press(Gui *g, double x, double y) {
     g->px = x; g->py = y;
-    HitBox *hit = NULL;
-    for (int i = g->box_count - 1; i >= 0; i--) {
-        HitBox *b = &g->boxes[i];
-        if (x >= b->x && x <= b->x + b->w && y >= b->y && y <= b->y + b->h) { hit = b; break; }
+    HitBox *hit = hit_at(g, x, y);
+    if (g->picker_open) {
+        if (hit && hit->kind == H_PICKER_ITEM) { picker_assign(g, hit->a); return; }
+        if (hit && hit->kind == H_PICKER_CLOSE) { picker_close(g); return; }
+        if (hit && hit->kind == H_PICKER_UP) {
+            g->picker_sel = g->picker_scroll = (g->picker_scroll > PICKER_VISIBLE ? g->picker_scroll - PICKER_VISIBLE : 0);
+            picker_clamp(g); g->draw_dirty = true; return;
+        }
+        if (hit && hit->kind == H_PICKER_DOWN) {
+            g->picker_scroll += PICKER_VISIBLE;
+            g->picker_sel = g->picker_scroll;
+            picker_clamp(g); g->draw_dirty = true; return;
+        }
+        double px, py, pw, ph;
+        picker_geometry(g, &px, &py, &pw, &ph);
+        if (x >= px && x <= px + pw && y >= py && y <= py + ph) return; /* header/filter/empty area */
+        picker_close(g);
+        return; /* an outside click dismisses; it does not activate beneath */
+    }
+    if (g->num_idx >= 0 && (!hit || hit->kind != H_NUM_FIELD ||
+                             hit->a != g->num_file || hit->b != g->num_idx)) {
+        if (!num_commit(g)) num_cancel(g); /* invalid text reverts on blur */
     }
     if (g->focus >= 0 && (!hit || hit->kind != H_FIELD || hit->a != g->focus)) {
         app_commit_fields(g);
@@ -827,6 +1661,14 @@ static void gui_press(Gui *g, double x, double y) {
         g->fields[hit->a].caret = field_caret_at(g, hit->a, x);
         g->draw_dirty = true;
         break;
+    case H_NUM_FIELD:
+        if (!(g->num_file == hit->a && g->num_idx == hit->b)) num_begin(g, hit->a, hit->b);
+        g->num_field.caret = num_caret_at(g, x);
+        g->draw_dirty = true;
+        break;
+    case H_CHOOSE_APP:
+        picker_open(g, hit->a, x, y);
+        break;
     case H_ICON_DEC: case H_ICON_INC: {
         int icon = app_icon(g, g->sel_app) + (hit->kind == H_ICON_INC ? 1 : -1);
         icon = (icon % 6 + 6) % 6;
@@ -865,11 +1707,10 @@ static void gui_press(Gui *g, double x, double y) {
         cd_config_set_string(st, d->sec, "sub", d->def_sub);
         cd_config_set_int(st, d->sec, "icon", d->def_icon);
         cd_config_set_bool(st, d->sec, "enabled", true);
-        if (!d->builtin) {
-            cd_config_set_string(st, d->sec, "exec", d->def_exec ? d->def_exec : "");
-            cd_config_set_string(st, d->sec, "app_id", d->def_app_id ? d->def_app_id : "");
-            cd_config_set_bool(st, d->sec, "autostart", d->def_autostart);
-        }
+        cd_config_set_string(st, d->sec, "action", action_key(d->def_action));
+        cd_config_set_string(st, d->sec, "exec", d->def_exec ? d->def_exec : "");
+        cd_config_set_string(st, d->sec, "app_id", d->def_app_id ? d->def_app_id : "");
+        cd_config_set_bool(st, d->sec, "autostart", d->def_autostart);
         g->focus = -1;
         app_load_fields(g, app);
         touch_file(g, FILE_CD); flush_saves(g, true);
@@ -881,11 +1722,35 @@ static void gui_motion(Gui *g, double x, double y) {
     g->px = x; g->py = y;
     if (g->drag_kind == H_SLIDER) slider_apply(g, g->drag_a, g->drag_b, x);
     else if (g->drag_kind == H_COLSLIDE) colslide_apply(g, g->drag_a, g->drag_b, g->drag_c, x);
+    else if (g->picker_open) g->draw_dirty = true; /* row hover highlight */
+}
+/* Right-click is reserved for the app-assignment context popup: on a Launch
+ * Control row it assigns that row; anywhere in the editor form it assigns
+ * the selected entry. A second right-click (or Esc/click-away) dismisses. */
+static void gui_right_press(Gui *g, double x, double y) {
+    g->px = x; g->py = y;
+    HitBox *hit = hit_at(g, x, y);
+    if (g->picker_open) {
+        if (hit && hit->kind == H_APP_ROW) picker_open(g, hit->a, x, y);
+        else picker_close(g);
+        return;
+    }
+    if (g->tab != TAB_APPS) return;
+    if (hit && hit->kind == H_APP_ROW) picker_open(g, hit->a, x, y);
+    else if (x >= 316) picker_open(g, g->sel_app, x, y);
 }
 static void gui_release(Gui *g) {
     if (g->drag_kind) { g->drag_kind = H_NONE; flush_saves(g, true); }
 }
 static void gui_wheel(Gui *g, double dy) {
+    if (g->picker_open) {
+        int step = dy > 0 ? 3 : dy < 0 ? -3 : 0;
+        g->picker_scroll += step;
+        g->picker_sel = g->picker_scroll;
+        picker_clamp(g);
+        g->draw_dirty = true;
+        return;
+    }
     if (g->tab == TAB_APPS) return;
     double maxs = g->content_h - (576 - 64);
     if (maxs < 0) maxs = 0;
@@ -908,6 +1773,85 @@ static int utf8_next(const char *s, int pos) {
     return pos;
 }
 static void gui_key(Gui *g, xkb_keysym_t sym, const char *utf8, int utf8_len) {
+    if (g->picker_open) {
+        int count = picker_count(g);
+        switch (sym) {
+        case XKB_KEY_Escape: picker_close(g); return;
+        case XKB_KEY_Return: case XKB_KEY_KP_Enter: {
+            int idx = -1;
+            if (picker_at(g, g->picker_sel, &idx)) picker_assign(g, idx);
+            return;
+        }
+        case XKB_KEY_Down: g->picker_sel++; break;
+        case XKB_KEY_Up: g->picker_sel--; break;
+        case XKB_KEY_Page_Down: g->picker_sel += PICKER_VISIBLE; break;
+        case XKB_KEY_Page_Up: g->picker_sel -= PICKER_VISIBLE; break;
+        case XKB_KEY_Home: g->picker_sel = 0; break;
+        case XKB_KEY_End: g->picker_sel = count - 1; break;
+        case XKB_KEY_Tab: g->picker_sel++; break;
+        case XKB_KEY_BackSpace: {
+            int len = (int)strlen(g->picker_filter);
+            if (len) g->picker_filter[utf8_prev(g->picker_filter, len)] = 0;
+            g->picker_sel = g->picker_scroll = 0;
+            break;
+        }
+        case XKB_KEY_Delete:
+            g->picker_filter[0] = 0;
+            g->picker_sel = g->picker_scroll = 0;
+            break;
+        default:
+            if (utf8 && utf8_len > 0 && (unsigned char)utf8[0] >= 0x20 &&
+                (int)strlen(g->picker_filter) + utf8_len < (int)sizeof(g->picker_filter)) {
+                strncat(g->picker_filter, utf8, (size_t)utf8_len);
+                g->picker_sel = g->picker_scroll = 0;
+            }
+            break;
+        }
+        picker_clamp(g);
+        g->draw_dirty = true;
+        return;
+    }
+    if (g->num_idx >= 0) {
+        TextField *f = &g->num_field;
+        int len = (int)strlen(f->buf);
+        if (f->caret > len) f->caret = len;
+        bool edited = false;
+        switch (sym) {
+        case XKB_KEY_Escape: num_cancel(g); return;
+        case XKB_KEY_Return: case XKB_KEY_KP_Enter: num_commit(g); return;
+        case XKB_KEY_Tab: num_commit(g); return;
+        case XKB_KEY_BackSpace:
+            if (f->caret > 0) {
+                memmove(f->buf + f->caret - 1, f->buf + f->caret, (size_t)(len - f->caret + 1));
+                f->caret--; edited = true;
+            }
+            break;
+        case XKB_KEY_Delete:
+            if (f->caret < len) {
+                memmove(f->buf + f->caret, f->buf + f->caret + 1, (size_t)(len - f->caret));
+                edited = true;
+            }
+            break;
+        case XKB_KEY_Left: if (f->caret > 0) f->caret--; break;
+        case XKB_KEY_Right: if (f->caret < len) f->caret++; break;
+        case XKB_KEY_Home: f->caret = 0; break;
+        case XKB_KEY_End: f->caret = len; break;
+        default: {
+            const Def *d = num_def(g);
+            if (utf8 && utf8_len == 1 && len < 12 &&
+                (isdigit((unsigned char)utf8[0]) ||
+                 (utf8[0] == '-' && d && d->min < 0 && f->caret == 0 && f->buf[0] != '-'))) {
+                memmove(f->buf + f->caret + 1, f->buf + f->caret, (size_t)(len - f->caret + 1));
+                f->buf[f->caret++] = utf8[0];
+                edited = true;
+            }
+            break;
+        }
+        }
+        if (edited) g->num_dirty = true;
+        g->draw_dirty = true;
+        return;
+    }
     if (sym == XKB_KEY_Escape && g->focus >= 0) {
         /* revert field contents from the store */
         app_load_fields(g, g->field_app);
@@ -927,7 +1871,7 @@ static void gui_key(Gui *g, xkb_keysym_t sym, const char *utf8, int utf8_len) {
         app_commit_fields(g); g->focus = -1; break;
     case XKB_KEY_Tab: {
         app_commit_fields(g);
-        int maxf = APP_DEFS[g->sel_app].builtin ? FLD_SUB : FLD_APPID;
+        int maxf = app_action(g, g->sel_app) != ACT_APP ? FLD_SUB : FLD_APPID;
         g->focus = g->focus >= maxf ? 0 : g->focus + 1;
         if (g->focus >= 0) g->fields[g->focus].caret = (int)strlen(g->fields[g->focus].buf);
         break;
@@ -985,13 +1929,19 @@ static bool gui_init(Gui *g, const char *config_dir) {
                  ? "Settings loaded" : "Defaults (files created on first edit)");
     g->measure_surf = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, 4, 4);
     g->measure = cairo_create(g->measure_surf);
+    g->num_file = -1;
+    g->num_idx = -1;
+    if (!catalog_load(g)) return false;
     app_load_fields(g, 0);
     g->draw_dirty = true;
     return true;
 }
 static void gui_free(Gui *g) {
     app_commit_fields(g);
+    if (g->num_idx >= 0 && !num_commit(g)) num_cancel(g);
     flush_saves(g, true);
+    free(g->choices);
+    g->choices = NULL;
     if (g->measure) cairo_destroy(g->measure);
     if (g->measure_surf) cairo_surface_destroy(g->measure_surf);
     cd_config_free(g->store[0]);
@@ -1030,6 +1980,24 @@ static bool click_box(Gui *g, int kind, int a, int b) {
     gui_release(g);
     return true;
 }
+static bool right_click_box(Gui *g, int kind, int a, int b) {
+    HitBox *box = find_box(g, kind, a, b);
+    if (!box) return false;
+    gui_right_press(g, box->x + box->w / 2, box->y + box->h / 2);
+    return true;
+}
+static bool click_picker_desktop(Gui *g, const char *desktop_id) {
+    for (int i = 0; i < g->box_count; i++) {
+        HitBox *box = &g->boxes[i];
+        if (box->kind != H_PICKER_ITEM || box->a < 0 || box->a >= g->choice_count) continue;
+        if (!strcmp(g->choices[box->a].desktop_id, desktop_id)) {
+            gui_press(g, box->x + box->w / 2, box->y + box->h / 2);
+            gui_release(g);
+            return true;
+        }
+    }
+    return false;
+}
 static void type_text(Gui *g, const char *s) {
     for (const char *p = s; *p; p++)
         gui_key(g, (xkb_keysym_t)(unsigned char)*p, p, 1);
@@ -1037,6 +2005,44 @@ static void type_text(Gui *g, const char *s) {
 static void clear_field(Gui *g) {
     gui_key(g, XKB_KEY_End, NULL, 0);
     for (int i = 0; i < 600; i++) gui_key(g, XKB_KEY_BackSpace, NULL, 0);
+}
+static bool write_fixture_file(const char *path, const char *text) {
+    char dir[4096];
+    if (snprintf(dir, sizeof(dir), "%s", path) >= (int)sizeof(dir)) return false;
+    char *slash = strrchr(dir, '/');
+    if (!slash) return false;
+    *slash = 0;
+    for (char *p = dir + 1; *p; p++) {
+        if (*p != '/') continue;
+        *p = 0;
+        if (mkdir(dir, 0700) < 0 && errno != EEXIST) return false;
+        *p = '/';
+    }
+    if (mkdir(dir, 0700) < 0 && errno != EEXIST) return false;
+    FILE *f = fopen(path, "w");
+    if (!f) return false;
+    bool ok = fputs(text, f) >= 0;
+    if (fclose(f) != 0) ok = false;
+    return ok;
+}
+static bool write_fixture(const char *root, const char *rel, const char *text) {
+    char path[4096];
+    return snprintf(path, sizeof(path), "%s/%s", root, rel) < (int)sizeof(path) &&
+           write_fixture_file(path, text);
+}
+static AppChoice *find_choice(Gui *g, const char *desktop_id) {
+    for (int i = 0; i < g->choice_count; i++)
+        if (!strcmp(g->choices[i].desktop_id, desktop_id)) return &g->choices[i];
+    return NULL;
+}
+static char *dup_env(const char *name) {
+    const char *v = getenv(name);
+    return v ? strdup(v) : NULL;
+}
+static void restore_env(const char *name, char *old) {
+    if (old) setenv(name, old, 1);
+    else unsetenv(name);
+    free(old);
 }
 
 static int selftest(const char *config_dir_arg) {
@@ -1067,6 +2073,47 @@ static int selftest(const char *config_dir_arg) {
     while (app_icon(&g, 1) != 5) { img = render_tab_image(&g, TAB_APPS); cairo_surface_destroy(img); CHECK(click_box(&g, H_ICON_INC, 0, 0), "icon inc lost"); }
     img = render_tab_image(&g, TAB_APPS); cairo_surface_destroy(img);
     CHECK(click_box(&g, H_APP_AUTOSTART, 0, 0), "no autostart toggle"); /* was on -> off */
+    /* Right-click app picker: slot 6 starts as the COCKPIT built-in. Assign
+     * Settings, switch it back to the built-in, then assign Garage3D. This
+     * proves both popup directions and that every slot can hold an app. */
+    CHECK(g.choice_count >= 8, "app catalog has only %d entries", g.choice_count);
+    CHECK(right_click_box(&g, H_APP_ROW, 5, 0), "no cockpit row for right-click");
+    CHECK(g.picker_open && g.picker_slot == 5 && g.sel_app == 5, "right-click did not open picker for slot 6");
+    img = render_tab_image(&g, TAB_APPS); cairo_surface_destroy(img);
+    type_text(&g, "settings");
+    img = render_tab_image(&g, TAB_APPS); cairo_surface_destroy(img);
+    CHECK(click_picker_desktop(&g, "chromedrive.settings"), "settings choice not visible in picker");
+    CHECK(!g.picker_open && app_action(&g, 5) == ACT_APP, "picker did not assign an app action to slot 6");
+    CHECK(strstr(g.fields[FLD_EXEC].buf, "chromedrive-config") &&
+          !strcmp(g.fields[FLD_APPID].buf, "chromedrive.config"), "settings assignment fields wrong");
+    img = render_tab_image(&g, TAB_APPS); cairo_surface_destroy(img);
+    CHECK(right_click_box(&g, H_APP_ROW, 5, 0), "no slot 6 row for second right-click");
+    img = render_tab_image(&g, TAB_APPS); cairo_surface_destroy(img);
+    type_text(&g, "Driver view");
+    img = render_tab_image(&g, TAB_APPS); cairo_surface_destroy(img);
+    CHECK(click_picker_desktop(&g, "chromedrive.builtin.cockpit"), "driver-view built-in not visible in picker");
+    CHECK(app_action(&g, 5) == ACT_COCKPIT && !*g.fields[FLD_EXEC].buf &&
+          !*g.fields[FLD_APPID].buf, "picker did not restore/clear slot 6 built-in");
+    img = render_tab_image(&g, TAB_APPS); cairo_surface_destroy(img);
+    CHECK(right_click_box(&g, H_APP_ROW, 5, 0), "no slot 6 row for third right-click");
+    img = render_tab_image(&g, TAB_APPS); cairo_surface_destroy(img);
+    type_text(&g, "Garage3D");
+    gui_key(&g, XKB_KEY_Return, NULL, 0);
+    CHECK(!g.picker_open && app_action(&g, 5) == ACT_APP &&
+          strstr(g.fields[FLD_EXEC].buf, "garage3d") &&
+          !strcmp(g.fields[FLD_APPID].buf, "chromedrive.garage3d"), "keyboard picker assignment failed");
+    /* Compositor -> already-running-GUI picker request (runtime-dir IPC). */
+    char reqpath[4096];
+    snprintf(reqpath, sizeof(reqpath), "%s/picker-request", dir);
+    picker_request_set_path(&g, reqpath);
+    FILE *rf = fopen(reqpath, "w");
+    CHECK(rf != NULL, "cannot write picker request");
+    if (rf) { fprintf(rf, "2 selftest-nonce\n"); fclose(rf); }
+    picker_request_poll(&g);
+    CHECK(g.picker_open && g.picker_slot == 2 && g.sel_app == 2, "picker request did not open slot 3");
+    picker_close(&g);
+    picker_request_poll(&g);
+    CHECK(!g.picker_open, "picker request nonce was consumed twice");
     /* Garage3D tab: flip flicker off; set fog via def API path a drag uses. */
     img = render_tab_image(&g, TAB_G3); cairo_surface_destroy(img);
     /* find flicker def index */
@@ -1085,6 +2132,26 @@ static int selftest(const char *config_dir_arg) {
     img = render_tab_image(&g, TAB_CD); cairo_surface_destroy(img);
     for (int i = 0; i < N_CD_DEFS; i++)
         if (!strcmp(CD_DEFS[i].key, "background")) def_set_enum(&g, FILE_CD, &CD_DEFS[i], 1);
+    /* VNC port is a typed input, never a 1024..65535 slider. */
+    int pi = -1;
+    for (int i = 0; i < N_CD_DEFS; i++) if (!strcmp(CD_DEFS[i].key, "vnc_port")) pi = i;
+    CHECK(pi >= 0 && CD_DEFS[pi].kind == K_INT_INPUT, "vnc_port is not an input def");
+    img = render_tab_image(&g, TAB_CD); cairo_surface_destroy(img);
+    CHECK(find_box(&g, H_NUM_FIELD, FILE_CD, pi) != NULL, "no VNC port input hitbox");
+    CHECK(find_box(&g, H_SLIDER, FILE_CD, pi) == NULL, "VNC port still has a slider hitbox");
+    CHECK(click_box(&g, H_NUM_FIELD, FILE_CD, pi), "cannot focus VNC port input");
+    clear_field(&g); type_text(&g, "5917");
+    gui_key(&g, XKB_KEY_Return, NULL, 0);
+    CHECK(g.num_idx < 0 && cd_config_get_int(g.store[FILE_CD], "session", "vnc_port", -1) == 5917,
+          "typed VNC port did not commit");
+    img = render_tab_image(&g, TAB_CD); cairo_surface_destroy(img);
+    CHECK(click_box(&g, H_NUM_FIELD, FILE_CD, pi), "cannot refocus VNC port input");
+    clear_field(&g); type_text(&g, "99");
+    gui_key(&g, XKB_KEY_Return, NULL, 0);
+    CHECK(g.num_idx == pi && cd_config_get_int(g.store[FILE_CD], "session", "vnc_port", -1) == 5917,
+          "out-of-range VNC port overwrote the saved value");
+    gui_key(&g, XKB_KEY_Escape, NULL, 0);
+    CHECK(g.num_idx < 0, "Escape did not cancel VNC port edit");
     flush_saves(&g, true);
 
     /* Render all three tabs; each must be visibly non-blank. */
@@ -1104,6 +2171,12 @@ static int selftest(const char *config_dir_arg) {
     CHECK(v && cd_config_get_int(v, "app.files", "icon", -1) == 5, "icon not saved");
     CHECK(v && cd_config_get_bool(v, "app.files", "autostart", true) == false, "autostart not saved");
     CHECK(v && !strcmp(cd_config_get_string(v, "cockpit", "background", ""), "texture"), "background not saved");
+    CHECK(v && cd_config_get_int(v, "session", "vnc_port", -1) == 5917, "VNC port not saved");
+    CHECK(v && !strcmp(cd_config_get_string(v, "app.cockpit", "action", ""), "app") &&
+          !strcmp(cd_config_get_string(v, "app.cockpit", "name", ""), "Garage3D") &&
+          strstr(cd_config_get_string(v, "app.cockpit", "exec", ""), "garage3d") &&
+          !strcmp(cd_config_get_string(v, "app.cockpit", "app_id", ""), "chromedrive.garage3d"),
+          "picker assignment for slot 6 not saved");
     cd_config_free(v);
     v = cd_config_load(g.path[FILE_G3]);
     CHECK(v && cd_config_get_bool(v, "scene", "flicker", true) == false, "flicker not saved");
@@ -1112,6 +2185,90 @@ static int selftest(const char *config_dir_arg) {
     CHECK(v && cd_config_get_color(v, "scene", "neon_left", rgb) && rgb[0] > 0.99, "neon color not saved");
     cd_config_free(v);
     gui_free(&g);
+
+    /* Installed-app catalog fixture: user-over-system masking, recursive
+     * discovery, Flatpak fallback, Terminal/TryExec handling, and an
+     * optional no-Exec DBusActivatable entry. A fresh Gui is used because
+     * catalog_load() intentionally reads the environment only at init. */
+    {
+        char root[4096], home[4096], user_share[4096], sys_share[4096], dirs[8192];
+        bool paths_ok =
+            snprintf(root, sizeof(root), "%s/catalog-fixture", dir) < (int)sizeof(root) &&
+            snprintf(home, sizeof(home), "%s/home", root) < (int)sizeof(home) &&
+            snprintf(user_share, sizeof(user_share), "%s/user-share", root) < (int)sizeof(user_share) &&
+            snprintf(sys_share, sizeof(sys_share), "%s/system-share", root) < (int)sizeof(sys_share) &&
+            snprintf(dirs, sizeof(dirs), "%s", sys_share) < (int)sizeof(dirs);
+        CHECK(paths_ok, "catalog fixture paths too long");
+        if (paths_ok) {
+            bool wrote = true;
+            wrote = write_fixture(user_share, "applications/Masked.desktop",
+                "[Desktop Entry]\nType=Application\nName=User Mask\nExec=/bin/true\nHidden=true\n") && wrote;
+            wrote = write_fixture(sys_share, "applications/Masked.desktop",
+                "[Desktop Entry]\nType=Application\nName=System Masked App\nExec=/bin/true\n") && wrote;
+            wrote = write_fixture(user_share, "applications/org.example.Shadow.desktop",
+                "[Desktop Entry]\nType=Application\nName=User Shadow\nExec=/bin/true\nStartupWMClass=org.example.UserShadow\n") && wrote;
+            wrote = write_fixture(sys_share, "applications/org.example.Shadow.desktop",
+                "[Desktop Entry]\nType=Application\nName=System Shadow\nExec=/bin/false\n") && wrote;
+            wrote = write_fixture(sys_share, "applications/kde/org.example.Deep.desktop",
+                "[Desktop Entry]\nType=Application\nName=Deep App\nExec=/bin/true --flag %U\nStartupWMClass=org.example.Deep\nCategories=Utility;\n") && wrote;
+            wrote = write_fixture(sys_share, "applications/termapp.desktop",
+                "[Desktop Entry]\nType=Application\nName=Terminal Fixture\nExec=htop %U\nTryExec=/bin/sh\nTerminal=true\nCategories=System;TerminalEmulator;\n") && wrote;
+            wrote = write_fixture(sys_share, "applications/missing.desktop",
+                "[Desktop Entry]\nType=Application\nName=Missing TryExec\nExec=/bin/true\nTryExec=/definitely/not/installed\n") && wrote;
+            wrote = write_fixture(sys_share, "applications/dbusapp.desktop",
+                "[Desktop Entry]\nType=Application\nName=DBus Fixture\nDBusActivatable=true\nStartupWMClass=org.example.DBus\n") && wrote;
+            wrote = write_fixture(home, ".local/share/flatpak/exports/share/applications/org.example.Flatpak.desktop",
+                "[Desktop Entry]\nType=Application\nName=Flatpak Fixture\nExec=/usr/bin/flatpak run org.example.Flatpak\n") && wrote;
+            wrote = write_fixture(sys_share, "applications/devnull.desktop",
+                "[Desktop Entry]\nType=Application\nName=Devnull Masked\nExec=/bin/true\n") && wrote;
+            char devnull_link[4096];
+            bool devnull_ok = snprintf(devnull_link, sizeof(devnull_link),
+                                       "%s/applications/devnull.desktop", user_share) < (int)sizeof(devnull_link) &&
+                              symlink("/dev/null", devnull_link) == 0;
+            wrote = devnull_ok && wrote;
+            CHECK(wrote, "could not create catalog fixture");
+
+            char *old_home = dup_env("HOME");
+            char *old_data_home = dup_env("XDG_DATA_HOME");
+            char *old_data_dirs = dup_env("XDG_DATA_DIRS");
+            setenv("HOME", home, 1);
+            setenv("XDG_DATA_HOME", user_share, 1);
+            setenv("XDG_DATA_DIRS", dirs, 1);
+            Gui cg;
+            bool cg_ok = gui_init(&cg, dir);
+            CHECK(cg_ok, "catalog fixture gui_init failed");
+            if (cg_ok) {
+                AppChoice *shadow = find_choice(&cg, "org.example.Shadow");
+                CHECK(!find_choice(&cg, "masked"), "hidden user entry did not mask system desktop ID");
+                CHECK(!find_choice(&cg, "devnull"), "/dev/null user symlink did not mask system desktop ID");
+                CHECK(shadow && !strcmp(shadow->name, "User Shadow") &&
+                      !strcmp(shadow->app_id, "org.example.UserShadow"),
+                      "user desktop entry did not shadow system copy");
+                AppChoice *deep = find_choice(&cg, "kde-org.example.Deep");
+                CHECK(deep && !strcmp(deep->app_id, "org.example.Deep") &&
+                      !strstr(deep->exec, "%U"), "recursive desktop entry/field-code handling failed");
+                AppChoice *term = find_choice(&cg, "termapp");
+                CHECK(term && term->terminal && strstr(term->exec, "foot --title=") &&
+                      strstr(term->exec, "htop") && !strstr(term->exec, "%U"),
+                      "Terminal=true entry was not wrapped cleanly");
+                CHECK(!find_choice(&cg, "missing"), "TryExec-missing entry was not filtered");
+                CHECK(find_choice(&cg, "org.example.Flatpak") != NULL,
+                      "Flatpak exports fallback was not scanned");
+                AppChoice *dbus = find_choice(&cg, "dbusapp");
+                if (program_available("gio")) {
+                    CHECK(dbus && strstr(dbus->exec, "gio launch ") &&
+                          strstr(dbus->exec, "dbusapp.desktop"),
+                          "DBusActivatable no-Exec entry was not made launchable");
+                } else {
+                    CHECK(!dbus, "DBusActivatable entry appeared without gio");
+                }
+                gui_free(&cg);
+            }
+            restore_env("HOME", old_home);
+            restore_env("XDG_DATA_HOME", old_data_home);
+            restore_env("XDG_DATA_DIRS", old_data_dirs);
+        }
+    }
     if (fails) { fprintf(stderr, "selftest: %d failure(s)\n", fails); return 1; }
     printf("PASS: chromedrive-config selftest (app editor widgets, schema edits, file round-trip, offscreen renders)\n");
     return 0;
@@ -1220,6 +2377,7 @@ static void top_close(void *data, struct xdg_toplevel *top) { (void)top; ((App *
 static const struct xdg_toplevel_listener top_listener = { .configure = top_configure, .close = top_close };
 
 #define BTN_LEFT 0x110
+#define BTN_RIGHT 0x111
 static void p_enter(void *data, struct wl_pointer *p, uint32_t s, struct wl_surface *sf, wl_fixed_t x, wl_fixed_t y) {
     (void)p; (void)s; (void)sf; App *a = data;
     a->gui.px = vx(a, wl_fixed_to_double(x)); a->gui.py = vy(a, wl_fixed_to_double(y));
@@ -1231,6 +2389,10 @@ static void p_motion(void *data, struct wl_pointer *p, uint32_t t, wl_fixed_t x,
 }
 static void p_button(void *data, struct wl_pointer *p, uint32_t s, uint32_t t, uint32_t button, uint32_t state) {
     (void)p; (void)s; (void)t; App *a = data;
+    if (button == BTN_RIGHT) {
+        if (state == WL_POINTER_BUTTON_STATE_PRESSED) gui_right_press(&a->gui, a->gui.px, a->gui.py);
+        return;
+    }
     if (button != BTN_LEFT) return;
     if (state == WL_POINTER_BUTTON_STATE_PRESSED) { a->pointer_down = true; gui_press(&a->gui, a->gui.px, a->gui.py); }
     else { a->pointer_down = false; gui_release(&a->gui); }
@@ -1355,7 +2517,7 @@ static void reg_global(void *data, struct wl_registry *r, uint32_t name,
 static void reg_remove(void *d, struct wl_registry *r, uint32_t n) { (void)d; (void)r; (void)n; }
 static const struct wl_registry_listener registry_listener = { .global = reg_global, .global_remove = reg_remove };
 
-static int run_gui(const char *config_dir) {
+static int run_gui(const char *config_dir, int initial_slot, bool choose_app) {
     App a;
     memset(&a, 0, sizeof(a));
     a.w = 1000; a.h = 625; a.running = true; a.frame_ready = true; a.touch_id = -1;
@@ -1363,6 +2525,12 @@ static int run_gui(const char *config_dir) {
         fprintf(stderr, "chromedrive-config: cannot resolve config paths (set HOME or --config-dir)\n");
         return 1;
     }
+    if (initial_slot >= 0 && initial_slot < 6) {
+        a.gui.tab = TAB_APPS;
+        if (choose_app) picker_open(&a.gui, initial_slot, 292, 92);
+        else { a.gui.sel_app = initial_slot; a.gui.focus = -1; app_load_fields(&a.gui, initial_slot); }
+    } else if (choose_app) picker_open(&a.gui, a.gui.sel_app, 292, 92);
+    picker_request_init(&a.gui);
     signal(SIGINT, on_signal);
     signal(SIGTERM, on_signal);
     signal(SIGPIPE, SIG_IGN);
@@ -1389,7 +2557,9 @@ static int run_gui(const char *config_dir) {
         while (wl_display_prepare_read(a.display) != 0)
             if (wl_display_dispatch_pending(a.display) < 0) goto done;
         if (wl_display_flush(a.display) < 0 && errno != EAGAIN) { wl_display_cancel_read(a.display); break; }
-        int timeout = a.gui.focus >= 0 ? 400 : (a.gui.save_pending[0] || a.gui.save_pending[1] ? 60 : 1000);
+        int timeout = (a.gui.focus >= 0 || a.gui.num_idx >= 0) ? 400 :
+                      (a.gui.save_pending[0] || a.gui.save_pending[1] ? 60 :
+                       (*a.gui.picker_request_path ? 200 : 1000));
         struct pollfd pfd = { .fd = wl_display_get_fd(a.display), .events = POLLIN };
         int ret = poll(&pfd, 1, timeout);
         if (ret > 0 && (pfd.revents & POLLIN)) {
@@ -1397,7 +2567,8 @@ static int run_gui(const char *config_dir) {
         } else wl_display_cancel_read(a.display);
         if (ret < 0 && errno != EINTR) break;
         if (wl_display_dispatch_pending(a.display) < 0) break;
-        if (a.gui.focus >= 0 && now_s() - last_blink > 0.53) { last_blink = now_s(); a.gui.draw_dirty = true; }
+        if ((a.gui.focus >= 0 || a.gui.num_idx >= 0) && now_s() - last_blink > 0.53) { last_blink = now_s(); a.gui.draw_dirty = true; }
+        picker_request_poll(&a.gui);
         flush_saves(&a.gui, false);
         if (a.configured && a.frame_ready && a.gui.draw_dirty) draw_frame(&a);
     }
@@ -1434,6 +2605,8 @@ static void usage(const char *argv0) {
            "  --selftest              Headless widget/file round-trip test (temp dir)\n"
            "  --screenshot OUT.webp   Render one tab offscreen to a WebP and exit\n"
            "  --tab N                 Tab for --screenshot: 0 Launch Menu, 1 Garage3D, 2 Compositor\n"
+           "  --slot N                Open Launch Menu at slot N (0-5)\n"
+           "  --choose-app            Open the installed-app picker for --slot\n"
            "  --config-dir DIR        Use DIR as config home instead of $XDG_CONFIG_HOME/~/.config\n"
            "  --help                  This help\n\n"
            "Edits ~/.config/chromedrive/chromedrive.conf and ~/.config/garage3d/garage3d.conf;\n"
@@ -1442,13 +2615,15 @@ static void usage(const char *argv0) {
 
 int main(int argc, char **argv) {
     const char *config_dir = NULL, *screenshot = NULL;
-    int tab = 0;
-    bool do_selftest = false;
+    int tab = 0, slot = -1;
+    bool do_selftest = false, choose_app = false;
     for (int i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "--help") || !strcmp(argv[i], "-h")) { usage(argv[0]); return 0; }
         else if (!strcmp(argv[i], "--selftest")) do_selftest = true;
         else if (!strcmp(argv[i], "--screenshot") && i + 1 < argc) screenshot = argv[++i];
         else if (!strcmp(argv[i], "--tab") && i + 1 < argc) tab = atoi(argv[++i]);
+        else if (!strcmp(argv[i], "--slot") && i + 1 < argc) slot = atoi(argv[++i]);
+        else if (!strcmp(argv[i], "--choose-app")) choose_app = true;
         else if (!strcmp(argv[i], "--config-dir") && i + 1 < argc) config_dir = argv[++i];
         else { fprintf(stderr, "chromedrive-config: unknown option '%s'\n", argv[i]); usage(argv[0]); return 2; }
     }
@@ -1456,7 +2631,9 @@ int main(int argc, char **argv) {
     if (screenshot) {
         Gui g;
         if (!gui_init(&g, config_dir)) { fprintf(stderr, "chromedrive-config: cannot resolve config paths\n"); return 1; }
-        if (tab == TAB_APPS) app_load_fields(&g, 0);
+        if (slot >= 0 && slot < 6) { g.sel_app = slot; app_load_fields(&g, slot); }
+        else if (tab == TAB_APPS) app_load_fields(&g, 0);
+        if (choose_app) { picker_open(&g, slot >= 0 && slot < 6 ? slot : g.sel_app, 292, 92); tab = TAB_APPS; }
         cairo_surface_t *img = render_tab_image(&g, tab < 0 ? 0 : tab > 2 ? 2 : tab);
         bool ok = save_webp(img, screenshot);
         cairo_surface_destroy(img);
@@ -1465,5 +2642,5 @@ int main(int argc, char **argv) {
         fprintf(stderr, "chromedrive-config: wrote %s\n", screenshot);
         return 0;
     }
-    return run_gui(config_dir);
+    return run_gui(config_dir, slot, choose_app);
 }

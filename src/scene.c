@@ -42,7 +42,7 @@ static void glow_line(Vec3 a,Vec3 b,float radius,float r,float g,float bl){
 }
 void scene_neon_color(Server *s,float *r,float *g,float *b){if(s->theme==1){*r=.18;*g=.85;*b=1;}else if(s->theme==2){*r=.64;*g=1;*b=.19;}else{*r=.65;*g=.22;*b=1;}}
 #define neon scene_neon_color
-static void plane_begin(Plane p){glPushMatrix();glTranslatef(p.center.x,p.center.y,p.center.z);glRotatef(p.yaw,0,1,0);glRotatef(p.pitch,1,0,0);}
+static void plane_begin(Plane p){glPushMatrix();glTranslatef(p.center.x,p.center.y,p.center.z);glRotatef(p.yaw,0,1,0);glRotatef(p.pitch,1,0,0);glRotatef(p.roll,0,0,1);}
 static void lighting(void){
  glEnable(GL_LIGHTING);glEnable(GL_LIGHT0);glEnable(GL_LIGHT1);glEnable(GL_LIGHT2);glEnable(GL_COLOR_MATERIAL);glColorMaterial(GL_FRONT_AND_BACK,GL_AMBIENT_AND_DIFFUSE);glEnable(GL_NORMALIZE);
  GLfloat ambient[]={.29,.28,.37,1},pos[]={-3,4,4,1},diff[]={.77,.83,.98,1},spec[]={.7,.8,1,1};glLightModelfv(GL_LIGHT_MODEL_AMBIENT,ambient);glLightfv(GL_LIGHT0,GL_POSITION,pos);glLightfv(GL_LIGHT0,GL_DIFFUSE,diff);glLightfv(GL_LIGHT0,GL_SPECULAR,spec);
@@ -307,70 +307,180 @@ static void draw_cog(Server *s){
  if(hot){glEnable(GL_BLEND);glBlendFunc(GL_SRC_ALPHA,GL_ONE);glColor4f(.25,.85,.70,.15);quad(-.12,-.12,.24,.24,.033);glDisable(GL_BLEND);}
  glEnable(GL_LIGHTING);glPopMatrix();
 }
-typedef struct {float scale,w,h;int layer;} DrawSurface;
+typedef struct {float scale,w,h,z0,zstep;int layer;} DrawSurface;
 static void transformed_uv(int transform,float x,float y,float *u,float *v){float a=x,b=y;switch(transform&3){case 1:a=1-y;b=x;break;case 2:a=1-x;b=1-y;break;case 3:a=y;b=1-x;break;}if(transform>=4)a=1-a;*u=a;*v=b;}
 static void draw_app_surface(Surface *p,int sx,int sy,void *data){
- DrawSurface *d=data;float x=-d->w/2+sx*d->scale,y=d->h/2-sy*d->scale,w=p->width*d->scale,h=p->height*d->scale,z=.024f+.0007f*d->layer++;
+ DrawSurface *d=data;float x=-d->w/2+sx*d->scale,y=d->h/2-sy*d->scale,w=p->width*d->scale,h=p->height*d->scale,z=d->z0+d->zstep*d->layer++;
  glDisable(GL_LIGHTING);glEnable(GL_TEXTURE_2D);glBindTexture(GL_TEXTURE_2D,p->texture);glEnable(GL_BLEND);glBlendFunc(GL_ONE,GL_ONE_MINUS_SRC_ALPHA);glColor4f(1,1,1,1);
  float coords[4][2]={{0,0},{1,0},{1,1},{0,1}},vx[]={x,x+w,x+w,x},vy[]={y,y,y-h,y-h};glBegin(GL_QUADS);for(int i=0;i<4;i++){float u,v;transformed_uv(p->transform,coords[i][0],coords[i][1],&u,&v);glTexCoord2f(u,v);glVertex3f(vx[i],vy[i],z);}glEnd();glDisable(GL_BLEND);glDisable(GL_TEXTURE_2D);glEnable(GL_LIGHTING);
 }
-static void draw_monitor_manipulator(Server *s,int i,Plane p,float reveal,bool active){
- MonitorManipulator m=monitor_manipulator_at(i,reveal);
- Vec3 right=rotate_y(v3(1,0,0),p.yaw),up=rotate_y(rotate_x(v3(0,1,0),p.pitch),p.yaw);
+static float monitor_iso_scale(Plane p,int slot){
+ Plane base=monitor_plane(slot);float kx=p.width/base.width,ky=p.height/base.height;
+ return sqrtf(fmaxf(kx*ky,.0001f));
+}
+static void handles_button_rect(Plane p,float k,float *x,float *y,float *w,float *h){
+ *w=.36f*k;*h=.105f*k;*x=p.width*.11f-*w*.5f;*y=p.height*.5f+.026f*k;
+}
+static bool handles_button_at(Plane p,float k,float lx,float ly){
+ float x,y,w,h;handles_button_rect(p,k,&x,&y,&w,&h);
+ return lx>=x&&lx<=x+w&&ly>=y&&ly<=y+h;
+}
+static void arrange_handle_point(Plane p,float k,int handle,float *x,float *y){
+ float hw=p.width*.5f,hh=p.height*.5f;
+ switch(handle){
+ case CD_HANDLE_MOVE:*x=.32f*k;*y=-.32f*k;break;
+ case CD_HANDLE_AXIS_X:*x=.42f*k;*y=0;break;
+ case CD_HANDLE_AXIS_Y:*x=0;*y=.42f*k;break;
+ case CD_HANDLE_AXIS_Z:*x=0;*y=0;break;
+ case CD_HANDLE_ROTATE_YAW:*x=hw+.28f*k;*y=0;break;
+ case CD_HANDLE_ROTATE_PITCH:*x=-hw-.28f*k;*y=0;break;
+ case CD_HANDLE_ROTATE_ROLL:*x=0;*y=hh+.30f*k;break;
+ case CD_HANDLE_SCALE:*x=hw-.34f*k;*y=-hh+.34f*k;break; /* just inside SE corner: outside would hide behind the dash in focus view */
+ case CD_HANDLE_RESIZE_NW:*x=-hw;*y=hh;break;
+ case CD_HANDLE_RESIZE_N:*x=0;*y=hh;break;
+ case CD_HANDLE_RESIZE_NE:*x=hw;*y=hh;break;
+ case CD_HANDLE_RESIZE_E:*x=hw;*y=0;break;
+ case CD_HANDLE_RESIZE_SE:*x=hw;*y=-hh;break;
+ case CD_HANDLE_RESIZE_S:*x=0;*y=-hh;break;
+ case CD_HANDLE_RESIZE_SW:*x=-hw;*y=-hh;break;
+ case CD_HANDLE_RESIZE_W:*x=-hw;*y=0;break;
+ default:*x=0;*y=0;break;
+ }
+}
+static int arrange_handle_at(Plane p,float k,float lx,float ly){
+ static const int ids[]={CD_HANDLE_MOVE,CD_HANDLE_AXIS_X,CD_HANDLE_AXIS_Y,CD_HANDLE_AXIS_Z,
+  CD_HANDLE_ROTATE_YAW,CD_HANDLE_ROTATE_PITCH,CD_HANDLE_ROTATE_ROLL,CD_HANDLE_SCALE,
+  CD_HANDLE_RESIZE_NW,CD_HANDLE_RESIZE_N,CD_HANDLE_RESIZE_NE,CD_HANDLE_RESIZE_E,
+  CD_HANDLE_RESIZE_SE,CD_HANDLE_RESIZE_S,CD_HANDLE_RESIZE_SW,CD_HANDLE_RESIZE_W};
+ float tol=.115f*k,best=tol*tol;int found=CD_HANDLE_NONE;
+ for(unsigned i=0;i<sizeof(ids)/sizeof(ids[0]);i++){float x,y;arrange_handle_point(p,k,ids[i],&x,&y);float dx=lx-x,dy=ly-y,d=dx*dx+dy*dy;if(d<=best){best=d;found=ids[i];}}
+ if(found!=CD_HANDLE_NONE)return found;
+ if(lx>=0&&lx<=.42f*k&&fabsf(ly)<=.055f*k)return CD_HANDLE_AXIS_X;
+ if(ly>=0&&ly<=.42f*k&&fabsf(lx)<=.055f*k)return CD_HANDLE_AXIS_Y;
+ return CD_HANDLE_NONE;
+}
+static void handle_box(float x,float y,float z,float size,float r,float g,float b){
+ color(.015,.02,.035);box(x,y,z,size*1.28f,size*1.28f,size*.30f);
+ color(r,g,b);box(x,y,z+size*.10f,size,size,size*.34f);
+}
+static void handle_ring(float x,float y,float z,float radius,float r,float g,float b){
+ glPushMatrix();glTranslatef(x,y,z);color(r,g,b);torus(radius,radius*.17f,36,8);glPopMatrix();
+}
+static void draw_arrange_handles(Server *s,Plane p,float k){
+ (void)s;float z=.052f*k,size=.105f*k,x,y;
+ /* Window-border resize grips: white corner/edge squares. */
+ for(int id=CD_HANDLE_RESIZE_NW;id<=CD_HANDLE_RESIZE_W;id++){arrange_handle_point(p,k,id,&x,&y);bool corner=id==CD_HANDLE_RESIZE_NW||id==CD_HANDLE_RESIZE_NE||id==CD_HANDLE_RESIZE_SE||id==CD_HANDLE_RESIZE_SW;handle_box(x,y,z,size*(corner?1.08f:.88f),.94,.96,1);}
+ /* Local axes from the centre. The blue Z knob sits toward the viewer;
+  * the amber square offset from centre is unconstrained plane movement. */
+ glow_line(v3(0,0,z),v3(.42f*k,0,z),.006f*k,1,.22,.22);
+ glow_line(v3(.42f*k,0,z),v3(.35f*k,.055f*k,z),.005f*k,1,.22,.22);glow_line(v3(.42f*k,0,z),v3(.35f*k,-.055f*k,z),.005f*k,1,.22,.22);
+ glow_line(v3(0,0,z),v3(0,.42f*k,z),.006f*k,.25,1,.35);
+ glow_line(v3(0,.42f*k,z),v3(.055f*k,.35f*k,z),.005f*k,.25,1,.35);glow_line(v3(0,.42f*k,z),v3(-.055f*k,.35f*k,z),.005f*k,.25,1,.35);
+ glow_line(v3(0,0,z),v3(0,0,.44f*k),.006f*k,.30,.55,1);
+ arrange_handle_point(p,k,CD_HANDLE_MOVE,&x,&y);handle_box(x,y,z,size*1.08f,1,.62,.16);
+ glow_line(v3(x-.035f*k,y,z+.025f*k),v3(x+.035f*k,y,z+.025f*k),.004f*k,.04,.05,.07);glow_line(v3(x,y-.035f*k,z+.025f*k),v3(x,y+.035f*k,z+.025f*k),.004f*k,.04,.05,.07);
+ handle_box(.42f*k,0,z,size*.82f,1,.22,.22);handle_box(0,.42f*k,z,size*.82f,.25,1,.35);handle_box(0,0,.44f*k,size*.88f,.30,.55,1);
+ /* Rotation rings just outside the frame; their colours match the axis
+  * they rotate around (yaw=Y/green, pitch=X/red, roll=Z/blue). */
+ arrange_handle_point(p,k,CD_HANDLE_ROTATE_YAW,&x,&y);handle_ring(x,y,z,.105f*k,.25,1,.35);
+ arrange_handle_point(p,k,CD_HANDLE_ROTATE_PITCH,&x,&y);handle_ring(x,y,z,.105f*k,1,.22,.22);
+ arrange_handle_point(p,k,CD_HANDLE_ROTATE_ROLL,&x,&y);handle_ring(x,y,z,.105f*k,.30,.55,1);
+ /* Magenta diamond: uniform scale, preserving the current aspect. */
+ arrange_handle_point(p,k,CD_HANDLE_SCALE,&x,&y);glPushMatrix();glTranslatef(x,y,z);glRotatef(45,0,0,1);color(.015,.02,.035);box(0,0,0,size*1.22f,size*1.22f,size*.28f);color(.94,.30,.92);box(0,0,size*.09f,size,size,size*.32f);glPopMatrix();
+}
+/* 3-stage concentric telescopic linear actuator with side-mounted electric
+ * servo motor pod, wiper gland collars, neon telemetry seals, and stroke-ring
+ * calibration markings on the inner chrome actuator ram. */
+static void draw_telescopic_actuator(Vec3 a,Vec3 b,Vec3 ortho,float radius,float ext,float ar,float ag,float ab){
+ float e=clampf(ext,0.f,1.f);
+ float s1_end=.54f-.14f*e;
+ float s2_end=.82f-.12f*e;
+ Vec3 d=vsub(b,a);
+ Vec3 dir=vnorm(d);
+ float proj=ortho.x*dir.x+ortho.y*dir.y+ortho.z*dir.z;
+ Vec3 ort=vsub(ortho,vmul(dir,proj));
+ float ort_len=sqrtf(ort.x*ort.x+ort.y*ort.y+ort.z*ort.z);
+ if(ort_len<1e-5f)ort=(fabsf(dir.y)>.9f)?v3(1,0,0):v3(0,1,0);
+ ort=vnorm(ort);
+ Vec3 p1=vadd(a,vmul(d,s1_end));
+ Vec3 p2=vadd(a,vmul(d,s2_end));
+
+ /* Stage 1: outer gunmetal actuator barrel + side-mounted servo motor pod */
+ color(.22f,.26f,.34f);cylinder(a,p1,radius,16);
+ color(.15f,.18f,.25f);cylinder(a,vadd(a,vmul(d,.08f)),radius*1.22f,16);
+ Vec3 servo_a=vadd(vadd(a,vmul(d,.08f)),vmul(ort,radius*1.65f));
+ Vec3 servo_b=vadd(vadd(a,vmul(d,s1_end*.78f)),vmul(ort,radius*1.65f));
+ color(.17f,.20f,.28f);cylinder(servo_a,servo_b,radius*.58f,12);
+ color(.34f,.39f,.49f);
+ cylinder(vadd(a,vmul(d,.12f)),servo_a,radius*.22f,8);
+ cylinder(vadd(a,vmul(d,s1_end*.70f)),servo_b,radius*.22f,8);
+ color(.36f,.41f,.52f);cylinder(vadd(p1,vmul(d,-.045f)),p1,radius*1.16f,16);
+ glow_line(vsub(p1,vmul(ort,radius*.95f)),vadd(p1,vmul(ort,radius*.95f)),radius*.16f,ar,ag,ab);
+
+ /* Stage 2: intermediate brushed-titanium telescopic sleeve + wiper gland */
+ Vec3 s2_start=vadd(a,vmul(d,s1_end-.05f));
+ color(.42f,.47f,.58f);cylinder(s2_start,p2,radius*.72f,14);
+ color(.56f,.50f,.38f);cylinder(vadd(p2,vmul(d,-.04f)),p2,radius*.86f,14);
+ glow_line(vsub(p2,vmul(ort,radius*.72f)),vadd(p2,vmul(ort,radius*.72f)),radius*.13f,ar,ag,ab);
+
+ /* Stage 3: inner high-polish chrome actuator ram + stroke calibration rings */
+ Vec3 s3_start=vadd(a,vmul(d,s2_end-.05f));
+ color(.78f,.83f,.91f);cylinder(s3_start,b,radius*.46f,12);
+ float pos1=s2_end+.33f*(1.f-s2_end);
+ float pos2=s2_end+.66f*(1.f-s2_end);
+ Vec3 r1=vadd(a,vmul(d,pos1));
+ Vec3 r2=vadd(a,vmul(d,pos2));
+ color(.22f,.26f,.34f);
+ cylinder(r1,vadd(r1,vmul(d,.02f)),radius*.54f,12);
+ cylinder(r2,vadd(r2,vmul(d,.02f)),radius*.54f,12);
+ color(.32f,.37f,.47f);cylinder(vadd(b,vmul(d,-.04f)),b,radius*.76f,14);
+}
+static void draw_monitor_manipulator(Server *s,int i,Plane p,bool active){
+ MonitorManipulator m=monitor_manipulator_for_plane(i,p);
+ Vec3 right,up,normal;plane_axes(p,&right,&up,&normal);
  float nr,ng,nb;neon(s,&nr,&ng,&nb);
- float ar=active?.35f:nr*.85f,ag=active?.92f:ng*.85f,ab=active?.74f:nb*.85f;
+ float ar=active?.35f:nr*.85f,ag=active?.92f:ng*.85f,ab=active?.74f:nb*.74f;
 
  /* 1. Stationary chassis base pedestal & rotary shoulder turret (car-local). */
- color(.18f,.21f,.28f);rbox(m.base.x,m.base.y,m.base.z,.16f,.06f,.16f,.025f);
- color(.32f,.36f,.45f);cylinder(m.base,m.shoulder,.042f,16);
- Vec3 sh_axis=vmul(right,.046f);
- color(.24f,.28f,.36f);cylinder(vsub(m.shoulder,sh_axis),vadd(m.shoulder,sh_axis),.046f,16);
- glow_line(vsub(m.shoulder,vmul(sh_axis,1.06f)),vadd(m.shoulder,vmul(sh_axis,1.06f)),.0045f,ar,ag,ab);
+ color(.18f,.21f,.28f);rbox(m.base.x,m.base.y,m.base.z,.18f,.06f,.18f,.025f);
+ color(.32f,.36f,.45f);cylinder(m.base,m.shoulder,.044f,16);
+ Vec3 sh_axis=vmul(right,.048f);
+ color(.24f,.28f,.36f);cylinder(vsub(m.shoulder,sh_axis),vadd(m.shoulder,sh_axis),.048f,16);
+ glow_line(vsub(m.shoulder,vmul(sh_axis,1.08f)),vadd(m.shoulder,vmul(sh_axis,1.08f)),.0045f,ar,ag,ab);
 
- /* 2. Twin-spar articulated upper arm + cross-braces (shoulder -> elbow). */
- Vec3 spar=vmul(right,.032f);
- color(.29f,.34f,.43f);
- cylinder(vsub(m.shoulder,spar),vsub(m.elbow,spar),.021f,14);
- cylinder(vadd(m.shoulder,spar),vadd(m.elbow,spar),.021f,14);
- for(int k=1;k<=3;k++){
-  float f=.25f*(float)k;
-  Vec3 mid=vadd(m.shoulder,vmul(vsub(m.elbow,m.shoulder),f));
-  color(.42f,.47f,.57f);cylinder(vsub(mid,spar),vadd(mid,spar),.011f,10);
- }
+ /* 2. Upper-arm 3-stage telescopic linear actuator (shoulder -> elbow). */
+ draw_telescopic_actuator(m.shoulder,m.elbow,up,.036f,m.upper_ext,ar,ag,ab);
 
- /* 3. Two-stage hydraulic damping cylinder barrel + chrome piston rod. */
- Vec3 p_mid=vadd(m.piston_base,vmul(vsub(m.piston_rod,m.piston_base),.54f));
- color(.19f,.23f,.31f);cylinder(m.piston_base,p_mid,.024f,14);
- color(.72f,.77f,.86f);cylinder(p_mid,m.piston_rod,.012f,12);
+ /* 3. Underslung auxiliary telescopic drive actuator (piston_base -> piston_rod). */
+ draw_telescopic_actuator(m.piston_base,m.piston_rod,right,.024f,m.piston_ext,ar,ag,ab);
 
  /* 4. Rotary servo elbow drum with neon telemetry ring. */
- Vec3 el_axis=vmul(right,.042f);
- color(.22f,.26f,.34f);cylinder(vsub(m.elbow,el_axis),vadd(m.elbow,el_axis),.044f,16);
- color(.46f,.51f,.61f);cylinder(vsub(m.elbow,vmul(el_axis,1.12f)),vadd(m.elbow,vmul(el_axis,1.12f)),.024f,14);
+ Vec3 el_axis=vmul(right,.048f);
+ color(.22f,.26f,.34f);cylinder(vsub(m.elbow,el_axis),vadd(m.elbow,el_axis),.048f,16);
+ color(.46f,.51f,.61f);cylinder(vsub(m.elbow,vmul(el_axis,1.12f)),vadd(m.elbow,vmul(el_axis,1.12f)),.027f,14);
  glow_line(vsub(m.elbow,vmul(el_axis,1.15f)),vadd(m.elbow,vmul(el_axis,1.15f)),.005f,ar,ag,ab);
 
- /* 5. Twin-spar forearm linkage (elbow -> wrist gimbal). */
- Vec3 fspar=vmul(right,.024f);
- color(.33f,.38f,.48f);
- cylinder(vsub(m.elbow,fspar),vsub(m.wrist,fspar),.018f,14);
- cylinder(vadd(m.elbow,fspar),vadd(m.wrist,fspar),.018f,14);
- Vec3 fmid=vadd(m.elbow,vmul(vsub(m.wrist,m.elbow),.5f));
- color(.44f,.49f,.59f);cylinder(vsub(fmid,fspar),vadd(fmid,fspar),.010f,10);
- /* Braided power/DisplayPort umbilical along the manipulator arm. */
- Vec3 c_sh=vadd(m.shoulder,vmul(up,-.025f)),c_el=vadd(m.elbow,vmul(up,-.032f)),c_wr=vadd(m.wrist,vmul(up,-.025f));
- color(.08f,.10f,.15f);cylinder(c_sh,c_el,.008f,8);cylinder(c_el,c_wr,.008f,8);
+ /* 5. Forearm 3-stage telescopic linear actuator (elbow -> wrist). */
+ draw_telescopic_actuator(m.elbow,m.wrist,up,.030f,m.fore_ext,ar,ag,ab);
 
- /* 6. Wrist gimbal hub & 4-way diagonal VESA spider struts to bezel claws.
-  * An outward-side gusset connects the elbow to the outer bezel claw so the
-  * articulated triangle reads clearly in the outer cockpit bays without ever
-  * crossing in front of the screen. */
- Vec3 wr_axis=vmul(right,.036f);
- color(.25f,.30f,.39f);cylinder(vsub(m.wrist,wr_axis),vadd(m.wrist,wr_axis),.038f,16);
- int outer_claw=(i==1||i==3)?2:((i==2||i==4)?3:(i==6?1:0));
- for(int k=0;k<4;k++){
-  color(.36f,.41f,.51f);cylinder(m.wrist,m.claws[k],.014f,12);
+ /* 6. Wrist gimbal drum & perimeter bezel saddle bar (zero overlapping spider rods). */
+ Vec3 wr_axis=vmul(right,.040f);
+ color(.25f,.30f,.39f);cylinder(vsub(m.wrist,wr_axis),vadd(m.wrist,wr_axis),.040f,16);
+ glow_line(vsub(m.wrist,vmul(wr_axis,1.10f)),vadd(m.wrist,vmul(wr_axis,1.10f)),.0045f,ar,ag,ab);
+ if(i==0){
+  Vec3 s0=vadd(m.wrist,vmul(up,.32f*p.height)),s1=vadd(m.wrist,vmul(up,-.32f*p.height));
+  color(.30f,.35f,.45f);cylinder(s0,s1,.019f,12);
+  color(.38f,.43f,.53f);
+  cylinder(s0,m.claws[0],.017f,12);
+  cylinder(s1,m.claws[2],.017f,12);
+ }else{
+  int c0=(i==5||i==6)?0:2,c1=(i==5||i==6)?1:3;
+  Vec3 s0=vadd(m.wrist,vmul(right,-.36f*p.width)),s1=vadd(m.wrist,vmul(right,.36f*p.width));
+  color(.30f,.35f,.45f);cylinder(s0,s1,.019f,12);
+  color(.38f,.43f,.53f);
+  cylinder(s0,m.claws[c0],.017f,12);
+  cylinder(s1,m.claws[c1],.017f,12);
  }
- color(.26f,.31f,.40f);cylinder(m.elbow,m.claws[outer_claw],.013f,10);
 }
 static void draw_monitor(Server *s,int i){
  Monitor *m=&s->monitors[i];
@@ -385,36 +495,53 @@ static void draw_monitor(Server *s,int i){
   return;
  }
  Plane p=m->plane;float w=p.width,h=p.height;bool active=s->keyboard_focus==m->surface,cluster=i==CD_CLUSTER_SLOT;
- if(!cluster)draw_monitor_manipulator(s,i,p,m->reveal,active);
+ float k=monitor_iso_scale(p,i); /* isotropic detail scale; w/h may differ after an edge resize */
+ bool arranging=s->arrange_mode&&s->arrange_slot==i;
+ if(!cluster)draw_monitor_manipulator(s,i,p,active);
  plane_begin(p);
  if(!cluster){
   float nr,ng,nb;neon(s,&nr,&ng,&nb);
   float ar=active?.35f:nr*.85f,ag=active?.92f:ng*.85f,ab=active?.74f:nb*.85f;
-  color(.30,.35,.43);rbox(0,.075,-.056,w+.12,h+.25,.10,.065);
-  color(.018,.027,.038);rbox(0,.075,-.003,w+.086,h+.219,.038,.055);
-  /* 4 articulated mechanical bezel claw jaws + 2 lateral stabilizer clamps
-   * wrapping from the rear spider struts onto the front bezel face (z=+.032). */
+  color(.30,.35,.43);rbox(0,.075f*k,-.056f*k,w+.12f*k,h+.25f*k,.10f*k,.065f*k);
+  color(.018,.027,.038);rbox(0,.075f*k,-.003f*k,w+.086f*k,h+.219f*k,.038f*k,.055f*k);
+  /* Articulated mechanical bezel claw jaws + lateral stabilizer clamps
+   * wrapping onto the bezel perimeter without obstructing the screen. */
   for(int side=-1;side<=1;side+=2){
-   float cx=side*w*.38f,ty=h*.5f+.20f,by=-h*.5f-.05f,sx=side*(w*.5f+.062f);
-   /* Top & bottom bezel claw knuckles + front clamping fingers */
-   color(.38f,.43f,.53f);rbox(cx,ty,-.010f,.13f,.055f,.095f,.014f);
-   color(.20f,.24f,.32f);box(cx,ty-.022f,.032f,.11f,.032f,.022f);
-   glow_line(v3(cx-.038f,ty-.018f,.044f),v3(cx+.038f,ty-.018f,.044f),.0035f,ar,ag,ab);
-   color(.38f,.43f,.53f);rbox(cx,by,-.010f,.13f,.055f,.095f,.014f);
-   color(.20f,.24f,.32f);box(cx,by+.022f,.032f,.11f,.032f,.022f);
-   glow_line(v3(cx-.038f,by+.018f,.044f),v3(cx+.038f,by+.018f,.044f),.0035f,ar,ag,ab);
-   /* Lateral vise clamp gripping the left/right bezel edge */
-   color(.34f,.39f,.49f);rbox(sx,.05f,-.012f,.055f,.18f,.095f,.014f);
-   color(.20f,.24f,.32f);box(sx-side*.020f,.05f,.032f,.032f,.14f,.022f);
-   glow_line(v3(sx-side*.016f,-.005f,.044f),v3(sx-side*.016f,.105f,.044f),.0035f,ar,ag,ab);
+   float cx=side*w*.36f,ty=h*.5f+.20f*k,by=-h*.5f-.05f*k,sx=side*(w*.5f+.062f*k);
+   color(.38f,.43f,.53f);rbox(cx,ty,-.010f*k,.13f*k,.055f*k,.095f*k,.014f*k);
+   color(.20f,.24f,.32f);box(cx,ty-.022f*k,.032f*k,.11f*k,.032f*k,.022f*k);
+   glow_line(v3(cx-.038f*k,ty-.018f*k,.044f*k),v3(cx+.038f*k,ty-.018f*k,.044f*k),.0035f*k,ar,ag,ab);
+   color(.38f,.43f,.53f);rbox(cx,by,-.010f*k,.13f*k,.055f*k,.095f*k,.014f*k);
+   color(.20f,.24f,.32f);box(cx,by+.022f*k,.032f*k,.11f*k,.032f*k,.022f*k);
+   glow_line(v3(cx-.038f*k,by+.018f*k,.044f*k),v3(cx+.038f*k,by+.018f*k,.044f*k),.0035f*k,ar,ag,ab);
+   color(.34f,.39f,.49f);rbox(sx,.05f*k,-.012f*k,.055f*k,.18f*k,.095f*k,.014f*k);
+   color(.20f,.24f,.32f);box(sx-side*.020f*k,.05f*k,.032f*k,.032f*k,.14f*k,.022f*k);
+   glow_line(v3(sx-side*.016f*k,-.005f*k,.044f*k),v3(sx-side*.016f*k,.105f*k,.044f*k),.0035f*k,ar,ag,ab);
   }
-  glDisable(GL_LIGHTING);color(.010,.016,.026);quad(-w/2,-h/2,w,h,.019);glEnable(GL_LIGHTING);
-  if(active)glow_line(v3(-w/2,-h/2-.022,.025),v3(w/2,-h/2-.022,.025),.004,.35,.92,.74);else glow_line(v3(-w/2,-h/2-.022,.025),v3(w/2,-h/2-.022,.025),.003,nr*.65,ng*.7,nb*.7);
-  ui_monitor_label(s,i);texture(m->label,-w/2,h/2+.011,w,.137,.024);
+  glDisable(GL_LIGHTING);color(.010,.016,.026);quad(-w/2,-h/2,w,h,.019f*k);glEnable(GL_LIGHTING);
+  if(arranging)glow_line(v3(-w/2,-h/2-.022f*k,.025f*k),v3(w/2,-h/2-.022f*k,.025f*k),.005f*k,1,.62,.16);
+  else if(active)glow_line(v3(-w/2,-h/2-.022f*k,.025f*k),v3(w/2,-h/2-.022f*k,.025f*k),.004f*k,.35,.92,.74);
+  else glow_line(v3(-w/2,-h/2-.022f*k,.025f*k),v3(w/2,-h/2-.022f*k,.025f*k),.003f*k,nr*.65,ng*.7,nb*.7);
+  ui_monitor_label(s,i);texture(m->label,-w/2,h/2+.011f*k,w,.137f*k,.024f*k);
+  {float bx,by,bw,bh;handles_button_rect(p,k,&bx,&by,&bw,&bh);if(s->handles_tex)texture(s->handles_tex,bx,by,bw,bh,.032f*k);if(arranging&&s->arrange_handles){float z=.040f*k,r=.004f*k;glow_line(v3(bx,by,z),v3(bx+bw,by,z),r,1,.62,.16);glow_line(v3(bx+bw,by,z),v3(bx+bw,by+bh,z),r,1,.62,.16);glow_line(v3(bx+bw,by+bh,z),v3(bx,by+bh,z),r,1,.62,.16);glow_line(v3(bx,by+bh,z),v3(bx,by,z),r,1,.62,.16);}}
  }
- glEnable(GL_STENCIL_TEST);glClear(GL_STENCIL_BUFFER_BIT);glStencilMask(0xff);glStencilFunc(GL_ALWAYS,1,0xff);glStencilOp(GL_KEEP,GL_KEEP,GL_REPLACE);glColorMask(GL_FALSE,GL_FALSE,GL_FALSE,GL_FALSE);glDepthMask(GL_FALSE);glDisable(GL_DEPTH_TEST);quad(-w/2,-h/2,w,h,.021);glEnable(GL_DEPTH_TEST);glColorMask(GL_TRUE,GL_TRUE,GL_TRUE,GL_TRUE);glDepthMask(GL_TRUE);glStencilFunc(GL_EQUAL,1,0xff);glStencilOp(GL_KEEP,GL_KEEP,GL_KEEP);glStencilMask(0);
- float scale=fminf(w/m->surface->width,h/m->surface->height);DrawSurface d={.scale=scale,.w=m->surface->width*scale,.h=m->surface->height*scale};server_each_surface(m->surface,draw_app_surface,&d);
- glStencilMask(0xff);glDisable(GL_STENCIL_TEST);glPopMatrix();
+ glEnable(GL_STENCIL_TEST);glClear(GL_STENCIL_BUFFER_BIT);glStencilMask(0xff);glStencilFunc(GL_ALWAYS,1,0xff);glStencilOp(GL_KEEP,GL_KEEP,GL_REPLACE);glColorMask(GL_FALSE,GL_FALSE,GL_FALSE,GL_FALSE);glDepthMask(GL_FALSE);glDisable(GL_DEPTH_TEST);quad(-w/2,-h/2,w,h,.021f*k);glEnable(GL_DEPTH_TEST);glColorMask(GL_TRUE,GL_TRUE,GL_TRUE,GL_TRUE);glDepthMask(GL_TRUE);glStencilFunc(GL_EQUAL,1,0xff);glStencilOp(GL_KEEP,GL_KEEP,GL_KEEP);glStencilMask(0);
+ float scale=fminf(w/m->surface->width,h/m->surface->height);DrawSurface d={.scale=scale,.w=m->surface->width*scale,.h=m->surface->height*scale,.z0=.024f*k,.zstep=.0007f*k};server_each_surface(m->surface,draw_app_surface,&d);
+ glStencilMask(0xff);glDisable(GL_STENCIL_TEST);
+ if(arranging){
+  /* Amber frame + local RGB axes (right/up/normal) make the current
+   * Arrange target and its orientation legible while it is transformed. */
+  float z=.038f*k,r=.005f*k;
+  glow_line(v3(-w/2,-h/2,z),v3(w/2,-h/2,z),r,1,.62,.16);
+  glow_line(v3(w/2,-h/2,z),v3(w/2,h/2,z),r,1,.62,.16);
+  glow_line(v3(w/2,h/2,z),v3(-w/2,h/2,z),r,1,.62,.16);
+  glow_line(v3(-w/2,h/2,z),v3(-w/2,-h/2,z),r,1,.62,.16);
+  glow_line(v3(0,0,z),v3(.30f*k,0,z),r,1,.22,.22);
+  glow_line(v3(0,0,z),v3(0,.30f*k,z),r,.25,1,.35);
+  glow_line(v3(0,0,z),v3(0,0,.34f*k),r,.30,.55,1);
+  if(s->arrange_handles)draw_arrange_handles(s,p,k);
+ }
+ glPopMatrix();
 }
 static void draw_windshield_hud(Server *s){
  if(!s->hud_visible||!s->windshield_tex)return;
@@ -431,7 +558,7 @@ void scene_init(Server *s){
  const char *names[]={"TERMINAL","FILES","AUDIO","METERS","NEON","COCKPIT"};const char *subs[]={"01 / SHELL","02 / EXPLORE","03 / SESSION","04 / EV","05 / COLOR","06 / HOME"};
  /* Built-in menu defaults; [app.*] config (applied in main.c after ui_init)
   * may relabel/re-icon/disable any of these live. */
- for(int i=0;i<6;i++){float x=(i%3-1)*.48f,y=i<3?.095f:-.22f;s->buttons[i].plane=(Plane){.center=vadd(panel.center,vadd(vadd(vmul(right,x),vmul(up,y)),vmul(normal,.084f))),.width=.426,.height=.248,.yaw=panel.yaw,.pitch=panel.pitch};snprintf(s->buttons[i].name,sizeof(s->buttons[i].name),"%s",names[i]);snprintf(s->buttons[i].sub,sizeof(s->buttons[i].sub),"%s",subs[i]);s->buttons[i].action=i;s->buttons[i].icon=i;s->buttons[i].enabled=true;s->buttons[i].texture=0;}
+ for(int i=0;i<6;i++){float x=(i%3-1)*.48f,y=i<3?.095f:-.22f;s->buttons[i].plane=(Plane){.center=vadd(panel.center,vadd(vadd(vmul(right,x),vmul(up,y)),vmul(normal,.084f))),.width=.426,.height=.248,.yaw=panel.yaw,.pitch=panel.pitch};snprintf(s->buttons[i].name,sizeof(s->buttons[i].name),"%s",names[i]);snprintf(s->buttons[i].sub,sizeof(s->buttons[i].sub),"%s",subs[i]);s->buttons[i].action=i==4?CD_BUTTON_NEON:i==5?CD_BUTTON_COCKPIT:CD_BUTTON_APP;s->buttons[i].icon=i;s->buttons[i].enabled=true;s->buttons[i].texture=0;}
  /* Settings cog medallion on the sloped dash between wheel and console.
   * The dash profile segment (z .2,y .14)->(z .88,y -.24) has geometric
   * normal (0,.873,.487); pitch -61 lays the gear flush on it, and the
@@ -486,8 +613,9 @@ void scene_update_mounts(Server *s){
   Monitor *m=&s->monitors[i];if(!m->surface)continue;
   if(m->reveal<m->target_reveal){float duration=monitor_mount(i)==MOUNT_ROOF_FLIP?.90f:.72f;m->reveal=fminf(m->target_reveal,m->reveal+(float)s->dt/duration);}
   /* This exact plane is also consumed by scene_pick below: a client never
-   * renders at one position while its pointer coordinates use another. */
-  m->plane=monitor_plane_at(i,m->reveal);
+   * renders at one position while its pointer coordinates use another.
+   * Once freely dragged or arranged, preserve m->plane until reset. */
+  if(!m->arranged)m->plane=monitor_plane_at(i,m->reveal);
  }
 }
 void scene_render(Server *s){
@@ -510,8 +638,18 @@ Hit scene_pick(Server *s,float x,float y,bool grab){
  SceneCamera camera=scene_camera(s);Vec3 ray=vehicle_world_direction(&s->vehicle,scene_camera_ray(s,camera,x,y));float u,v,d;
  if(grab&&s->pointer_grab){Surface *root=surface_root(s->pointer_grab);if(root&&root->slot>=0){Plane p=s->monitors[root->slot].plane;if(plane_hit(p,s->eye,ray,&u,&v,&d,false)){float scale=fminf(p.width/root->width,p.height/root->height);float sx=(u-.5f)*p.width/scale+root->width/2.f,sy=(v-.5f)*p.height/scale+root->height/2.f;Surface *child=s->pointer_grab;while(child!=root&&child){sx-=child->x;sy-=child->y;child=child->parent;}return (Hit){.kind=HIT_APP,.surface=s->pointer_grab,.slot=root->slot,.x=sx,.y=sy,.distance=d};}}return best;}
  for(int i=0;i<CD_MAX_MONITORS;i++){Monitor *m=&s->monitors[i];if(!m->surface)continue;Plane p=m->plane;if(!plane_hit(p,s->eye,ray,&u,&v,&d,false)||d>=best.distance)continue;
+  float lx=(u-.5f)*p.width,ly=(.5f-v)*p.height,k=monitor_iso_scale(p,i);
+  if(i!=CD_CLUSTER_SLOT&&handles_button_at(p,k,lx,ly)){best=(Hit){.kind=HIT_HANDLES_BUTTON,.surface=m->surface,.slot=i,.x=lx,.y=ly,.distance=d};continue;}
+  if(s->arrange_mode&&s->arrange_handles&&s->arrange_slot==i){int handle=arrange_handle_at(p,k,lx,ly);if(handle!=CD_HANDLE_NONE){best=(Hit){.kind=HIT_ARRANGE_HANDLE,.surface=m->surface,.slot=i,.handle=handle,.x=lx,.y=ly,.distance=d};continue;}}
   if(i!=CD_CLUSTER_SLOT&&u>.92&&u<1.01&&v<0&&v>-.12){best=(Hit){.kind=HIT_CLOSE,.surface=m->surface,.slot=i,.distance=d};continue;}
-  if(u<0||u>1||v<0||v>1)continue;float scale=fminf(p.width/m->surface->width,p.height/m->surface->height);float sx=(u-.5f)*p.width/scale+m->surface->width/2.f,sy=(v-.5f)*p.height/scale+m->surface->height/2.f,px,py;
+  if(u<0||u>1||v<0||v>1){
+   if(i!=CD_CLUSTER_SLOT){
+    bool frame=lx>=-(p.width*.5f+.07f*k)&&lx<=p.width*.5f+.07f*k&&ly>=-(p.height*.5f+.06f*k)&&ly<=p.height*.5f+.21f*k;
+    if(frame)best=(Hit){.kind=HIT_FRAME,.surface=m->surface,.slot=i,.x=lx,.y=ly,.distance=d};
+   }
+   continue;
+  }
+  float scale=fminf(p.width/m->surface->width,p.height/m->surface->height);float sx=(u-.5f)*p.width/scale+m->surface->width/2.f,sy=(v-.5f)*p.height/scale+m->surface->height/2.f,px,py;
   Surface *surface=surface_at(m->surface,sx,sy,&px,&py);if(surface)best=(Hit){.kind=HIT_APP,.surface=surface,.slot=i,.x=px,.y=py,.distance=d};
  }
  for(int i=0;i<6;i++)if(plane_hit(s->buttons[i].plane,s->eye,ray,&u,&v,&d,true)&&d<best.distance)best=(Hit){.kind=HIT_BUTTON,.button=i,.distance=d};
@@ -547,6 +685,31 @@ bool scene_wheel_button(Server *s,Hit hit,int x,int y,bool down,uint32_t time){
  if(s->wheel_drag){scene_wheel_cancel(s);return true;}
  return false;
 }
+void scene_monitor_reset(Server *s,int slot){
+ if(slot<0||slot>=CD_MAX_MONITORS)return;
+ s->monitors[slot].arranged=false;
+ s->monitors[slot].plane=s->monitors[slot].surface?monitor_plane_at(slot,s->monitors[slot].reveal):monitor_plane(slot);
+}
+void scene_monitor_translate(Server *s,int slot,float right,float up,float toward_eye){
+ if(slot<0||slot>=CD_MAX_MONITORS)return;
+ s->monitors[slot].arranged=true;s->monitors[slot].reveal=1.f;s->monitors[slot].target_reveal=1.f;
+ s->monitors[slot].plane=plane_translate(s->monitors[slot].plane,s->eye,right,up,toward_eye);
+}
+void scene_monitor_rotate(Server *s,int slot,float yaw,float pitch,float roll){
+ if(slot<0||slot>=CD_MAX_MONITORS)return;
+ s->monitors[slot].arranged=true;s->monitors[slot].reveal=1.f;s->monitors[slot].target_reveal=1.f;
+ s->monitors[slot].plane=plane_rotate(s->monitors[slot].plane,yaw,pitch,roll);
+}
+void scene_monitor_scale(Server *s,int slot,float factor){
+ if(slot<0||slot>=CD_MAX_MONITORS)return;
+ s->monitors[slot].arranged=true;s->monitors[slot].reveal=1.f;s->monitors[slot].target_reveal=1.f;
+ s->monitors[slot].plane=plane_uniform_scale(s->monitors[slot].plane,monitor_plane(slot),factor);
+}
+void scene_monitor_set_plane(Server *s,int slot,Plane plane){
+ if(slot<0||slot>=CD_MAX_MONITORS)return;
+ s->monitors[slot].arranged=true;s->monitors[slot].reveal=1.f;s->monitors[slot].target_reveal=1.f;
+ s->monitors[slot].plane=plane;
+}
 void scene_wheel_motion(Server *s,int x,int y,uint32_t time){
  if(!s->wheel_drag)return;
  float dx=x-s->wheel_last_x;s->wheel_last_x=x;s->wheel_last_y=y;
@@ -566,8 +729,16 @@ void scene_wheel_motion(Server *s,int x,int y,uint32_t time){
 }
 void scene_focus_monitor(Server *s,int slot,bool zoom){
  s->camera_mode=VEHICLE_CAMERA_DRIVER;
- if(slot<0||slot>=CD_MAX_MONITORS)return;Plane p=monitor_plane(slot);float desired=atan2f(-p.center.x,s->eye.z-p.center.z)/RAD;
- while(desired-s->yaw>180)desired-=360;while(desired-s->yaw<-180)desired+=360;s->target_yaw=desired;float dx=p.center.x-s->eye.x,dz=p.center.z-s->eye.z;s->target_pitch=atan2f(p.center.y-s->eye.y,sqrtf(dx*dx+dz*dz))/RAD;s->target_fov=zoom?32:(s->base_fov>0?s->base_fov:65);s->focus_view=zoom;
+ if(slot<0||slot>=CD_MAX_MONITORS)return;
+ Plane p=(s->monitors[slot].surface&&s->monitors[slot].arranged)?s->monitors[slot].plane:monitor_plane(slot);
+ Vec3 rel=vsub(p.center,s->eye);float horizontal=sqrtf(rel.x*rel.x+rel.z*rel.z);float dist=sqrtf(vdot(rel,rel));
+ float desired=atan2f(-rel.x,-rel.z)/RAD;
+ while(desired-s->yaw>180)desired-=360;while(desired-s->yaw<-180)desired+=360;
+ s->target_yaw=desired;
+ s->target_pitch=atan2f(rel.y,fmaxf(horizontal,.05f))/RAD;
+ float fit_fov=fmaxf(2.f*atanf((p.height*.85f)/fmaxf(dist,.1f)),2.f*atanf((p.width*.85f)/(fmaxf(dist,.1f)*fmaxf((float)s->width/(float)s->height,.1f))))/RAD;
+ s->target_fov=zoom?clampf(fit_fov,16.f,55.f):(s->base_fov>0?s->base_fov:65);
+ s->focus_view=zoom;
 }
 void scene_reset_camera(Server *s){s->camera_mode=VEHICLE_CAMERA_DRIVER;s->target_yaw=roundf(s->yaw/360)*360;s->target_pitch=-6;s->target_fov=s->base_fov>0?s->base_fov:65;s->focus_view=false;}
 void scene_save_screenshot(Server *s,const char *path){
@@ -583,5 +754,5 @@ void scene_save_screenshot(Server *s,const char *path){
  free(flipped);free(pixels);
 }
 void scene_finish(Server *s){
- GLuint textures[]={s->garage_tex,s->carbon_tex,s->console_tex,s->hub_tex,s->hud_tex,s->windshield_tex,s->help_tex,s->plate_tex};glDeleteTextures(sizeof(textures)/sizeof(textures[0]),textures);for(int i=0;i<6;i++)glDeleteTextures(1,&s->buttons[i].texture);for(int i=0;i<CD_MAX_MONITORS;i++)glDeleteTextures(1,&s->monitors[i].label);
+ GLuint textures[]={s->garage_tex,s->carbon_tex,s->console_tex,s->hub_tex,s->hud_tex,s->windshield_tex,s->help_tex,s->plate_tex,s->handles_tex};glDeleteTextures(sizeof(textures)/sizeof(textures[0]),textures);for(int i=0;i<6;i++)glDeleteTextures(1,&s->buttons[i].texture);for(int i=0;i<CD_MAX_MONITORS;i++)glDeleteTextures(1,&s->monitors[i].label);
 }

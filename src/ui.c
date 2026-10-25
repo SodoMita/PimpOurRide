@@ -87,13 +87,23 @@ static void make_plate(Server *s){
  rgb(c,.84,.86,.92);cairo_select_font_face(c,"DejaVu Sans",CAIRO_FONT_SLANT_OBLIQUE,CAIRO_FONT_WEIGHT_BOLD);cairo_set_font_size(c,67);cairo_move_to(c,45,134);cairo_show_text(c,"CUSTOM BUILT.");rgb(c,.57,.47,.78);mono(c,48,210,24,"NO STOCK PARTS / 001");s->plate_tex=ui_texture(im,0);cairo_destroy(c);cairo_surface_destroy(im);
 }
 static void make_hub(Server *s){cairo_surface_t *im=cairo_image_surface_create(CAIRO_FORMAT_ARGB32,400,400);cairo_t *c=cairo_create(im);rgb(c,.025,.033,.052);cairo_arc(c,200,200,195,0,2*PI);cairo_fill(c);rgb(c,.28,.34,.43);cairo_set_line_width(c,2);cairo_arc(c,200,200,178,0,2*PI);cairo_stroke(c);rgb(c,.81,.88,.93);cairo_select_font_face(c,"DejaVu Sans",CAIRO_FONT_SLANT_OBLIQUE,CAIRO_FONT_WEIGHT_BOLD);cairo_set_font_size(c,110);cairo_move_to(c,100,233);cairo_show_text(c,"CD");rgb(c,.65,.42,.88);mono(c,99,292,19,"CUSTOM / 01");s->hub_tex=ui_texture(im,0);cairo_destroy(c);cairo_surface_destroy(im);}
+static void make_handles_button(Server *s){
+ cairo_surface_t *im=cairo_image_surface_create(CAIRO_FORMAT_ARGB32,384,112);cairo_t *c=cairo_create(im);
+ cairo_pattern_t *grad=cairo_pattern_create_linear(0,0,0,112);cairo_pattern_add_color_stop_rgb(grad,0,.052,.105,.132);cairo_pattern_add_color_stop_rgb(grad,1,.018,.043,.066);cairo_set_source(c,grad);cairo_paint(c);cairo_pattern_destroy(grad);
+ rgb(c,.28,.87,.72);cairo_set_line_width(c,3);rounded(c,3,3,378,106,14);cairo_stroke(c);
+ /* Four-arrow move icon in a square: readable at titlebar size. */
+ cairo_new_path(c);rgb(c,1,.68,.25);cairo_set_line_width(c,4);cairo_rectangle(c,27,27,58,58);cairo_stroke(c);
+ line(c,38,56,74,56);line(c,56,38,56,74);line(c,38,56,48,47);line(c,38,56,48,65);line(c,74,56,64,47);line(c,74,56,64,65);line(c,56,38,47,48);line(c,56,38,65,48);line(c,56,74,47,64);line(c,56,74,65,64);
+ rgb(c,.91,.95,.98);text(c,108,61,35,"HANDLES",true);rgb(c,.48,.66,.72);mono(c,110,91,16,"MOVE / ROTATE / RESIZE");
+ s->handles_tex=ui_texture(im,0);cairo_destroy(c);cairo_surface_destroy(im);
+}
 void ui_monitor_label(Server *s,int i){
  Monitor *m=&s->monitors[i];if(!m->surface)return;char buf[300];bool active=s->keyboard_focus==m->surface;snprintf(buf,sizeof(buf),"%d:%.140s:%.140s",active,m->surface->title,m->surface->app_id);
  if(!strcmp(buf,m->label_text)&&m->label)return;snprintf(m->label_text,sizeof(m->label_text),"%s",buf);
  cairo_surface_t *im=cairo_image_surface_create(CAIRO_FORMAT_ARGB32,1200,76);cairo_t *c=cairo_create(im);rgb(c,.025,.04,.06);cairo_paint(c);
  rgb(c,active?.40:.52,active?.93:.49,active?.76:.74);cairo_arc(c,29,38,5,0,2*PI);cairo_fill(c);
  char title[90],name[48];const char *display_name=m->surface->title;if(strstr(m->surface->app_id,"foot"))display_name="TERMINAL";else if(strstr(m->surface->app_id,"files"))display_name="FILES";else if(strstr(m->surface->app_id,"audio"))display_name="AUDIO";else if(strstr(m->surface->app_id,"telemetry"))display_name="METERS";snprintf(name,sizeof(name),"%.42s",display_name);snprintf(title,sizeof(title),"%02d  /  %s",i+1,name);
- rgb(c,.76,.82,.89);mono(c,54,48,25,title);rgb(c,.36,.49,.58);mono(c,790,47,17,active?"INPUT ACTIVE":monitor_mount_name(i));rgb(c,.50,.59,.67);cairo_set_line_width(c,2);line(c,1150,30,1168,48);line(c,1168,30,1150,48);m->label=ui_texture(im,m->label);cairo_destroy(c);cairo_surface_destroy(im);
+ rgb(c,.76,.82,.89);mono(c,54,48,25,title);rgb(c,.36,.49,.58);mono(c,845,47,16,active?"INPUT ACTIVE":monitor_mount_name(i));rgb(c,.50,.59,.67);cairo_set_line_width(c,2);line(c,1150,30,1168,48);line(c,1168,30,1150,48);m->label=ui_texture(im,m->label);cairo_destroy(c);cairo_surface_destroy(im);
 }
 static void hud(Server *s){
  int w=s->width,h=s->height;cairo_surface_t *im=cairo_image_surface_create(CAIRO_FORMAT_ARGB32,w,h);cairo_t *c=cairo_create(im);
@@ -111,11 +121,14 @@ static void hud(Server *s){
  if(w>1050){snprintf(b,sizeof(b),"%3.0f%% PACK  /  %+6.1f KW",100*s->vehicle.battery_kwh/VEHICLE_BATTERY_CAPACITY_KWH,s->vehicle.power_kw);mono(c,w/2-78,116,10,b);}
  /* The control hints are chrome, not fake app controls. The actual buttons are 3D. */
  if(w>=1100){int bx=w/2-438,by=h-66;rgba(c,.025,.038,.059,.88);rounded(c,bx,by,876,43,21);cairo_fill(c);rgba(c,.35,.43,.53,.30);rounded(c,bx,by,876,43,21);cairo_stroke(c);
-  const char *keys[]={"F7","WASD","F5","F2","F3","F1"};const char *labels[]={"Input mode","Hover drive","Change view","Driver view","Focus app","Help"};int widths[]={181,165,159,115,159,0};int x=bx+18;
-  for(int i=0;i<6;i++){rgb(c,.14,.19,.25);rounded(c,x,by+11,i?25:34,21,4);cairo_fill(c);rgb(c,.80,.85,.91);mono(c,x+5,by+25,10,keys[i]);rgb(c,.60,.67,.74);text(c,x+(i?34:44),by+26,11,labels[i],false);x+=widths[i];}
+  if(s->arrange_mode){rgb(c,1,.70,.28);mono(c,bx+28,by+26,11,s->arrange_handles?"GIZMO: amber move | RGB axes/rings | white corners/edges resize | magenta scale":"DRAG move | HANDLES button/H gizmo | SHIFT-DRAG yaw/pitch | CTRL-DRAG roll | WHEEL scale");}
+  else{const char *keys[]={"F7","WASD","F5","F9","F2","F3","F1"};const char *labels[]={"Input mode","Hover drive","View","Arrange","Driver","Focus","Help"};int widths[]={150,150,115,125,115,115,0};int x=bx+18;
+  for(int i=0;i<7;i++){rgb(c,.14,.19,.25);rounded(c,x,by+11,i==1?34:25,21,4);cairo_fill(c);rgb(c,.80,.85,.91);mono(c,x+5,by+25,10,keys[i]);rgb(c,.60,.67,.74);text(c,x+(i==1?44:34),by+26,11,labels[i],false);x+=widths[i];}}
  }
+ char mode[64];if(s->arrange_mode)snprintf(mode,sizeof(mode),"ARRANGE MODE%s",s->arrange_slot>=0?"":"");
+ if(s->arrange_mode&&s->arrange_slot>=0)snprintf(mode,sizeof(mode),"ARRANGE MODE / CD-%02d",s->arrange_slot+1);
  const char *seat_state=s->camera_mode==VEHICLE_CAMERA_SYSTEMS?"EV SKATEBOARD / NO WHEELS":s->camera_mode==VEHICLE_CAMERA_CHASE?"SPLINE-BUILT ELECTRIC HOVER CAR":s->steering_mode==VEHICLE_STEER_DRIVE?"HOVER DRIVE / F7 FOR CLIENTS":"CLIENT INPUT / WHEEL = SCROLL";
- rgb(c,.75,.81,.87);text(c,29,h-47,12,s->focus_view&&s->camera_mode==VEHICLE_CAMERA_DRIVER?"FOCUS MODE":seat_state,true);rgb(c,.37,.45,.55);mono(c,29,h-26,9,"NATIVE WAYLAND / v" CD_VERSION);
+ rgb(c,.75,.81,.87);text(c,29,h-47,12,s->arrange_mode?mode:(s->focus_view&&s->camera_mode==VEHICLE_CAMERA_DRIVER?"FOCUS MODE":seat_state),true);rgb(c,.37,.45,.55);mono(c,29,h-26,9,"NATIVE WAYLAND / v" CD_VERSION);
  rgb(c,.72,.78,.84);snprintf(b,sizeof(b),"%02.0f FPS",s->fps);mono(c,w-94,h-47,12,b);rgb(c,.39,.48,.56);mono(c,w-107,h-26,9,"OPENGL / SHM");
  if(s->notice_until>s->time){font(c,12,false,false);cairo_text_extents_t ex;cairo_text_extents(c,s->notice,&ex);float tw=ex.width+44;rgba(c,.035,.06,.08,.94);rounded(c,(w-tw)/2,h-115,tw,31,15);cairo_fill(c);rgb(c,.53,.90,.77);text(c,(w-ex.width)/2,h-94,12,s->notice,false);}
  if(s->middle_look){rgba(c,.38,.93,.77,.8);cairo_set_line_width(c,1);line(c,w/2-9,h/2,w/2+9,h/2);line(c,w/2,h/2-9,w/2,h/2+9);}
@@ -124,10 +137,10 @@ static void hud(Server *s){
 static void help(Server *s){
  cairo_surface_t *im=cairo_image_surface_create(CAIRO_FORMAT_ARGB32,1000,720);cairo_t *c=cairo_create(im);rgba(c,.025,.038,.063,.98);rounded(c,1,1,998,718,25);cairo_fill(c);rgb(c,.25,.33,.43);cairo_set_line_width(c,2);rounded(c,1,1,998,718,25);cairo_stroke(c);
  rgb(c,.52,.90,.77);mono(c,58,63,15,"CHROMEDRIVE / DRIVER'S MANUAL");rgb(c,.94,.95,.97);text(c,55,130,45,"Make yourself at home.",true);rgb(c,.47,.58,.69);text(c,58,176,18,"Real Wayland apps. One virtual monitor for every window.",false);
- const char *keys[]={"MIDDLE + DRAG","CLICK A SCREEN","F7","WASD / SPACE","DRAG WHEEL","F5 / F8","F2 / F3 / F6","F4 / F12","SHIFT + BUTTON","DASH COG"};
- const char *desc[]={"Look around from the driver's seat","Send keyboard and pointer input to that app","Toggle client input / hover-drive ownership","Accelerate, reverse, steer and regenerative brake","Steer in drive mode; scroll focused app in client mode","Cycle driver/exterior/systems / recover the car","Driver view / focus app / next spatial monitor","Change underglow / save a WebP screenshot","Launch another instance instead of focusing","Open native compositor Settings"};
+ const char *keys[]={"MIDDLE + DRAG","CLICK / DRAG FRAME","HANDLES / F9","F7","WASD / SPACE","DRAG WHEEL","F5 / F8","F2 / F3 / F6","F4 / F12","DASH COG"};
+ const char *desc[]={"Look around from the driver's seat","Focus a screen / drag its bezel to move it freely","3D Arrange mode: move, rotate, roll, scale & resize","Toggle client input / hover-drive ownership","Accelerate, reverse, steer and regenerative brake","Steer in drive mode; scroll focused app in client mode","Cycle driver/exterior/systems / recover the car","Driver view / focus app / next spatial monitor","Change underglow / save a WebP screenshot","Settings (right-click a tile to assign an app)"};
  for(int i=0;i<10;i++){int y=224+i*40;rgb(c,.69,.77,.88);mono(c,61,y,14,keys[i]);rgb(c,.54,.63,.73);text(c,294,y,14,desc[i],false);rgba(c,.26,.33,.43,.4);line(c,58,y+13,942,y+13);}
- rgb(c,.40,.49,.60);text(c,58,640,15,"Dashboard controls are ray-picked in 3D. Right click is passed to apps.",false);rgb(c,.50,.87,.73);mono(c,58,686,15,"F1 TO CLOSE       CTRL + ALT + Q TO EXIT");s->help_tex=ui_texture(im,0);cairo_destroy(c);cairo_surface_destroy(im);
+ rgb(c,.40,.49,.60);text(c,58,634,14,"Arrange: HANDLES/H gizmo - amber move - RGB axes/rings - white corners/edges resize - magenta scale",false);rgb(c,.50,.87,.73);mono(c,58,678,15,"F1 TO CLOSE    F9/ESC EXIT ARRANGE    CTRL + ALT + Q TO EXIT");s->help_tex=ui_texture(im,0);cairo_destroy(c);cairo_surface_destroy(im);
 }
 static void make_leather(Server *s){
  cairo_surface_t *im=cairo_image_surface_create(CAIRO_FORMAT_ARGB32,256,256);
@@ -135,7 +148,7 @@ static void make_leather(Server *s){
  for(int y=0;y<256;y++)for(int x=0;x<256;x++){seed=1664525u*seed+1013904223u;int n=198+((seed>>24)&31);if((x+y)%6==0)n-=12;data[y*256+x]=0xff000000u|(n<<16)|(n<<8)|n;}
  cairo_surface_mark_dirty(im);s->carbon_tex=ui_texture(im,0);glBindTexture(GL_TEXTURE_2D,s->carbon_tex);glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_WRAP_S,GL_REPEAT);glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_WRAP_T,GL_REPEAT);cairo_surface_destroy(im);
 }
-void ui_init(Server *s){make_leather(s);ui_refresh_buttons(s);make_console(s);make_plate(s);make_hub(s);windshield_hud(s);help(s);hud(s);}
+void ui_init(Server *s){make_leather(s);ui_refresh_buttons(s);make_console(s);make_plate(s);make_hub(s);make_handles_button(s);windshield_hud(s);help(s);hud(s);}
 void ui_update(Server *s){
  static int old_w,old_h;
  if(s->time-s->last_windshield_time>.10){windshield_hud(s);s->last_windshield_time=s->time;}

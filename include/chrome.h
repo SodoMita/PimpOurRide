@@ -75,13 +75,24 @@ struct Surface {
  bool input_changed;
  char title[256],app_id[256];
 };
-typedef struct { Plane plane;Surface *surface;GLuint label;char label_text[300];float reveal,target_reveal; } Monitor;
+typedef struct { Plane plane;Surface *surface;GLuint label;char label_text[300];float reveal,target_reveal;bool arranged; } Monitor;
 /* One Launch Control entry. name/sub/icon/enabled are user-configurable
  * (chromedrive.conf [app.*], edited by bin/chromedrive-config) and applied
- * live: DashButton owns copies, ui_refresh_buttons() re-renders textures. */
+ * live: DashButton owns copies, ui_refresh_buttons() re-renders textures.
+ * `action` says what a click does: launch the slot's assigned app, or run
+ * one of the two built-in cockpit actions. Any physical slot may hold any
+ * of the three; slots 5/6 merely default to the built-ins. */
+enum { CD_BUTTON_APP=0, CD_BUTTON_NEON=1, CD_BUTTON_COCKPIT=2 };
 typedef struct { Plane plane;char name[48],sub[64];int action,icon;bool enabled;GLuint texture; } DashButton;
-typedef enum {HIT_NONE,HIT_APP,HIT_BUTTON,HIT_CLOSE,HIT_COG,HIT_WHEEL} HitKind;
-typedef struct { HitKind kind;Surface *surface;int slot,button;float x,y,distance; } Hit;
+typedef enum {HIT_NONE,HIT_APP,HIT_BUTTON,HIT_CLOSE,HIT_COG,HIT_WHEEL,HIT_FRAME,HIT_HANDLES_BUTTON,HIT_ARRANGE_HANDLE} HitKind;
+/* Arrange gizmo handles, in a monitor's local plane coordinates. Resize
+ * IDs are ordered clockwise from north-west so scene.c/main.c can share
+ * the same geometry table without another mapping layer. */
+enum { CD_HANDLE_NONE=0,CD_HANDLE_MOVE,CD_HANDLE_AXIS_X,CD_HANDLE_AXIS_Y,CD_HANDLE_AXIS_Z,
+ CD_HANDLE_ROTATE_YAW,CD_HANDLE_ROTATE_PITCH,CD_HANDLE_ROTATE_ROLL,CD_HANDLE_SCALE,
+ CD_HANDLE_RESIZE_NW,CD_HANDLE_RESIZE_N,CD_HANDLE_RESIZE_NE,CD_HANDLE_RESIZE_E,
+ CD_HANDLE_RESIZE_SE,CD_HANDLE_RESIZE_S,CD_HANDLE_RESIZE_SW,CD_HANDLE_RESIZE_W };
+typedef struct { HitKind kind;Surface *surface;int slot,button,handle;float x,y,distance; } Hit;
 typedef struct { uint32_t format;uint64_t modifiers[CD_DMABUF_MAX_MODIFIERS];int modifier_count; } DmabufFormat;
 struct Server {
  struct wl_display *display;struct wl_event_loop *loop;
@@ -110,6 +121,14 @@ struct Server {
  int width,height,fps_limit,theme,hover_button,active_slot;
  int bg_mode; /* CD_BG_*: which environment() backdrop to draw */
  bool running,middle_look,focus_view,show_help,hud_visible,fullscreen,demo,launch_pending;
+ /* Arrange mode: session-only whole-monitor translate/rotate/scale.
+  * The effective transform lives in monitors[slot].plane and is reset when
+  * a new top-level maps into that bay. */
+ bool arrange_mode,arrange_dragging,arrange_handles;int arrange_slot,arrange_drag_button,arrange_last_x,arrange_last_y;
+ int arrange_handle,arrange_start_x,arrange_start_y;Plane arrange_start_plane;float arrange_start_local_x,arrange_start_local_y;
+ /* KWin-like titlebar/frame drag outside Arrange mode: just translation,
+  * without making the whole input path modal. */
+ bool frame_dragging;int frame_drag_slot,frame_last_x,frame_last_y;
  float yaw,pitch,target_yaw,target_pitch,fov,target_fov,base_fov;
  Vec3 eye;
  /* Native electric hover-car rig and input routing. In CLIENT mode drive keys
@@ -125,13 +144,14 @@ struct Server {
  int telemetry_fd;CdTelemetry *telemetry;
  uint64_t frames,commits;
  char socket[128],root[4096],runtime[4096],notice[256];
- char *launch_commands[4];char *exec_commands[16];int exec_count;
- /* Launch-menu configuration per app slot (see [app.*] in chromedrive.conf):
-  * app_ids[s] is the substring matched against a mapped surface's app_id so
-  * re-clicking focuses the running app; app_autostart[s] joins the --demo set. */
- char app_ids[4][128];bool app_autostart[4];
+ char *launch_commands[6];char *exec_commands[16];int exec_count;
+ /* Launch-menu configuration per Launch Control slot (see [app.*] in
+  * chromedrive.conf). Every slot may launch an app: app_ids[s] is the
+  * substring matched against a mapped surface's app_id so re-clicking
+  * focuses the running app; app_autostart[s] joins the --demo set. */
+ char app_ids[6][128];bool app_autostart[6];
  pid_t children[128];int child_count;
- GLuint garage_tex,carbon_tex,console_tex,hub_tex,hud_tex,windshield_tex,help_tex,plate_tex;
+ GLuint garage_tex,carbon_tex,gauge_tex,console_tex,hub_tex,hud_tex,windshield_tex,help_tex,plate_tex,handles_tex;
  GLuint scene_list;bool rebuild_scene;
  bool screenshot_requested;char screenshot_path[4096];
 };
@@ -156,6 +176,11 @@ void scene_update_mounts(Server *s);
 void scene_finish(Server *s);
 Hit scene_pick(Server *s,float x,float y,bool grab);
 void scene_focus_monitor(Server *s,int slot,bool zoom);
+void scene_monitor_reset(Server *s,int slot);
+void scene_monitor_translate(Server *s,int slot,float right,float up,float toward_eye);
+void scene_monitor_rotate(Server *s,int slot,float yaw,float pitch,float roll);
+void scene_monitor_scale(Server *s,int slot,float factor);
+void scene_monitor_set_plane(Server *s,int slot,Plane plane);
 void scene_reset_camera(Server *s);
 bool scene_wheel_button(Server *s,Hit hit,int x,int y,bool down,uint32_t time);
 void scene_wheel_motion(Server *s,int x,int y,uint32_t time);
@@ -176,9 +201,15 @@ void ui_monitor_label(Server *s,int slot);
 void ui_draw_overlay(Server *s);
 void app_launch(Server *s,int action,bool force_new);
 void app_open_settings(Server *s);
+void app_open_settings_slot(Server *s,int slot,bool choose_app);
 void app_exec(Server *s,const char *command);
 void app_notice(Server *s,const char *fmt,...);
 bool app_global_key(Server *s,uint32_t evdev,bool down);
+bool app_arrange_pointer_button(Server *s,Hit hit,uint32_t button,bool down);
+void app_arrange_pointer_motion(Server *s,int x,int y);
+bool app_arrange_pointer_wheel(Server *s,float steps);
+bool app_frame_pointer_button(Server *s,Hit hit,uint32_t button,bool down);
+void app_frame_pointer_motion(Server *s,int x,int y);
 /* telemetry.c: shared live EV state for the real Wayland instrument client. */
 bool telemetry_init(Server *s);
 void telemetry_update(Server *s);

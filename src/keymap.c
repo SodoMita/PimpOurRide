@@ -13,9 +13,10 @@ uint32_t keysym_to_evdev(uint32_t key) {
  if(key>='a'&&key<='z')return letters[key-'a'];
  if(key>='A'&&key<='Z')return letters[key-'A'];
  if(key>='0'&&key<='9'){static const uint32_t row[10]={KEY_0,KEY_1,KEY_2,KEY_3,KEY_4,KEY_5,KEY_6,KEY_7,KEY_8,KEY_9};return row[key-'0'];}
+ if(key>=XK_KP_0&&key<=XK_KP_9){static const uint32_t kp[10]={KEY_KP0,KEY_KP1,KEY_KP2,KEY_KP3,KEY_KP4,KEY_KP5,KEY_KP6,KEY_KP7,KEY_KP8,KEY_KP9};return kp[key-XK_KP_0];}
  switch(key){
- case XK_space:return KEY_SPACE;case XK_Return:return KEY_ENTER;case XK_BackSpace:return KEY_BACKSPACE;case XK_Tab:return KEY_TAB;case XK_Escape:return KEY_ESC;case XK_Delete:return KEY_DELETE;
- case XK_minus:return KEY_MINUS;case XK_equal:return KEY_EQUAL;case XK_bracketleft:return KEY_LEFTBRACE;case XK_bracketright:return KEY_RIGHTBRACE;
+ case XK_space:case XK_KP_Space:return KEY_SPACE;case XK_Return:return KEY_ENTER;case XK_KP_Enter:return KEY_KPENTER;case XK_BackSpace:return KEY_BACKSPACE;case XK_Tab:return KEY_TAB;case XK_Escape:return KEY_ESC;case XK_Delete:return KEY_DELETE;
+ case XK_minus:return KEY_MINUS;case XK_KP_Subtract:return KEY_KPMINUS;case XK_equal:return KEY_EQUAL;case XK_KP_Add:return KEY_KPPLUS;case XK_bracketleft:return KEY_LEFTBRACE;case XK_bracketright:return KEY_RIGHTBRACE;
  case XK_semicolon:return KEY_SEMICOLON;case XK_apostrophe:return KEY_APOSTROPHE;case XK_grave:return KEY_GRAVE;case XK_backslash:return KEY_BACKSLASH;
  case XK_comma:return KEY_COMMA;case XK_period:return KEY_DOT;case XK_slash:return KEY_SLASH;
  case XK_Up:return KEY_UP;case XK_Down:return KEY_DOWN;case XK_Left:return KEY_LEFT;case XK_Right:return KEY_RIGHT;

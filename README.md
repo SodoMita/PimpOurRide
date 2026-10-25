@@ -162,12 +162,17 @@ one click away: the slowly spinning **3D cog on the dashboard** (between the
 steering wheel and Launch Control) launches it, or focuses it if already
 open. Its first tab is a
 KDE-menu-editor-style **Launch Menu editor**: rename any of the six Launch
-Control entries, change their icons/descriptions, point the four app slots
-at arbitrary commands (e.g. `dolphin`, or Garage3D), set the `app_id` used
-to focus a running instance instead of relaunching, toggle entries on/off,
-and choose the `--demo` autostart set. The other tabs cover every Garage3D
-tunable (neon colours, fog, rain, physics…) and every compositor setting
-(size/FPS/FOV, underglow, 3D-vs-texture backdrop, VNC port…).
+Control entries, change their icons/descriptions, and assign **any slot** an
+installed app or one of the built-in underglow/driver-view actions. Right-click
+a slot in Settings—or right-click its 3D tile in the cockpit—for a searchable
+picker listing the built-ins, ChromeDrive's bundled programs, and visible apps
+from the system's desktop-entry databases. You can still hand-tune the command
+(e.g. `dolphin`, or Garage3D), set the `app_id` used to focus a running
+instance instead of relaunching, toggle entries on/off, and choose the
+`--demo` autostart set. The other tabs cover every Garage3D tunable (neon
+colours, fog, rain, physics…) and every compositor setting (size/FPS/FOV,
+underglow, 3D-vs-texture backdrop, and the VNC port as an exact typed
+number—not a slider).
 
 It edits `~/.config/chromedrive/chromedrive.conf` and
 `~/.config/garage3d/garage3d.conf` (plain INI, hand-editable). Both programs
@@ -233,30 +238,94 @@ reverse proxy and firewall before exposing them to an untrusted network.
 |---|---|
 | Middle-drag (mouse or VNC) | Look around (first-person) |
 | Click a screen | Focus it — keyboard/pointer now go to that app |
+| Drag a monitor titlebar/frame | Move that whole window/monitor in its plane (KWin-style) |
+| Click **HANDLES** on a titlebar | Enter Arrange for that window and show its move/rotate/scale/resize gizmo |
 | Scroll over a screen | Scroll inside that app |
 | Scroll elsewhere | Zoom (narrow the field of view) |
-| Click a dashboard button | Launch/focus that app |
+| Click a dashboard button | Launch/focus that app (or run its built-in action) |
+| Right-click a dashboard button | Choose which app/action that button launches (Settings picker) |
 | Click the dashboard cog | Open Settings (`chromedrive-config`) |
 | Shift + dashboard button | Force a new instance |
 | F1 | Help overlay |
 | F2 | Reset to the driver's seat view |
 | F3 | Toggle a tight focus zoom on the active screen |
 | F4 | Cycle underglow color (violet / ice blue / acid lime) |
-| F5 | Cycle driver / exterior concept / EV systems cutaway |
+| F5 | Cycle driver / exterior concept / EV systems cutaway (or exit Arrange mode) |
 | F6 | Cycle to the next connected screen |
 | F7 | Toggle client input / hover-drive ownership |
 | F8 | Recover the car pose (battery and odometer are preserved) |
+| F9 / Shift+F5 | Arrange the selected screen (move / rotate / roll / scale / resize) |
 | W/A/S/D or arrows, Space | Drive mode: throttle/steer/reverse and regenerative brake |
 | Left-drag steering wheel | Client mode: scroll focused app; drive mode: steer |
 | F11 | `--windowed` only: toggle fullscreen |
 | F12 | Save a screenshot to `screenshots/` |
-| Ctrl+Alt+Enter | Open a new terminal |
+| Ctrl+Alt+Enter | Open a new terminal (even if slot 1 was reassigned) |
 | Ctrl+Alt+Q | Quit |
 
-Over VNC, keyboard input covers typing, navigation keys, function keys and
-modifiers (see `keysym_to_evdev` in `src/backend_headless.c`); key auto-repeat
-is handled client-side (by each app's own xkb repeat timer), same as a real
-compositor — holding a key sends one press/release pair, not a flood of events.
+#### Arrange mode (F5)
+
+You do not need Arrange mode just to move a window: **drag its titlebar or
+frame** and the whole monitor follows in its own plane, like dragging a
+normal window frame. For the full transform editor, press **F5** or click the
+**HANDLES** button in a monitor's titlebar. The selected monitor gets an amber
+outline and local red/green/blue axes; click another occupied monitor, or use
+**Tab/F6**, to choose a different one. Click **HANDLES** again (or press **H**)
+to show/hide the larger gizmo handles. Pointer and keyboard input are captured
+by the compositor while Arrange mode is on, so dragging a window cannot also
+click through to the app underneath.
+
+![Arrange mode with move, axis, rotation, uniform-scale and resize handles](docs/arrange-mode.webp)
+
+| Arrange input | Transform |
+|---|---|
+| Left-drag screen or frame | Translate along the monitor plane |
+| Shift-drag or right-drag | Yaw and pitch |
+| Ctrl-drag | Roll |
+| Alt-drag | Move toward/away from the driver's eye |
+| Mouse wheel | Uniformly scale width and height together |
+| Alt + wheel | Change depth |
+| Arrow keys | Translate left/right/up/down |
+| PageUp / PageDown | Move closer / farther away |
+| A/D, W/S, Q/E | Yaw, pitch, and roll |
+| `-` / `=`, or keypad `+` / `-` | Uniform scale down/up |
+| R or 0 | Reset this screen to its default bay transform |
+| Esc or F5 | Leave Arrange mode |
+
+When the gizmo is shown, its handles are ray-picked in 3D just like the
+dashboard buttons:
+
+| Handle | Drag result |
+|---|---|
+| Amber square | Free movement in the monitor plane |
+| Red / green / blue axis arrows and end knobs | Move only along local X / Y / Z (drag the blue Z knob up/down) |
+| Green / red / blue rings outside the frame | Yaw / pitch / roll around the matching local axis |
+| White corner squares | Resize width + height, anchoring the opposite corner; hold Shift to preserve aspect |
+| White edge squares | Resize only width or height, anchoring the opposite edge |
+| Magenta diamond | Uniformly scale both dimensions, preserving the current aspect |
+
+Hold **Shift** for larger keyboard steps or **Ctrl** for finer ones (the Ctrl
+modifier still leaves Ctrl-drag available for roll). F3 can focus the Arrange
+target without leaving the mode.
+
+The transform moves the whole physical monitor assembly — screen, frame,
+stand, label and glow — and 3D ray picking uses the same transformed plane, so
+clicks stay aligned after you leave Arrange mode. Corner/edge resizing changes
+the physical monitor's width/height (and therefore its aspect); the client's
+Wayland buffer is not resized, so its image is letterboxed on the resized
+screen. The magenta uniform-scale handle and mouse wheel instead scale both
+dimensions together, preserving whatever aspect the monitor currently has.
+To keep a screen recoverable, each dimension is limited to 0.35×–2.75× its
+default, pitch to ±85°, and the centre stays 0.8–12 m from the eye inside the
+garage bounds. Frame moves and Arrange transforms are deliberately
+**session-only**: they are not written to the config file, and a newly mapped
+window starts from its slot's default transform.
+
+Over VNC, keyboard input covers typing (letters use an explicit physical
+evdev table, as do keypad digits/Enter/Space), navigation keys, function keys
+and modifiers (see `keysym_to_evdev` in `src/backend_headless.c`); key
+auto-repeat is handled client-side (by each app's own xkb repeat timer), same
+as a real compositor — holding a key sends one press/release pair, not a flood
+of events.
 
 A neon crosshair reticle is drawn directly into every frame at the pointer
 position (brightening/widening over a clickable dashboard button) — there is
@@ -279,14 +348,14 @@ Launch commands for the dashboard buttons can be overridden with the
 
 ```
 include/chrome.h, math3d.h, vehicle.h, telemetry.h, cdconfig.h  shared compositor APIs/types
-src/math3d.c                 camera rays, plane intersection, animated car-part mounts
+src/math3d.c                 camera rays, plane intersection, car-part mounts, arrange transforms & manipulator IK
 src/vehicle.c                fixed-step hover EV dynamics, splines, exact rig transforms
 src/vehicle_scene.c          spline body/glass/cables + complete electric systems renderer
 src/telemetry.c              shared live EV state for the native instrument client
 src/keymap.c                 exact RFB/X11 keysym to Linux evdev translation
 src/wayland.c                the actual compositor protocol implementation
 src/dmabuf.c                 zwp_linux_dmabuf_v1: real EGLImage GPU buffer import
-src/scene.c                  OpenGL cockpit, monitors, picking, camera rig, 3D garage backdrop
+src/scene.c                  OpenGL cockpit, monitors, telescopic manipulators, picking, 3D garage backdrop
 src/ui.c                     cairo textures: windshield HUD, chrome, labels
 src/main.c                    CLI parsing, event loop, process spawn (backend-agnostic)
 src/backend_sdl.c             --windowed: SDL2 window + GLX context + SDL input
@@ -298,7 +367,7 @@ src/cdconfig.c                 shared INI config store (compositor + GUI; Garage
 docs/garage3d-architecture.md  Garage3D architecture + Wayland lifecycle documentation
 docs/configuration.md          config files, launch-menu editing, hot-reload semantics
 docs/vehicle-and-remote.md    EV physics/model, browser stack, Wayland/EGL/frame lifecycle
-tests/test_math.c             raycast/picking unit tests
+tests/test_math.c             raycast/picking, arrange-transform, and manipulator IK unit tests
 tests/test_config.c           INI store round-trip tests
 tests/test_vehicle.c          spline, EV dynamics, transform and fixed-step tests
 tests/test_telemetry.c        shared cluster telemetry and seqlock tests

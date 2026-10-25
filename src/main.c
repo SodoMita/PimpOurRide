@@ -71,17 +71,18 @@ static void apply_config(Server *s,const CdConfig *cfg,bool startup,const char *
   if(mode>=0)s->bg_mode=mode;else fprintf(stderr,"[config] unknown background '%s' (want 3d|texture|none)\n",bg);}
 }
 /* ---- Launch Control menu configuration ([app.*]) ----
- * The KDE-menu-editor half of the config file. Each of the four app slots
- * has a section ([app.terminal] ... [app.meters]) with:
- *   name, sub       button label lines (also for [app.neon]/[app.cockpit])
- *   exec            shell command; "%root%" expands to the install root
+ * The KDE-menu-editor half of the config file. Each of the six physical
+ * Launch Control slots has a section ([app.terminal] ... [app.cockpit]):
+ *   action          app | neon | cockpit (slots 5/6 default to built-ins)
+ *   name, sub       button label lines
+ *   exec            shell command for action=app; "%root%" = install root
  *   app_id          substring matched to focus an already-running instance
  *   icon            0..5 (prompt, folder, music, bars, sun, wheel)
  *   enabled         false greys the button out (click = notice)
- *   autostart       join the --demo launch set
- * Everything applies live: relabels regenerate button textures, exec/app_id
- * take effect on the next click. CHROMEDRIVE_* env vars still win for exec
- * (they are an explicit launch-time override - the GUI shows this state). */
+ *   autostart       join the --demo launch set (action=app slots)
+ * Everything applies live: relabels regenerate button textures, assignment
+ * changes take effect on the next click. CHROMEDRIVE_TERMINAL/FILES/AUDIO/
+ * METERS still win for those four legacy sections' exec values. */
 static char *expand_root(const char *in,const char *root){
  const char *needle="%root%";size_t nl=strlen(needle),rl=strlen(root),count=0;
  for(const char *p=in;(p=strstr(p,needle))!=NULL;p+=nl)count++;
@@ -102,13 +103,22 @@ static void apply_app_config(Server *s,const CdConfig *cfg){
   long icon=cd_config_get_int(cfg,sec,"icon",b->icon);
   if(icon>=0&&icon<=5)b->icon=(int)icon;else if(cd_config_has(cfg,sec,"icon"))fprintf(stderr,"[config] %s icon out of range 0..5\n",sec);
   b->enabled=cd_config_get_bool(cfg,sec,"enabled",b->enabled);
-  if(i<4){
-   const char *id=cd_config_get_string(cfg,sec,"app_id",NULL);
-   if(id)snprintf(s->app_ids[i],sizeof(s->app_ids[i]),"%s",id);
-   s->app_autostart[i]=cd_config_get_bool(cfg,sec,"autostart",s->app_autostart[i]);
-   const char *exec=cd_config_get_string(cfg,sec,"exec",NULL);
-   if(exec&&*exec&&!getenv(envnames[i])){char *x=expand_root(exec,s->root);if(x){free(s->launch_commands[i]);s->launch_commands[i]=x;}}
-   else if(exec&&*exec)fprintf(stderr,"[config] %s exec ignored: $%s is set\n",sec,envnames[i]);
+  const char *action=cd_config_get_string(cfg,sec,"action",NULL);
+  if(action){
+   if(!strcmp(action,"app"))b->action=CD_BUTTON_APP;
+   else if(!strcmp(action,"neon"))b->action=CD_BUTTON_NEON;
+   else if(!strcmp(action,"cockpit"))b->action=CD_BUTTON_COCKPIT;
+   else fprintf(stderr,"[config] %s unknown action '%s' (want app|neon|cockpit)\n",sec,action);
+  }
+  const char *id=cd_config_get_string(cfg,sec,"app_id",NULL);
+  if(id)snprintf(s->app_ids[i],sizeof(s->app_ids[i]),"%s",id);
+  s->app_autostart[i]=cd_config_get_bool(cfg,sec,"autostart",s->app_autostart[i]);
+  const char *exec=cd_config_get_string(cfg,sec,"exec",NULL);
+  if(exec){
+   if(*exec){
+    if(i<4&&getenv(envnames[i]))fprintf(stderr,"[config] %s exec ignored: $%s is set\n",sec,envnames[i]);
+    else {char *x=expand_root(exec,s->root);if(x){free(s->launch_commands[i]);s->launch_commands[i]=x;}}
+   }else if(i>=4||!getenv(envnames[i])){free(s->launch_commands[i]);s->launch_commands[i]=NULL;}
   }
  }
  ui_refresh_buttons(s);
@@ -141,22 +151,293 @@ void app_exec(Server *s,const char *command){
  if(err){app_notice(s,"Launch failed: %s",strerror(err));fprintf(stderr,"[launch] %s: %s\n",command,strerror(err));return;}
  s->children[s->child_count++]=pid;fprintf(stderr,"[launch] pid=%d %s\n",(int)pid,command);app_notice(s,"Connecting a new native Wayland client...");
 }
+static void action_cycle_neon(Server *s){s->theme=(s->theme+1)%3;s->rebuild_scene=true;app_notice(s,"Underglow / %s",s->theme==0?"ULTRAVIOLET":s->theme==1?"ICE BLUE":"ACID LIME");}
+static void action_driver_view(Server *s){scene_reset_camera(s);app_notice(s,"Driver view restored");}
 void app_launch(Server *s,int action,bool force_new){
- if(action>=0&&action<6&&!s->buttons[action].enabled){app_notice(s,"%s is disabled in the menu configuration",s->buttons[action].name);return;}
+ if(action<0||action>=6)return;
+ if(!s->buttons[action].enabled){app_notice(s,"%s is disabled in the menu configuration",s->buttons[action].name);return;}
+ if(s->buttons[action].action==CD_BUTTON_NEON){action_cycle_neon(s);return;}
+ if(s->buttons[action].action==CD_BUTTON_COCKPIT){action_driver_view(s);return;}
  if(action==3&&strstr(s->app_ids[3],"chromedrive.cluster")&&s->monitors[CD_CLUSTER_SLOT].surface){server_focus(s,s->monitors[CD_CLUSTER_SLOT].surface);scene_focus_monitor(s,CD_CLUSTER_SLOT,true);app_notice(s,"Fixed instrument panel / live EV Wayland client");return;}
- if(action==4){s->theme=(s->theme+1)%3;s->rebuild_scene=true;app_notice(s,"Underglow / %s",s->theme==0?"ULTRAVIOLET":s->theme==1?"ICE BLUE":"ACID LIME");return;}
- if(action==5){scene_reset_camera(s);app_notice(s,"Driver view restored");return;}
- if(action<0||action>3)return;
+ if(!s->launch_commands[action]||!*s->launch_commands[action]){app_notice(s,"No app assigned to %s - right-click it to choose one",s->buttons[action].name);return;}
  if(!force_new&&*s->app_ids[action]){for(int i=0;i<CD_MAX_MONITORS;i++){Surface *p=s->monitors[i].surface;if(p&&strstr(p->app_id,s->app_ids[action])){server_focus(s,p);scene_focus_monitor(s,i,true);return;}}}
  app_exec(s,s->launch_commands[action]);
 }
-/* The dash cog: focus the settings GUI if it is already on a monitor,
- * otherwise launch it (it maps to the next free screen like any app). */
-void app_open_settings(Server *s){
+static bool contains_ci(const char *haystack,const char *needle){return haystack&&strcasestr(haystack,needle);}
+static bool slot_looks_terminal(Server *s,int i){
+ if(s->buttons[i].action!=CD_BUTTON_APP||!s->launch_commands[i]||!*s->launch_commands[i])return false;
+ static const char *const words[]={"terminal","console","konsole","foot","alacritty","kitty","wezterm","xterm","zutty","terminator","tilix","ptyxis","blackbox","contour",NULL};
+ for(int w=0;words[w];w++)if(contains_ci(s->buttons[i].name,words[w])||contains_ci(s->app_ids[i],words[w])||contains_ci(s->launch_commands[i],words[w]))return true;
+ return false;
+}
+/* Ctrl+Alt+Enter keeps its documented meaning even when slot 1 has been
+ * reassigned: prefer any slot that still points at a terminal, then the
+ * historical slot-1 command, then the environment/default terminal. */
+static void launch_new_terminal(Server *s){
+ for(int i=0;i<6;i++)if(slot_looks_terminal(s,i)){app_exec(s,s->launch_commands[i]);app_notice(s,"New terminal launched");return;}
+ if(s->buttons[0].action==CD_BUTTON_APP&&s->launch_commands[0]&&*s->launch_commands[0]){app_exec(s,s->launch_commands[0]);app_notice(s,"New terminal launched");return;}
+ const char *env=getenv("CHROMEDRIVE_TERMINAL");
+ const char *cmd=env&&*env?env:(s->launch_commands[0]&&*s->launch_commands[0]?s->launch_commands[0]:"foot");
+ app_exec(s,cmd);app_notice(s,"New terminal launched");
+}
+/* A running settings GUI cannot receive new argv, so the compositor leaves
+ * it a one-line request file ("<slot> <nonce>") in the private runtime dir.
+ * chromedrive-config polls for it and opens its picker. The temp+rename
+ * dance means the GUI never observes a half-written request. */
+static bool settings_picker_request(Server *s,int slot){
+ if(slot<0||slot>=6||!*s->runtime)return false;
+ const char *base=strrchr(s->socket,'/');base=base?base+1:s->socket;
+ char safe[128];size_t j=0;
+ for(size_t i=0;base[i]&&j+1<sizeof(safe);i++){unsigned char ch=(unsigned char)base[i];safe[j++]=((ch>='A'&&ch<='Z')||(ch>='a'&&ch<='z')||(ch>='0'&&ch<='9')||ch=='.'||ch=='_'||ch=='-')?(char)ch:'_';}
+ safe[j]=0;if(!*safe)snprintf(safe,sizeof(safe),"wayland-0");
+ char path[4400],tmp[4400];
+ if(snprintf(path,sizeof(path),"%s/chromedrive-config.%s.picker-request",s->runtime,safe)>=(int)sizeof(path))return false;
+ if(snprintf(tmp,sizeof(tmp),"%s.tmp-%d",path,(int)getpid())>=(int)sizeof(tmp))return false;
+ FILE *f=fopen(tmp,"w");if(!f)return false;
+ unsigned long long nonce=((unsigned long long)(clock_now()*1000000.0)<<20)^(unsigned long long)s->frames^(unsigned long long)getpid();
+ bool ok=fprintf(f,"%d %llu\n",slot,nonce)>=0;
+ if(fclose(f)!=0)ok=false;
+ if(ok&&rename(tmp,path)==0)return true;
+ unlink(tmp);return false;
+}
+/* The dash cog / right-clicking a Launch Control tile: focus the settings
+ * GUI if it is already on a monitor, otherwise launch it. A fresh launch may
+ * be deep-linked to one slot with its app picker already open; an already
+ * running GUI gets the same deep link through the request file above. */
+void app_open_settings_slot(Server *s,int slot,bool choose_app){
  s->cog_spin_until=s->time+0.9;
- for(int i=0;i<CD_MAX_MONITORS;i++){Surface *p=s->monitors[i].surface;if(p&&strstr(p->app_id,"chromedrive.config")){server_focus(s,p);scene_focus_monitor(s,i,true);app_notice(s,"Settings");return;}}
- char cmd[4400];snprintf(cmd,sizeof(cmd),"'%s/bin/chromedrive-config'",s->root);
- app_exec(s,cmd);app_notice(s,"Opening Settings...");
+ for(int i=0;i<CD_MAX_MONITORS;i++){Surface *p=s->monitors[i].surface;if(p&&strstr(p->app_id,"chromedrive.config")){server_focus(s,p);scene_focus_monitor(s,i,true);bool requested=choose_app&&settings_picker_request(s,slot);app_notice(s,choose_app?(requested?"Opening app picker...":"Right-click the slot in Settings to assign an app"):"Settings");return;}}
+ char cmd[4400];
+ if(slot>=0&&slot<6)snprintf(cmd,sizeof(cmd),"'%s/bin/chromedrive-config' --slot %d%s",s->root,slot,choose_app?" --choose-app":"");
+ else snprintf(cmd,sizeof(cmd),"'%s/bin/chromedrive-config'",s->root);
+ app_exec(s,cmd);app_notice(s,choose_app?"Opening app picker...":"Opening Settings...");
+}
+void app_open_settings(Server *s){app_open_settings_slot(s,-1,false);}
+/* ---- F5 Arrange mode ---------------------------------------------------
+ * A modal, session-only transform editor for whole spatial monitors. The
+ * selected monitor's Plane is translated along its own right/up axes (and
+ * toward/away from the eye), rotated in yaw/pitch/roll, and uniformly
+ * scaled. Because rendering and scene_pick() both use that same Plane, the
+ * app remains clickable exactly where it is drawn after exiting the mode. */
+static bool arrange_valid(Server *s){
+ return s->arrange_mode&&s->arrange_slot>=0&&s->arrange_slot<CD_MAX_MONITORS&&s->monitors[s->arrange_slot].surface;
+}
+static void monitor_transform_notice(Server *s,int slot,const char *prefix){
+ if(slot<0||slot>=CD_MAX_MONITORS||!s->monitors[slot].surface)return;
+ Plane p=s->monitors[slot].plane;
+ app_notice(s,"%s CD-%02d | %.2f, %.2f, %.2f m | yaw %.0f pitch %.0f roll %.0f | %.2fx%.2f m",
+  prefix,slot+1,p.center.x,p.center.y,p.center.z,p.yaw,p.pitch,p.roll,p.width,p.height);
+}
+static void arrange_notice(Server *s){
+ if(arrange_valid(s))monitor_transform_notice(s,s->arrange_slot,"Arrange");
+}
+static bool arrange_set_target(Server *s,int slot,bool move_camera){
+ if(slot<0||slot>=CD_MAX_MONITORS||!s->monitors[slot].surface)return false;
+ s->arrange_slot=slot;s->active_slot=slot;s->arrange_dragging=false;s->arrange_drag_button=0;s->arrange_handle=CD_HANDLE_NONE;
+ server_focus(s,s->monitors[slot].surface);
+ if(move_camera)scene_focus_monitor(s,slot,false);
+ arrange_notice(s);
+ return true;
+}
+static int arrange_find_slot(Server *s){
+ Surface *root=surface_root(s->keyboard_focus);
+ if(root&&root->slot>=0&&root->slot<CD_MAX_MONITORS&&s->monitors[root->slot].surface==root)return root->slot;
+ if(s->active_slot>=0&&s->active_slot<CD_MAX_MONITORS&&s->monitors[s->active_slot].surface)return s->active_slot;
+ for(int i=0;i<CD_MAX_MONITORS;i++)if(s->monitors[i].surface)return i;
+ return -1;
+}
+static bool arrange_ensure_target(Server *s){
+ if(arrange_valid(s))return true;
+ int slot=arrange_find_slot(s);
+ return slot>=0&&arrange_set_target(s,slot,false);
+}
+static void arrange_exit(Server *s){
+ s->arrange_mode=false;s->arrange_dragging=false;s->arrange_drag_button=0;s->arrange_handle=CD_HANDLE_NONE;s->arrange_handles=false;
+ app_notice(s,"Arrange mode off");
+}
+static void arrange_toggle(Server *s){
+ if(s->arrange_mode){arrange_exit(s);return;}
+ if(s->held_buttons>0||s->frame_dragging){app_notice(s,"Arrange: release the pointer button first");return;}
+ int slot=arrange_find_slot(s);
+ if(slot<0){app_notice(s,"Arrange: no window is open");return;}
+ s->arrange_mode=true;s->arrange_dragging=false;s->arrange_drag_button=0;s->arrange_handle=CD_HANDLE_NONE;s->arrange_handles=false;
+ arrange_set_target(s,slot,true);
+}
+static const char *arrange_handle_name(int handle){
+ switch(handle){
+ case CD_HANDLE_MOVE:return "move in plane";
+ case CD_HANDLE_AXIS_X:return "move along X";
+ case CD_HANDLE_AXIS_Y:return "move along Y";
+ case CD_HANDLE_AXIS_Z:return "move along Z/depth";
+ case CD_HANDLE_ROTATE_YAW:return "rotate yaw";
+ case CD_HANDLE_ROTATE_PITCH:return "rotate pitch";
+ case CD_HANDLE_ROTATE_ROLL:return "rotate roll";
+ case CD_HANDLE_SCALE:return "uniform scale";
+ case CD_HANDLE_RESIZE_NW:return "resize top-left corner";
+ case CD_HANDLE_RESIZE_N:return "resize top edge";
+ case CD_HANDLE_RESIZE_NE:return "resize top-right corner";
+ case CD_HANDLE_RESIZE_E:return "resize right edge";
+ case CD_HANDLE_RESIZE_SE:return "resize bottom-right corner";
+ case CD_HANDLE_RESIZE_S:return "resize bottom edge";
+ case CD_HANDLE_RESIZE_SW:return "resize bottom-left corner";
+ case CD_HANDLE_RESIZE_W:return "resize left edge";
+ default:return "drag";
+ }
+}
+static void arrange_handles_notice(Server *s){
+ if(!arrange_valid(s))return;
+ if(s->arrange_handles)app_notice(s,"Handles on CD-%02d: amber move | RGB axes/rings | white resize | magenta scale",s->arrange_slot+1);
+ else app_notice(s,"Handles off CD-%02d",s->arrange_slot+1);
+}
+static bool arrange_handles_button(Server *s,int slot){
+ bool same=arrange_valid(s)&&s->arrange_slot==slot;
+ if(!s->arrange_mode){
+  if(s->held_buttons>0||s->frame_dragging){app_notice(s,"Arrange: release the pointer button first");return false;}
+  s->arrange_mode=true;
+ }
+ if(!arrange_set_target(s,slot,false))return false;
+ s->arrange_handles=same?!s->arrange_handles:true;
+ arrange_handles_notice(s);
+ return true;
+}
+static bool arrange_local_point(Server *s,Plane p,int x,int y,float *lx,float *ly){
+ float u,v,d;Vec3 ray=camera_ray((float)x,(float)y,s->width,s->height,s->fov,s->yaw,s->pitch);
+ if(!plane_hit(p,s->eye,ray,&u,&v,&d,false))return false;
+ *lx=(u-.5f)*p.width;*ly=(.5f-v)*p.height;return true;
+}
+static void arrange_begin_drag(Server *s,uint32_t button,int handle){
+ s->arrange_dragging=true;s->arrange_drag_button=(int)button;s->arrange_handle=handle;
+ s->arrange_last_x=s->arrange_start_x=s->mouse_x;s->arrange_last_y=s->arrange_start_y=s->mouse_y;
+ s->arrange_start_plane=s->monitors[s->arrange_slot].plane;
+ if(!arrange_local_point(s,s->arrange_start_plane,s->mouse_x,s->mouse_y,&s->arrange_start_local_x,&s->arrange_start_local_y)){s->arrange_start_local_x=0;s->arrange_start_local_y=0;}
+}
+static void arrange_cycle(Server *s){
+ int start=arrange_valid(s)?s->arrange_slot:s->active_slot;
+ for(int d=1;d<=CD_MAX_MONITORS;d++){
+  int slot=(start+d)%CD_MAX_MONITORS;
+  if(arrange_set_target(s,slot,true))return;
+ }
+ app_notice(s,"Arrange: no window is open");
+}
+bool app_arrange_pointer_button(Server *s,Hit hit,uint32_t button,bool down){
+ if(!s->arrange_mode)return false;
+ if(button!=BTN_LEFT&&button!=BTN_RIGHT)return true;
+ if(down){
+  if(hit.kind==HIT_HANDLES_BUTTON){
+   if(button==BTN_LEFT)arrange_handles_button(s,hit.slot);
+   return true;
+  }
+  if(hit.kind==HIT_ARRANGE_HANDLE&&button==BTN_LEFT&&arrange_set_target(s,hit.slot,false)){
+   arrange_begin_drag(s,button,hit.handle);
+   app_notice(s,"CD-%02d handle: %s",hit.slot+1,arrange_handle_name(hit.handle));
+  }else if((hit.kind==HIT_APP||hit.kind==HIT_FRAME)&&arrange_set_target(s,hit.slot,false)){
+   arrange_begin_drag(s,button,CD_HANDLE_NONE);
+  }
+  return true; /* dashboard/close/app clicks are modal while arranging */
+ }
+ if(s->arrange_dragging&&s->arrange_drag_button==(int)button){
+  s->arrange_dragging=false;s->arrange_drag_button=0;s->arrange_handle=CD_HANDLE_NONE;arrange_notice(s);
+ }
+ return true;
+}
+void app_arrange_pointer_motion(Server *s,int x,int y){
+ if(!s->arrange_mode)return;
+ if(!s->arrange_dragging||!arrange_ensure_target(s)){s->arrange_last_x=x;s->arrange_last_y=y;return;}
+ int slot=s->arrange_slot;
+ if(s->arrange_handle!=CD_HANDLE_NONE){
+  Plane start=s->arrange_start_plane,base=monitor_plane(slot),out=start;
+  int total_dx=x-s->arrange_start_x,total_dy=y-s->arrange_start_y;
+  Vec3 rel=vsub(start.center,s->eye);float dist=sqrtf(vdot(rel,rel));
+  float meters_per_pixel=2.f*dist*tanf(s->fov*.00872664626f)/(float)s->height;
+  float lx=0,ly=0;bool have_local=arrange_local_point(s,start,x,y,&lx,&ly);
+  float dlx=have_local?lx-s->arrange_start_local_x:total_dx*meters_per_pixel;
+  float dly=have_local?ly-s->arrange_start_local_y:-total_dy*meters_per_pixel;
+  bool shift=s->keys[KEY_LEFTSHIFT]||s->keys[KEY_RIGHTSHIFT];
+  switch(s->arrange_handle){
+  case CD_HANDLE_MOVE:out=plane_translate_local(start,s->eye,dlx,dly,0);break;
+  case CD_HANDLE_AXIS_X:out=plane_translate_local(start,s->eye,dlx,0,0);break;
+  case CD_HANDLE_AXIS_Y:out=plane_translate_local(start,s->eye,0,dly,0);break;
+  case CD_HANDLE_AXIS_Z:out=plane_translate_local(start,s->eye,0,0,-total_dy*meters_per_pixel);break;
+  case CD_HANDLE_ROTATE_YAW:out=plane_rotate(start,total_dx*.25f,0,0);break;
+  case CD_HANDLE_ROTATE_PITCH:out=plane_rotate(start,0,total_dy*.25f,0);break;
+  case CD_HANDLE_ROTATE_ROLL:{
+   float delta=total_dx*.30f;
+   if(have_local&&hypotf(s->arrange_start_local_x,s->arrange_start_local_y)>.06f&&hypotf(lx,ly)>.06f){
+    delta=(atan2f(ly,lx)-atan2f(s->arrange_start_local_y,s->arrange_start_local_x))*57.2957795f;
+    while(delta>180.f)delta-=360.f;while(delta<=-180.f)delta+=360.f;
+   }
+   out=plane_rotate(start,0,0,delta);break;
+  }
+  case CD_HANDLE_SCALE:out=plane_uniform_scale(start,base,expf((total_dx-total_dy)*.005f));break;
+  default:{
+   float new_w=start.width,new_h=start.height;int fixed_x=0,fixed_y=0;
+   int hd=s->arrange_handle;
+   if(hd==CD_HANDLE_RESIZE_E||hd==CD_HANDLE_RESIZE_NE||hd==CD_HANDLE_RESIZE_SE){new_w+=dlx;fixed_x=-1;}
+   if(hd==CD_HANDLE_RESIZE_W||hd==CD_HANDLE_RESIZE_NW||hd==CD_HANDLE_RESIZE_SW){new_w-=dlx;fixed_x=1;}
+   if(hd==CD_HANDLE_RESIZE_N||hd==CD_HANDLE_RESIZE_NE||hd==CD_HANDLE_RESIZE_NW){new_h+=dly;fixed_y=-1;}
+   if(hd==CD_HANDLE_RESIZE_S||hd==CD_HANDLE_RESIZE_SE||hd==CD_HANDLE_RESIZE_SW){new_h-=dly;fixed_y=1;}
+   bool corner=hd==CD_HANDLE_RESIZE_NW||hd==CD_HANDLE_RESIZE_NE||hd==CD_HANDLE_RESIZE_SE||hd==CD_HANDLE_RESIZE_SW;
+   if(shift&&corner){float f=fmaxf(new_w/start.width,new_h/start.height);new_w=start.width*f;new_h=start.height*f;}
+   out=plane_resize(start,base,s->eye,new_w,new_h,fixed_x,fixed_y);break;
+  }
+  }
+  scene_monitor_set_plane(s,slot,out);
+  s->arrange_last_x=x;s->arrange_last_y=y;
+  return;
+ }
+ int dx=x-s->arrange_last_x,dy=y-s->arrange_last_y;
+ s->arrange_last_x=x;s->arrange_last_y=y;
+ if(!dx&&!dy)return;
+ bool shift=s->keys[KEY_LEFTSHIFT]||s->keys[KEY_RIGHTSHIFT];
+ bool ctrl=s->keys[KEY_LEFTCTRL]||s->keys[KEY_RIGHTCTRL];
+ bool alt=s->keys[KEY_LEFTALT]||s->keys[KEY_RIGHTALT];
+ if(ctrl)scene_monitor_rotate(s,slot,0,0,dx*.30f);
+ else if(shift||s->arrange_drag_button==BTN_RIGHT)scene_monitor_rotate(s,slot,dx*.25f,dy*.25f,0);
+ else if(alt)scene_monitor_translate(s,slot,0,0,-dy*.010f);
+ else{
+  Plane p=s->monitors[slot].plane;Vec3 rel=vsub(p.center,s->eye);
+  float dist=sqrtf(vdot(rel,rel));
+  float meters_per_pixel=2.f*dist*tanf(s->fov*.00872664626f)/(float)s->height;
+  scene_monitor_translate(s,slot,dx*meters_per_pixel,-dy*meters_per_pixel,0);
+ }
+}
+bool app_arrange_pointer_wheel(Server *s,float steps){
+ if(!s->arrange_mode)return false;
+ if(!arrange_ensure_target(s)||steps==0)return true;
+ bool alt=s->keys[KEY_LEFTALT]||s->keys[KEY_RIGHTALT];
+ if(alt)scene_monitor_translate(s,s->arrange_slot,0,0,steps*.18f);
+ else scene_monitor_scale(s,s->arrange_slot,expf(steps*.10f));
+ arrange_notice(s);
+ return true;
+}
+bool app_frame_pointer_button(Server *s,Hit hit,uint32_t button,bool down){
+ if(s->arrange_mode)return app_arrange_pointer_button(s,hit,button,down);
+ if(button!=BTN_LEFT)return s->frame_dragging;
+ if(down){
+  if(hit.kind==HIT_HANDLES_BUTTON){arrange_handles_button(s,hit.slot);return true;}
+  if(hit.kind!=HIT_FRAME||hit.slot<0||hit.slot>=CD_MAX_MONITORS||!s->monitors[hit.slot].surface)return false;
+  if(s->held_buttons>0){app_notice(s,"Move: release the pointer button first");return true;}
+  s->frame_dragging=true;s->frame_drag_slot=hit.slot;s->active_slot=hit.slot;
+  s->frame_last_x=s->mouse_x;s->frame_last_y=s->mouse_y;
+  server_focus(s,s->monitors[hit.slot].surface);
+  return true;
+ }
+ if(s->frame_dragging){
+  int slot=s->frame_drag_slot;s->frame_dragging=false;s->frame_drag_slot=-1;
+  monitor_transform_notice(s,slot,"Moved");
+  return true;
+ }
+ return false;
+}
+void app_frame_pointer_motion(Server *s,int x,int y){
+ if(!s->frame_dragging||s->arrange_mode)return;
+ int slot=s->frame_drag_slot;
+ if(slot<0||slot>=CD_MAX_MONITORS||!s->monitors[slot].surface){s->frame_dragging=false;s->frame_drag_slot=-1;return;}
+ int dx=x-s->frame_last_x,dy=y-s->frame_last_y;s->frame_last_x=x;s->frame_last_y=y;
+ if(!dx&&!dy)return;
+ Plane p=s->monitors[slot].plane;Vec3 rel=vsub(p.center,s->eye);float dist=sqrtf(vdot(rel,rel));
+ float meters_per_pixel=2.f*dist*tanf(s->fov*.00872664626f)/(float)s->height;
+ scene_monitor_translate(s,slot,dx*meters_per_pixel,-dy*meters_per_pixel,0);
 }
 static void next_monitor(Server *s){for(int d=1;d<=CD_MAX_MONITORS;d++){int i=(s->active_slot+d)%CD_MAX_MONITORS;if(s->monitors[i].surface){server_focus(s,s->monitors[i].surface);scene_focus_monitor(s,i,s->focus_view);return;}}}
 /* Compositor-level hotkeys, shared by both input backends (SDL and headless/VNC).
@@ -178,14 +459,48 @@ static bool drive_key(Server *s,uint32_t key,bool down){
 bool app_global_key(Server *s,uint32_t evdev,bool down){
  bool ctrl=s->keys[KEY_LEFTCTRL]||s->keys[KEY_RIGHTCTRL];
  bool alt=s->keys[KEY_LEFTALT]||s->keys[KEY_RIGHTALT];
- if(ctrl&&alt&&(evdev==KEY_ENTER||evdev==KEY_Q)){if(down){if(evdev==KEY_Q)s->running=false;else app_launch(s,0,true);}return true;}
+ bool shift_key=s->keys[KEY_LEFTSHIFT]||s->keys[KEY_RIGHTSHIFT];
+ if(ctrl&&alt&&(evdev==KEY_ENTER||evdev==KEY_KPENTER||evdev==KEY_Q)){if(down){if(evdev==KEY_Q)s->running=false;else launch_new_terminal(s);}return true;}
+ if(evdev==KEY_F9||(evdev==KEY_F5&&(shift_key||s->arrange_mode))){if(down)arrange_toggle(s);return true;}
+ if(s->arrange_mode&&evdev!=KEY_F1&&evdev!=KEY_F2&&evdev!=KEY_F4&&evdev!=KEY_F7&&evdev!=KEY_F8&&evdev!=KEY_F11&&evdev!=KEY_F12){
+  bool modifier=evdev==KEY_LEFTSHIFT||evdev==KEY_RIGHTSHIFT||evdev==KEY_LEFTCTRL||evdev==KEY_RIGHTCTRL||evdev==KEY_LEFTALT||evdev==KEY_RIGHTALT||evdev==KEY_LEFTMETA||evdev==KEY_RIGHTMETA;
+  if(modifier)return false; /* let server_key maintain s->keys[] for drags */
+  if(evdev==KEY_ESC){if(down)arrange_exit(s);return true;}
+  if(evdev==KEY_F6||evdev==KEY_TAB){if(down)arrange_cycle(s);return true;}
+  if(evdev==KEY_F3){if(down&&arrange_ensure_target(s))scene_focus_monitor(s,s->arrange_slot,!s->focus_view);return true;}
+  if(!down)return true;
+  if(!arrange_ensure_target(s)){app_notice(s,"Arrange: no window is open");return true;}
+  if(evdev==KEY_H){s->arrange_handles=!s->arrange_handles;arrange_handles_notice(s);return true;}
+  float step=ctrl?.25f:shift_key?3.f:1.f;
+  int slot=s->arrange_slot;bool changed=true;
+  switch(evdev){
+  case KEY_LEFT:scene_monitor_translate(s,slot,-.08f*step,0,0);break;
+  case KEY_RIGHT:scene_monitor_translate(s,slot,.08f*step,0,0);break;
+  case KEY_UP:scene_monitor_translate(s,slot,0,.08f*step,0);break;
+  case KEY_DOWN:scene_monitor_translate(s,slot,0,-.08f*step,0);break;
+  case KEY_PAGEUP:scene_monitor_translate(s,slot,0,0,.12f*step);break;
+  case KEY_PAGEDOWN:scene_monitor_translate(s,slot,0,0,-.12f*step);break;
+  case KEY_A:scene_monitor_rotate(s,slot,-3.f*step,0,0);break;
+  case KEY_D:scene_monitor_rotate(s,slot,3.f*step,0,0);break;
+  case KEY_W:scene_monitor_rotate(s,slot,0,-3.f*step,0);break;
+  case KEY_S:scene_monitor_rotate(s,slot,0,3.f*step,0);break;
+  case KEY_Q:scene_monitor_rotate(s,slot,0,0,-3.f*step);break;
+  case KEY_E:scene_monitor_rotate(s,slot,0,0,3.f*step);break;
+  case KEY_MINUS:case KEY_KPMINUS:scene_monitor_scale(s,slot,powf(1.08f,-step));break;
+  case KEY_EQUAL:case KEY_KPPLUS:scene_monitor_scale(s,slot,powf(1.08f,step));break;
+  case KEY_R:case KEY_0:scene_monitor_reset(s,slot);break;
+  default:changed=false;break;
+  }
+  if(changed)arrange_notice(s);
+  return true;
+ }
  bool global=evdev==KEY_F1||evdev==KEY_F2||evdev==KEY_F3||evdev==KEY_F4||evdev==KEY_F5||evdev==KEY_F6||evdev==KEY_F7||evdev==KEY_F8||evdev==KEY_F11||evdev==KEY_F12;
  if(!global)return drive_key(s,evdev,down);if(!down)return true;
  switch(evdev){
  case KEY_F1:s->show_help=!s->show_help;break;
  case KEY_F2:scene_reset_camera(s);break;
  case KEY_F3:if(s->keyboard_focus)scene_focus_monitor(s,s->keyboard_focus->slot,!s->focus_view);else next_monitor(s);break;
- case KEY_F4:app_launch(s,4,false);break;
+ case KEY_F4:action_cycle_neon(s);break;
  case KEY_F5:
   s->camera_mode=(VehicleCameraMode)((s->camera_mode+1)%3);
   scene_wheel_cancel(s);
@@ -209,9 +524,9 @@ bool app_global_key(Server *s,uint32_t evdev,bool down){
  }
  return true;
 }
-static void usage(const char *name){printf("ChromeDrive " CD_VERSION " — native, first-person Wayland cockpit\n\nUsage: %s [options]\n  --demo                Start a real terminal + Files + Audio clients\n  --socket NAME         Wayland socket (default: automatic)\n  --exec COMMAND        Launch an extra Wayland client (repeatable)\n  --size WIDTHxHEIGHT   Framebuffer/host window size (default 1600x1000)\n  --fps N               Frame cap, 1..120 (default 60)\n  --headless            Run with no X server: surfaceless EGL + built-in VNC server (default)\n  --windowed            Dev/debug mode: open a real SDL2/GLX window on an X server instead\n  --vnc-port N          VNC port for --headless mode (default 5900)\n  --fullscreen          --windowed only: start fullscreen, F11 to leave\n  --exit-after SECONDS   Useful for automated checks\n  --screenshot PATH     Capture a WebP after 3 seconds\n  --config PATH         Config file (default: ~/.config/chromedrive/chromedrive.conf)\n  --no-config           Ignore the config file entirely\n  --help                Show this help\n\nF1 help | F2 cockpit | F3 focus | F4 neon | F5 driver/exterior/systems | F6 next display\nF7 client/drive input | F8 recover car | Drive: WASD/arrows + Space + drag wheel\nMiddle-drag/VNC-drag to look | Click a screen to focus | Ctrl+Alt+Enter new terminal\n",name);}
+static void usage(const char *name){printf("ChromeDrive " CD_VERSION " — native, first-person Wayland cockpit\n\nUsage: %s [options]\n  --demo                Start a real terminal + Files + Audio clients\n  --socket NAME         Wayland socket (default: automatic)\n  --exec COMMAND        Launch an extra Wayland client (repeatable)\n  --size WIDTHxHEIGHT   Framebuffer/host window size (default 1600x1000)\n  --fps N               Frame cap, 1..120 (default 60)\n  --headless            Run with no X server: surfaceless EGL + built-in VNC server (default)\n  --windowed            Dev/debug mode: open a real SDL2/GLX window on an X server instead\n  --vnc-port N          VNC port for --headless mode (default 5900)\n  --fullscreen          --windowed only: start fullscreen, F11 to leave\n  --exit-after SECONDS   Useful for automated checks\n  --screenshot PATH     Capture a WebP after 3 seconds\n  --config PATH         Config file (default: ~/.config/chromedrive/chromedrive.conf)\n  --no-config           Ignore the config file entirely\n  --help                Show this help\n\nF1 help | F2 cockpit | F3 focus | F4 neon | F5 driver/exterior/systems | F6 next display\nF7 client/drive input | F8 recover car | F9/Shift+F5 arrange window | Drive: WASD/arrows + Space\nMiddle-drag/VNC-drag to look | Drag a titlebar to move | HANDLES button shows move/rotate/resize gizmo | Ctrl+Alt+Enter new terminal\n",name);}
 int main(int argc,char **argv){
- Server s={.width=1600,.height=1000,.fps_limit=60,.running=true,.hud_visible=true,.hover_button=-1,.keymap_fd=-1,.fov=65,.target_fov=65,.base_fov=65,.eye={0,1.0f,2.8f},.headless=true,.vnc_port=5900,.telemetry_fd=-1};
+ Server s={.width=1600,.height=1000,.fps_limit=60,.running=true,.hud_visible=true,.hover_button=-1,.keymap_fd=-1,.arrange_slot=-1,.frame_drag_slot=-1,.fov=65,.target_fov=65,.base_fov=65,.eye={0,1.0f,2.8f},.headless=true,.vnc_port=5900,.telemetry_fd=-1};
  vehicle_init(&s.vehicle);
  const char *socket_name=NULL;double exit_after=0;bool auto_screenshot=false;
  /* Config pre-scan: --config/--no-config must be known before the file is
@@ -258,13 +573,13 @@ int main(int argc,char **argv){
  const char *def_ids[4]={"foot","chromedrive.files","chromedrive.audio","chromedrive.cluster"};
  const bool def_autostart[4]={true,true,true,false};
  const char *envnames[]={"CHROMEDRIVE_TERMINAL","CHROMEDRIVE_FILES","CHROMEDRIVE_AUDIO","CHROMEDRIVE_METERS"};
- for(int i=0;i<4;i++){s.launch_commands[i]=getenv(envnames[i])?strdup(getenv(envnames[i])):expand_root(templates[i],s.root);snprintf(s.app_ids[i],sizeof(s.app_ids[i]),"%s",def_ids[i]);s.app_autostart[i]=def_autostart[i];}
+ for(int i=0;i<6;i++){if(i<4){s.launch_commands[i]=getenv(envnames[i])?strdup(getenv(envnames[i])):expand_root(templates[i],s.root);snprintf(s.app_ids[i],sizeof(s.app_ids[i]),"%s",def_ids[i]);s.app_autostart[i]=def_autostart[i];}else{s.launch_commands[i]=NULL;s.app_ids[i][0]=0;s.app_autostart[i]=false;}}
  scene_init(&s);ui_init(&s);
  if(config_enabled){CdConfig *cfg=cd_config_load(config_path);if(cfg){apply_app_config(&s,cfg);cd_config_free(cfg);}} /* needs buttons+GL: after ui_init */
  s.start_time=clock_now();double last=s.start_time,fps_start=last;uint64_t fps_frames=0;bool initial_focus=false;
  /* The instrument cluster is part of the car, not an optional floating app. */
  char cluster_command[4400];snprintf(cluster_command,sizeof(cluster_command),"'%s/bin/chromedrive-demo' cluster",s.root);app_exec(&s,cluster_command);
- if(s.demo){for(int i=0;i<4;i++)if(s.buttons[i].enabled&&s.app_autostart[i])app_exec(&s,s.launch_commands[i]);}for(int i=0;i<s.exec_count;i++)app_exec(&s,s.exec_commands[i]);
+ if(s.demo){for(int i=0;i<6;i++)if(s.buttons[i].enabled&&s.buttons[i].action==CD_BUTTON_APP&&s.app_autostart[i]&&!(i==3&&strstr(s.app_ids[3],"chromedrive.cluster")))app_exec(&s,s.launch_commands[i]);}for(int i=0;i<s.exec_count;i++)app_exec(&s,s.exec_commands[i]);
  app_notice(&s,"Welcome to the driver's seat. F1 for controls.");
  while(s.running&&!interrupted){
   double frame_start=clock_now();s.time=frame_start-s.start_time;s.dt=frame_start-last;last=frame_start;
@@ -312,5 +627,5 @@ int main(int argc,char **argv){
  for(int i=0;i<s.child_count;i++)kill(-s.children[i],SIGTERM);
  telemetry_finish(&s);server_finish(&s);scene_finish(&s);
  if(s.headless)backend_headless_shutdown(&s);else backend_sdl_shutdown(&s);
- SDL_Quit();for(int i=0;i<4;i++)free(s.launch_commands[i]);return 0;
+ SDL_Quit();for(int i=0;i<6;i++)free(s.launch_commands[i]);return 0;
 }

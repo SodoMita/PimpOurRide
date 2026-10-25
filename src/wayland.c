@@ -62,8 +62,10 @@ static void surface_unmap(Surface *p){
  if(s->pointer_focus==p){s->pointer_focus=NULL;}
  if(s->pointer_grab==p){s->pointer_grab=NULL;s->held_buttons=0;}
  if(p->slot>=0&&s->monitors[p->slot].surface==p){
+  if(s->arrange_slot==p->slot){s->arrange_slot=-1;s->arrange_dragging=false;s->arrange_drag_button=0;s->arrange_handle=CD_HANDLE_NONE;}
+  if(s->frame_drag_slot==p->slot){s->frame_dragging=false;s->frame_drag_slot=-1;}
   Resource *r;wl_list_for_each(r,&s->outputs,link)if(r->slot==p->slot&&wl_resource_get_client(r->resource)==wl_resource_get_client(p->resource))wl_surface_send_leave(p->resource,r->resource);
-  s->monitors[p->slot].surface=NULL;s->monitors[p->slot].reveal=0;s->monitors[p->slot].target_reveal=0;
+  s->monitors[p->slot].surface=NULL;s->monitors[p->slot].reveal=0;s->monitors[p->slot].target_reveal=0;s->monitors[p->slot].arranged=false;
   s->monitors[p->slot].plane=monitor_plane(p->slot);
  }
  p->mapped=false;p->slot=-1;
@@ -128,7 +130,9 @@ static void surface_map(Surface *p){
   if(slot<0)for(int i=0;i<CD_APP_BAYS;i++)if(!s->monitors[i].surface){slot=i;break;}
  }
  if(slot<0){app_notice(s,cluster?"The instrument cluster is already occupied":"All eight car-part display mounts are occupied");xdg_toplevel_send_close(p->toplevel);return;}
+ scene_monitor_reset(s,slot); /* Arrange transforms are per window/session, not inherited by the next app in this bay. */
  p->slot=slot;p->mapped=true;Monitor *m=&s->monitors[slot];m->surface=p;
+ m->arranged=false;
  m->reveal=(slot==CD_CLUSTER_SLOT||monitor_mount(slot)==MOUNT_WINDSHIELD||monitor_mount(slot)==MOUNT_REAR_FIXED)?1:0;
  m->target_reveal=1;m->plane=monitor_plane_at(slot,m->reveal);
  send_surface_enter(p);send_configure(p);
