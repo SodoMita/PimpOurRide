@@ -24,7 +24,14 @@ void telemetry_update(Server *s) {
  int screens=0;for(int i=0;i<CD_APP_BAYS;i++)if(s->monitors[i].surface)screens++;
  t->speed_mps=s->vehicle.speed;t->acceleration=s->vehicle.acceleration;
  t->power_kw=s->vehicle.power_kw;t->motor_temp_c=s->vehicle.motor_temp_c;
- t->hover_height=s->vehicle.hover_height;t->steering=s->vehicle.steering;t->wheel_angle=s->vehicle.wheel_angle;
+ t->hover_height=s->vehicle.hover_height;
+ if(s->steering_mode==VEHICLE_STEER_CLIENT){
+  t->wheel_angle=s->wheel_client_angle;
+  t->steering=clampf(-s->wheel_client_angle/CD_WHEEL_MAX_ANGLE,-1.f,1.f);
+ }else{
+  t->wheel_angle=s->vehicle.wheel_angle;
+  t->steering=s->vehicle.steering;
+ }
  t->battery_kwh=s->vehicle.battery_kwh;t->battery_capacity_kwh=VEHICLE_BATTERY_CAPACITY_KWH;t->distance_m=s->vehicle.distance_m;
  t->connected_screens=(uint32_t)screens;t->drive_mode=(uint8_t)s->steering_mode;
  t->braking=s->drive_brake?1:0;t->collision=s->vehicle.collision?1:0;

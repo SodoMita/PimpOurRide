@@ -72,7 +72,8 @@ static void windshield_hud(Server *s){
  /* Centre stays mostly empty. A small live steering chevron and status line
   * read as glass projection without covering the fixed windshield client. */
  rgba(c,.48,.72,.80,.72);mono(c,568,62,14,tr("WINDSHIELD HUD / LIVE"));
- rgba(c,r,g,b,.62);cairo_set_line_width(c,4);float cx=700+s->vehicle.steering*90;
+ float steer_hud=s->steering_mode==VEHICLE_STEER_DRIVE?s->vehicle.steering:wheel_client_steer_from_angle(s->wheel_client_angle);
+ rgba(c,r,g,b,.62);cairo_set_line_width(c,4);float cx=700+steer_hud*90;
  cairo_move_to(c,cx-34,370);cairo_line_to(c,cx,352);cairo_line_to(c,cx+34,370);cairo_stroke(c);
  char auto_mode[96];
  const char *mode=s->steering_mode==VEHICLE_STEER_DRIVE?(s->drive_brake?tr("REGEN BRAKE"):tr("HOVER DRIVE")):tr("CLIENT INPUT / PARKED");
@@ -149,7 +150,7 @@ static void hud(Server *s){
   }
  }
  char mode[64];snprintf(mode,sizeof(mode),"%s",tr("ARRANGE MODE"));if(s->arrange_mode&&s->arrange_slot>=0)snprintf(mode,sizeof(mode),tr("ARRANGE MODE / CD-%02d"),s->arrange_slot+1);
- const char *seat_state=s->camera_mode==VEHICLE_CAMERA_SYSTEMS?tr("EV SKATEBOARD / NO WHEELS"):s->camera_mode==VEHICLE_CAMERA_CHASE?tr("SPLINE-BUILT ELECTRIC HOVER CAR"):s->steering_mode==VEHICLE_STEER_DRIVE?tr("HOVER DRIVE / F7 FOR CLIENTS"):tr("CLIENT INPUT / WHEEL SCROLLS");
+ const char *seat_state=s->camera_mode==VEHICLE_CAMERA_SYSTEMS?tr("EV SKATEBOARD / NO WHEELS"):s->camera_mode==VEHICLE_CAMERA_CHASE?tr("SPLINE-BUILT ELECTRIC HOVER CAR"):s->steering_mode==VEHICLE_STEER_DRIVE?tr("HOVER DRIVE / F7 FOR CLIENTS"):tr("CLIENT INPUT / JOYSTICK WHEEL");
  char auto_state[128];if(s->vehicle.autopilot_enabled){char dest[92];i18n_utf8_truncate(dest,sizeof(dest),city_autopilot_destination(&s->vehicle),90);snprintf(auto_state,sizeof(auto_state),tr("AUTOPILOT / %s"),dest);seat_state=auto_state;}
  const char *state=s->arrange_mode?mode:s->focus_view&&s->camera_mode==VEHICLE_CAMERA_DRIVER?tr("FOCUS MODE"):seat_state;
  rgb(c,.75,.81,.87);text(c,29,h-47,12,state,true);rgb(c,.37,.45,.55);mono(c,29,h-26,9,"NATIVE WAYLAND / v" CD_VERSION);
@@ -164,7 +165,7 @@ static void help(Server *s){
  /* Physical key names (F7, META+O, META+H, WASD, META+SHIFT+Q) are not translated -
   * they are on the keyboard. The descriptive ones are chrome and do translate. */
  const char *keys[]={tr("MIDDLE + DRAG"),tr("CLICK / DRAG FRAME"),"META+O / META+A","F7","WASD / SPACE",tr("DRAG WHEEL"),"F8 / F9 / F10","F2 / F3","F4 / F12","META+H","META+SHIFT+Q",tr("DASH COG")};
- const char *desc[]={tr("Look around from the selected seat"),tr("Focus a screen / drag its titlebar to move it"),tr("Doors / city autopilot; a drive key returns manual control"),tr("Toggle client input / hover-drive ownership"),tr("Accelerate, reverse, steer and regenerative brake"),tr("Steer in drive mode; scroll focused app in client mode"),tr("Change view / switch seat / recover the car"),tr("Selected seat / focus app or next spatial monitor"),tr("Change underglow / save a WebP screenshot"),tr("Show or hide the 2D HUD; the dash HUD button mirrors it"),tr("Quit immediately; red EXIT button needs a second press to confirm"),tr("Settings; Shift-click a tile for another instance")};
+ const char *desc[]={tr("Look around from the selected seat"),tr("Focus a screen / drag its titlebar to move it"),tr("Doors / city autopilot; a drive key returns manual control"),tr("Toggle client input / hover-drive ownership"),tr("Accelerate, reverse, steer and regenerative brake"),tr("Steer in drive mode; joystick wheel in client mode"),tr("Change view / switch seat / recover the car"),tr("Selected seat / focus app or next spatial monitor"),tr("Change underglow / save a WebP screenshot"),tr("Show or hide the 2D HUD; the dash HUD button mirrors it"),tr("Quit immediately; red EXIT button needs a second press to confirm"),tr("Settings; Shift-click a tile for another instance")};
  for(int i=0;i<12;i++){int y=218+i*34;rgb(c,.69,.77,.88);mono(c,61,y,14,keys[i]);rgb(c,.54,.63,.73);text(c,294,y,14,desc[i],false);rgba(c,.26,.33,.43,.4);line(c,58,y+13,942,y+13);}
  rgb(c,.40,.49,.60);text(c,58,640,14,tr("Arrange: Tab next - HANDLES/H gizmo - drag transforms - R reset - right-click tile assigns app"),false);rgb(c,.50,.87,.73);mono(c,58,686,15,tr("F1 CLOSE    F6/ESC EXIT ARRANGE    CTRL+ALT+Q / META+SHIFT+Q EXIT"));s->help_tex=ui_texture(im,0);cairo_destroy(c);cairo_surface_destroy(im);
 

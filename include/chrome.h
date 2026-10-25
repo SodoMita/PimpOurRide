@@ -20,6 +20,7 @@
 #include "vehicle.h"
 #include "telemetry.h"
 #include "evdev_util.h"
+#include "wheel_input.h"
 /* Cockpit backdrop (src/scene.c environment()), selectable in
  * chromedrive.conf / the config GUI: the real 3D garage (default), the
  * original flat garage.webp poster, or nothing at all. */
@@ -197,8 +198,8 @@ SdlTouchFinger sdl_touch[CD_MAX_TOUCH_POINTS];int sdl_touch_chrome_id;
  float yaw,pitch,target_yaw,target_pitch,fov,target_fov,base_fov;
  Vec3 eye;
  /* Native electric hover-car rig and input routing. In CLIENT mode drive keys
-  * continue to Wayland clients and the wheel emits pointer-axis input; in
-  * DRIVE mode the same physical controls are consumed by vehicle.c instead. */
+  * continue to Wayland clients and the 3D wheel drives the virtual joystick;
+  * in DRIVE mode the same physical controls are consumed by vehicle.c instead. */
  Vehicle vehicle;
  VehicleSteeringMode steering_mode;
  VehicleCameraMode camera_mode;
@@ -207,6 +208,7 @@ SdlTouchFinger sdl_touch[CD_MAX_TOUCH_POINTS];int sdl_touch_chrome_id;
  bool door_shortcut_down,autopilot_shortcut_down,quit_shortcut_down,hud_shortcut_down;
  bool wheel_drag;
  float wheel_steer,wheel_client_angle,wheel_last_x,wheel_last_y;
+ WheelJoystick wheel_joy;
  double time,dt,fps,start_time,last_ui_time,last_windshield_time,notice_until;
  int telemetry_fd;CdTelemetry *telemetry;
  uint64_t frames,commits;

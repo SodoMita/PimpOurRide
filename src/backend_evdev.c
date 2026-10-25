@@ -182,6 +182,10 @@ static bool evdev_open_device(EvdevDevice *d, const char *path, bool grab) {
     if (ioctl(d->fd, EVIOCGNAME(sizeof(d->name)), d->name) < 0) {
         snprintf(d->name, sizeof(d->name), "unknown");
     }
+    if (strstr(d->name, "ChromeDrive") != NULL) {
+        evdev_device_close(d);
+        return false;
+    }
 
     bool has_keys = false;
     for (int k = KEY_ESC; k <= KEY_MAX; k++) {

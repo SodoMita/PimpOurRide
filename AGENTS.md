@@ -187,9 +187,12 @@ in an unrelated change:
 
 ## 7. Multi-agent coordination
 
-Use the user-supplied Mayfly room for cross-agent claims, integration status,
-and handoffs. Read through the latest message before posting and read the
-room again at turn end. The room URL is explicitly intended for repository
-agents; one-time GitHub PATs and other credentials still follow section 4.
+- **Read the Mayfly coordination chat at both the start and the end of every turn.**
+  Always fetch and read through the latest messages at the very beginning of a
+  turn (before starting work, rebasing, or claiming scope, and before posting)
+  and read the chat room again at the end of every turn before finishing.
+- Use the user-supplied Mayfly room for cross-agent claims, integration status,
+  and handoffs. The room URL is explicitly intended for repository agents;
+  one-time GitHub PATs and other credentials still follow section 4.
 
 [Mayfly coordination room](https://mayfly.chat/c/evwwU_QqGJycQEPbUwsjfg#KIH9_ejxDUXbgeff3I4Y4GS8uwmRta0jcohz-8FdRL4)

@@ -748,7 +748,8 @@ bool app_global_key(Server *s,uint32_t evdev,bool down){
    * starts being consumed as a vehicle control. */
   app_release_input(s,SDL_GetTicks());
   s->steering_mode=s->steering_mode==VEHICLE_STEER_DRIVE?VEHICLE_STEER_CLIENT:VEHICLE_STEER_DRIVE;
-  app_notice(s,s->steering_mode==VEHICLE_STEER_DRIVE?tr("DRIVE / WASD + wheel; F7 returns input to apps"):tr("CLIENT / wheel scrolls the focused Wayland app"));
+  wheel_joystick_update_angle(&s->wheel_joy,s->steering_mode==VEHICLE_STEER_CLIENT?s->wheel_client_angle:0.f);
+  app_notice(s,s->steering_mode==VEHICLE_STEER_DRIVE?tr("DRIVE / WASD + wheel; F7 returns input to apps"):tr("CLIENT / wheel acts as joystick steering wheel"));
   break;
  case KEY_F8:
   if(s->arrange_mode)arrange_exit(s);
@@ -817,7 +818,7 @@ static void backend_shutdown(Server *s){
 }
 static void usage(const char *name){printf("ChromeDrive " CD_VERSION " \xe2\x80\x94 native, first-person Wayland cockpit\n\nUsage: %s [options]\n  --demo                Start the configured autostart Wayland clients\n  --socket NAME         Wayland socket (default: automatic)\n  --exec COMMAND        Launch an extra Wayland client (repeatable)\n  --size WIDTHxHEIGHT   Framebuffer/host window size (default 1600x1000)\n  --fps N               Frame cap, 1..120 (default 60)\n  --backend MODE        headless (default) | windowed | fbdev | drm\n  --headless            Alias for --backend headless: surfaceless EGL + built-in VNC\n  --windowed            Alias for --backend windowed: SDL2/GLX dev window on X\n  --fbdev [DEVICE]      Direct Linux framebuffer output (default /dev/fb0)\n  --fbdev-device PATH   Framebuffer device for --backend fbdev\n  --drm [DEVICE]        Direct DRM/KMS + GBM/EGL output (default /dev/dri/card0)\n  --drm-device PATH     KMS card device for --backend drm\n  --drm-mode WxH        Require an exact KMS mode; default current or preferred\n  --evdev / --no-evdev  Enable/disable local input for fbdev and DRM\n  --grab-input          EVIOCGRAB local devices (DRM needs managed VT or downgrades)\n  --input-device PATH   Restrict local input (repeatable, max 32)\n  --fbdev-modeset       Select fbdev backend and request modeset to configured render size\n  --fbdev-mode WxH[@BPP] Select fbdev backend, imply modeset, set size/BPP (BPP in 16,24,32)\n  --no-fbdev-vsync      Do not wait for FBIO_WAITFORVSYNC\n  --no-fbdev-pan        Do not use FBIOPAN_DISPLAY double buffering\n  --fbdev-vnc-mirror    Loopback-only RFB input/output companion for fbdev\n  --vnc-mirror          Alias for --fbdev-vnc-mirror\n  --fbdev-evdev         Enable local evdev input for direct backends (default: on)\n  --no-fbdev-evdev      Disable local evdev input for direct backends\n  --fbdev-grab-input    Grab evdev devices (fbdev VT lockout warning; DRM managed VT)\n  --fbdev-input-device PATH Restrict evdev to explicit device (repeatable, max 32)\n  --vnc-port N          VNC port for headless or the fbdev mirror (default 5900)\n  --fullscreen          --windowed only: start fullscreen, F11 to leave\n  --exit-after SECONDS   Useful for automated checks\n  --screenshot PATH     Capture a WebP after 3 seconds\n  --config PATH         Config file (default: ~/.config/chromedrive/chromedrive.conf)\n  --no-config           Ignore the config file entirely\n  --help                Show this help\n\nfbdev adopts the current kernel framebuffer mode by default (no modesetting);\nwith --fbdev-modeset or --fbdev-mode it requests a modeset via FBIOPUT_VSCREENINFO.\nThe original mode is restored on exit. Local evdev input (keyboard/mouse/touchscreen)\nis enabled by default for fbdev and DRM; use --no-evdev to disable. Explicit devices\nvia --input-device replace auto-enumeration. Startup-only enumeration; no hotplug.\nDRM/KMS uses direct GBM/EGL scanout with page-flip events (no readback blit).\nIt retains the current mode or chooses the preferred one; --drm-mode requires an exact mode.\nOn a controlling Linux VT, physical Ctrl+Alt+F1..F12 releases input/DRM master and resumes on return.\nWithout a managed VT, DRM downgrades input grabbing; fbdev VT switching remains unmanaged.\nLocal evdev is shared by fbdev and DRM, with monotonic kernel timestamps and a bounded async queue.\n\nF1 help | F2 selected seat | F3 focus/next | F4 neon | F6 arrange | Meta+H HUD | Meta+O doors\nF7 client/drive input | F8 driver/exterior/systems | F9 switch seat | F10 recover car\nMeta+Shift+Q quit | red dash EXIT button: press twice\nF5 is unbound for browser/client restart or reload\nDrive: WASD/arrows + Space + drag wheel\nMiddle-drag/VNC-drag to look | Drag a titlebar to move | HANDLES shows the Arrange gizmo\nArrange: Tab next window, Esc/F6 exit | Ctrl+Alt+Enter new terminal\n",name);}
 int main(int argc,char **argv){
- Server s={.width=1600,.height=1000,.fps_limit=60,.running=true,.hud_visible=true,.hover_button=-1,.hover_close=-1,.keymap_fd=-1,.arrange_slot=-1,.frame_drag_slot=-1,.fov=65,.target_fov=65,.base_fov=65,.backend=CD_BACKEND_HEADLESS,.fbdev_vsync=true,.fbdev_pan=true,.fbdev_evdev=true,.fbdev_grab_input=false,.vnc_port=5900,.telemetry_fd=-1,.fbdev_modeset=false,.fbdev_mode_width=0,.fbdev_mode_height=0,.fbdev_mode_bpp=0,.fbdev_input_device_count=0,.render_to_texture=true,.render_scale=1,.render_mag_filter=GL_LINEAR,.render_min_filter=GL_LINEAR_MIPMAP_LINEAR};
+ Server s={.width=1600,.height=1000,.fps_limit=60,.running=true,.hud_visible=true,.hover_button=-1,.hover_close=-1,.keymap_fd=-1,.arrange_slot=-1,.frame_drag_slot=-1,.fov=65,.target_fov=65,.base_fov=65,.backend=CD_BACKEND_HEADLESS,.fbdev_vsync=true,.fbdev_pan=true,.fbdev_evdev=true,.fbdev_grab_input=false,.vnc_port=5900,.telemetry_fd=-1,.wheel_joy={.uinput_fd=-1},.fbdev_modeset=false,.fbdev_mode_width=0,.fbdev_mode_height=0,.fbdev_mode_bpp=0,.fbdev_input_device_count=0,.render_to_texture=true,.render_scale=1,.render_mag_filter=GL_LINEAR,.render_min_filter=GL_LINEAR_MIPMAP_LINEAR};
  vehicle_init(&s.vehicle);
  const char *socket_name=NULL;double exit_after=0;bool auto_screenshot=false;
  /* Config pre-scan: --config/--no-config must be known before the file is
@@ -906,6 +907,7 @@ int main(int argc,char **argv){
   server_finish(&s);backend_shutdown(&s);SDL_Quit();return 1;
  }
  telemetry_init(&s);
+ wheel_joystick_init(&s.wheel_joy);
  /* Only after opening the host window/backend do we replace WAYLAND_DISPLAY. */
  /* Built-in menu defaults (%root% templates - the same strings the config
   * GUI shows as the editable starting point) + per-slot app_id/autostart.
@@ -946,11 +948,15 @@ int main(int argc,char **argv){
    vehicle_input.brake=s.drive_brake?1.f:0.f;
   }
   vehicle_update(&s.vehicle,vehicle_input,s.dt);
+  if(!s.wheel_drag){
+   s.wheel_client_angle+=(0-s.wheel_client_angle)*(1.f-expf(-(float)s.dt*9.f));
+   if(fabsf(s.wheel_client_angle)<0.05f)s.wheel_client_angle=0.f;
+  }
+  wheel_joystick_update_angle(&s.wheel_joy,s.steering_mode==VEHICLE_STEER_CLIENT?s.wheel_client_angle:0.f);
   /* Publish the new physics state before presentation wakes frame-callback
    * clients; the cluster then draws one coherent, current snapshot. */
   telemetry_update(&s);scene_update_mounts(&s);
   static bool collision_seen;if(s.vehicle.collision&&!collision_seen)app_notice(&s,tr("Hover bumper absorbed a garage wall contact"));collision_seen=s.vehicle.collision;
-  if(!s.wheel_drag)s.wheel_client_angle+=(0-s.wheel_client_angle)*(1.f-expf(-(float)s.dt*9.f));
   float blend=1.f-expf(-(float)s.dt*12.f);s.yaw+=(s.target_yaw-s.yaw)*blend;s.pitch+=(s.target_pitch-s.pitch)*blend;s.fov+=(s.target_fov-s.fov)*blend;
   Hit hover=scene_pick(&s,s.mouse_x,s.mouse_y,false);s.hover_button=hover.kind==HIT_BUTTON?hover.button:-1;s.hover_close=hover.kind==HIT_CLOSE?hover.slot:-1;s.cog_hover=hover.kind==HIT_COG;s.quit_hover=hover.kind==HIT_QUIT;s.hud_hover=hover.kind==HIT_HUD;s.wheel_hover=hover.kind==HIT_WHEEL;
   s.cog_angle+=((s.time<s.cog_spin_until)?540.f:s.cog_hover?160.f:20.f)*(float)s.dt;if(s.cog_angle>=360.f)s.cog_angle-=360.f;
@@ -985,6 +991,7 @@ int main(int argc,char **argv){
   * balance keys/touches before server_finish; backend_*_shutdown is idempotent
   * here and later tears down presentation after GL objects are gone. */
  if(s.evdev_state)backend_evdev_shutdown(&s);
+ wheel_joystick_finish(&s.wheel_joy);
  telemetry_finish(&s);server_finish(&s);scene_finish(&s);
  backend_shutdown(&s);
  SDL_Quit();for(int i=0;i<6;i++)free(s.launch_commands[i]);return 0;

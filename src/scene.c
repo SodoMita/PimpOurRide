@@ -1198,49 +1198,46 @@ void scene_monitor_set_plane(Server *s,int slot,Plane plane){
  if(slot<0||slot>=CD_MAX_MONITORS||slot==CD_CLUSTER_SLOT)return;
  s->monitors[slot].custom_transform=true;s->monitors[slot].plane=plane;
 }
-void scene_wheel_cancel(Server *s){s->wheel_drag=false;s->wheel_steer=0;}
+void scene_wheel_cancel(Server *s){
+ s->wheel_drag=false;s->wheel_steer=0;
+ if(s->steering_mode!=VEHICLE_STEER_CLIENT){
+  s->wheel_client_angle=0;
+  wheel_joystick_update_angle(&s->wheel_joy,0.f);
+ }
+}
 bool scene_wheel_button(Server *s,Hit hit,int x,int y,bool down,uint32_t time){
  if(down){
   if(s->wheel_drag||hit.kind!=HIT_WHEEL)return s->wheel_drag;
   s->wheel_drag=true;s->wheel_last_x=x;s->wheel_last_y=y;s->wheel_steer=0;
   /* A wheel grab is compositor-owned. Send the matching pointer leave before
    * intercepting motion; otherwise the previously hovered client would see a
-   * pointer that appears frozen inside its surface. */
+   * pointer that appears frozen inside its surface. Do not synthesize a fake
+   * pointer enter or scroll events: client-mode steering drives the kernel
+   * virtual joystick (WheelJoystick) directly. */
   server_pointer_motion(s,(Hit){0},time);
-  if(s->steering_mode==VEHICLE_STEER_CLIENT&&s->keyboard_focus){
-   /* wl_pointer.axis is legal only on a surface with pointer focus. Move that
-    * focus to the active app's centre before emitting wheel/scroll events;
-    * keyboard focus alone is not sufficient in the Wayland protocol. */
-   Surface *p=s->keyboard_focus;
-   Hit center={.kind=HIT_APP,.surface=p,.slot=p->slot,.x=p->width*.5f,.y=p->height*.5f,.distance=0};
-   server_pointer_motion(s,center,time);
+  if(s->steering_mode==VEHICLE_STEER_CLIENT){
+   if(!s->keyboard_focus&&s->active_slot>=0&&s->active_slot<CD_MAX_MONITORS&&s->monitors[s->active_slot].surface)
+    server_focus(s,s->monitors[s->active_slot].surface);
+   wheel_joystick_update_angle(&s->wheel_joy,s->wheel_client_angle);
   }
   return true;
  }
  if(s->wheel_drag){
   scene_wheel_cancel(s);
-  /* The physical pointer is still over the compositor-owned wheel, not at the
-   * synthetic client-centre position used for the axis grab. Balance that
-   * enter with a leave on release instead of leaving stale pointer focus. */
   server_pointer_motion(s,(Hit){0},time);
   return true;
  }
  return false;
 }
 void scene_wheel_motion(Server *s,int x,int y,uint32_t time){
+ (void)time;
  if(!s->wheel_drag)return;
  float dx=x-s->wheel_last_x;s->wheel_last_x=x;s->wheel_last_y=y;
  if(s->steering_mode==VEHICLE_STEER_DRIVE){
   s->wheel_steer=clampf(s->wheel_steer+dx*.006f,-1,1);
  }else{
-  s->wheel_client_angle=clampf(s->wheel_client_angle-dx*.65f,-135,135);
-  /* Forward every motion sample as a fractional continuous-axis value. The
-   * visual wheel angle above is also analog; do not quantize either path into
-   * binary/detent mouse clicks. Drive steering remains independent. */
-  float horizontal,vertical;
-  wheel_client_axis(dx,&horizontal,&vertical);
-  if(horizontal!=0.0f||vertical!=0.0f)
-   server_pointer_axis_continuous(s,horizontal,vertical,time);
+  s->wheel_client_angle=wheel_client_angle_step(s->wheel_client_angle,dx);
+  wheel_joystick_update_angle(&s->wheel_joy,s->wheel_client_angle);
  }
 }
 void scene_focus_monitor(Server *s,int slot,bool zoom){

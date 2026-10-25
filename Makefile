@@ -67,7 +67,7 @@ $(BIN)/test-telemetry: tests/test_telemetry.c src/telemetry.c src/vehicle.c src/
 $(BIN)/test-keymap: tests/test_keymap.c src/keymap.c include/keymap.h | $(BIN)
 	$(CC) -Iinclude $(CFLAGS) tests/test_keymap.c src/keymap.c -o $@
 $(BIN)/test-wheel-input: tests/test_wheel_input.c src/wheel_input.c include/wheel_input.h | $(BIN)
-	$(CC) -Iinclude $(CFLAGS) tests/test_wheel_input.c src/wheel_input.c -o $@ -lm
+	$(CC) -Iinclude $(CFLAGS) $(shell pkg-config --cflags sdl2) tests/test_wheel_input.c src/wheel_input.c -o $@ $(shell pkg-config --libs sdl2) -lm
 $(BIN)/test-fbdev: tests/test_fbdev.c src/fbdev_pixfmt.c src/evdev_util.c src/evdev_queue.c include/fbdev_pixfmt.h include/evdev_util.h include/evdev_queue.h | $(BIN)
 	$(CC) -Iinclude $(CFLAGS) tests/test_fbdev.c src/fbdev_pixfmt.c src/evdev_util.c src/evdev_queue.c -o $@ -pthread
 $(BIN)/test-i18n: tests/test_i18n.c src/i18n.c include/i18n.h | $(BIN)
