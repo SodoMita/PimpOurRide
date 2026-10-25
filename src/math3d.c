@@ -223,8 +223,6 @@ static const Vec3 manip_shoulder[8]={
  { 3.24f, 2.28f,-0.08f},
  { 0.00f, 0.72f, 7.46f}
 };
-static const float manip_upper_len[8]={.64f,.42f,.42f,.94f,.94f,.48f,.48f,.52f};
-static const float manip_fore_len[8] ={1.18f,.88f,.88f,.90f,.90f,.44f,.44f,.48f};
 static const Vec3 manip_bend_hint[8]={
  {-0.95f,-0.35f,-0.18f},
  { 0.65f,-0.72f,-0.35f},
@@ -238,10 +236,10 @@ static const Vec3 manip_bend_hint[8]={
 static const float manip_wrist_lat[8] ={0.f,-.32f,.32f,0.f,0.f,0.f,0.f,0.f};
 static const float manip_wrist_vert[8]={0.f,-.12f,-.12f,0.f,0.f,0.f,0.f,0.f};
 /* The manipulator was authored around the original 2.10 m monitor bays. Map
- * its local hardpoints into the current, smaller car-part planes instead of
- * leaving world-space arms outside the concept car. This retains the branch's
- * joint layout and fixed link lengths while sharing the exact current mount
- * positions, orientations and cockpit-forward offset. */
+ * its fixed car hardpoints into the current, smaller car-part planes instead
+ * of leaving world-space arms outside the concept car. The live window plane
+ * is separate: telescopic links extend as it moves while the anchors remain
+ * attached to the deployed (possibly door-hinged) mount. */
 static Plane manipulator_legacy_plane(int slot){
  if(slot==5||slot==6)return (Plane){.center={slot==5?-3.0f:3.0f,1.75f,.20f},.width=2.10f,.height=1.3125f,.yaw=slot==5?45:-45};
  static const float angles[8]={0,-30,30,-62,62,0,0,180};
@@ -261,43 +259,63 @@ static Vec3 manipulator_map_direction(Vec3 direction,Plane old_plane,Plane new_p
  return vadd(vmul(new_r,vdot(direction,old_r)),
   vadd(vmul(new_u,vdot(direction,old_u)),vmul(new_n,vdot(direction,old_n))));
 }
-MonitorManipulator monitor_manipulator_at(int index,float reveal){
+MonitorManipulator monitor_manipulator_for_plane_on_mount(int index,Plane p,Plane mount){
  int slot=index<0?0:(index>7?7:index);
- Plane p=monitor_plane_at(slot,reveal),deployed=monitor_plane(slot);
  Plane legacy=manipulator_legacy_plane(slot);
- float scale=deployed.width/legacy.width;
+ float scale=mount.width/legacy.width;if(scale<=0.f)scale=1.f;
  Vec3 right,up,normal;plane_axes(p,&right,&up,&normal);
  MonitorManipulator m={
-  .base=manipulator_map_point(manip_base[slot],legacy,deployed,scale),
-  .shoulder=manipulator_map_point(manip_shoulder[slot],legacy,deployed,scale),
-  .wrist=vadd(vadd(vadd(p.center,vmul(right,manip_wrist_lat[slot]*scale)),vmul(up,manip_wrist_vert[slot]*scale)),vmul(normal,-.05f)),
-  .upper_len=manip_upper_len[slot]*scale,.fore_len=manip_fore_len[slot]*scale
+  .base=manipulator_map_point(manip_base[slot],legacy,mount,scale),
+  .shoulder=manipulator_map_point(manip_shoulder[slot],legacy,mount,scale)
  };
- /* The deeper stowed dash position needs a little more fixed-link reach than
-  * a straight scale of the legacy arms provides. Do not clamp the IK distance:
-  * that would silently stretch the forearm and detach it from the wrist. */
- if(monitor_mount(slot)==MOUNT_DASH_SLIDE){
-  m.upper_len=fmaxf(m.upper_len,.26f);m.fore_len=fmaxf(m.fore_len,.46f);
- }
+ /* The wrist and claws follow the actual moved/resized plane. Use independent
+  * dimension scales so an edge resize does not leave the wrist at the old
+  * bay-space offset; the normal offset keeps it behind the visible surface. */
+ float ws=p.width/legacy.width,hs=p.height/legacy.height;
+ m.wrist=vadd(vadd(vadd(p.center,vmul(right,manip_wrist_lat[slot]*ws)),
+  vmul(up,manip_wrist_vert[slot]*hs)),vmul(normal,-.05f));
  Vec3 delta=vsub(m.wrist,m.shoulder);
  float dist=sqrtf(vdot(delta,delta));
  Vec3 dir=dist>1e-6f?vmul(delta,1.f/dist):v3(0,0,-1);
- Vec3 bend=manipulator_map_direction(manip_bend_hint[slot],legacy,deployed);
+ Vec3 bend=manipulator_map_direction(manip_bend_hint[slot],legacy,mount);
  Vec3 perp_raw=vsub(bend,vmul(dir,vdot(bend,dir)));
  float plen=sqrtf(vdot(perp_raw,perp_raw));
  Vec3 perp=plen>1e-6f?vmul(perp_raw,1.f/plen):vnorm(vcross(dir,fabsf(dir.y)>.9f?v3(1,0,0):v3(0,1,0)));
- float ul=m.upper_len,fl=m.fore_len;
+
+ /* Two variable-length links replace the old fixed twin spars. Recompute the
+  * actual lengths after the back-half-space correction so the renderer and
+  * tests always describe the exact attached elbow/wrist geometry. */
+ float u_min=fmaxf(.06f,.14f*scale),f_min=u_min;
+ float u_max=fmaxf(u_min+.10f,2.60f*scale),f_max=u_max;
+ float ul=clampf(dist*.62f,u_min,u_max),fl=clampf(dist*.62f,f_min,f_max);
  float d=clampf(dist,fabsf(ul-fl)+1e-4f,ul+fl-1e-4f);
  float a=(ul*ul-fl*fl+d*d)/(2.f*d);
  float h=sqrtf(fmaxf(0.f,ul*ul-a*a));
  m.elbow=vadd(m.shoulder,vadd(vmul(dir,a),vmul(perp,h)));
+ float en=vdot(vsub(m.elbow,p.center),normal);
+ if(en>-.06f)m.elbow=vadd(m.elbow,vmul(normal,-.06f-en));
+ Vec3 u_vec=vsub(m.elbow,m.shoulder),f_vec=vsub(m.wrist,m.elbow);
+ m.upper_len=sqrtf(vdot(u_vec,u_vec));m.fore_len=sqrtf(vdot(f_vec,f_vec));
+ m.upper_ext=clampf((m.upper_len-u_min)/fmaxf(u_max-u_min,.001f),0.f,1.f);
+ m.fore_ext=clampf((m.fore_len-f_min)/fmaxf(f_max-f_min,.001f),0.f,1.f);
+
  m.piston_base=vadd(m.base,vmul(vsub(m.shoulder,m.base),.35f));
- m.piston_rod=vadd(m.shoulder,vmul(vsub(m.elbow,m.shoulder),.62f));
- float w=p.width,hp=p.height;
- Vec3 back=vmul(normal,-.025f);
+ m.piston_rod=vadd(m.shoulder,vmul(u_vec,.62f));
+ Vec3 p_vec=vsub(m.piston_rod,m.piston_base);
+ float p_len=sqrtf(vdot(p_vec,p_vec));
+ m.piston_ext=clampf((p_len-.18f*scale)/fmaxf(1.40f*scale,.001f),0.f,1.f);
+ float w=p.width,hp=p.height;Vec3 back=vmul(normal,-.025f);
  m.claws[0]=vadd(vadd(p.center,back),vadd(vmul(right,-w*.38f),vmul(up, hp*.5f+.20f)));
  m.claws[1]=vadd(vadd(p.center,back),vadd(vmul(right, w*.38f),vmul(up, hp*.5f+.20f)));
  m.claws[2]=vadd(vadd(p.center,back),vadd(vmul(right,-w*.38f),vmul(up,-hp*.5f-.20f)));
  m.claws[3]=vadd(vadd(p.center,back),vadd(vmul(right, w*.38f),vmul(up,-hp*.5f-.20f)));
  return m;
+}
+MonitorManipulator monitor_manipulator_for_plane(int index,Plane p){
+ int slot=index<0?0:(index>7?7:index);
+ return monitor_manipulator_for_plane_on_mount(slot,p,monitor_plane(slot));
+}
+MonitorManipulator monitor_manipulator_at(int index,float reveal){
+ int slot=index<0?0:(index>7?7:index);
+ return monitor_manipulator_for_plane(slot,monitor_plane_at(slot,reveal));
 }

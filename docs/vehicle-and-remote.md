@@ -241,6 +241,17 @@ ring. `tests/test_vehicle.c` checks every transformed screen corner at deployed,
 stowed, and mid-animation poses, in addition to dense interior door-panel
 surface checks against the concave bicubic door skin.
 
+Every CD-01..CD-08 mount also has a three-stage telescopic linear-actuator
+manipulator. `monitor_manipulator_for_plane_on_mount()` solves against the live
+window plane while keeping its base and shoulder attached to the deployed car
+mount. Frame dragging and Arrange movement therefore change actuator extension
+rather than dragging the chassis hardpoints with the window. Door displays pass
+the physically hinged mount through the same solver, so the complete support
+assembly follows the door without losing the free-window transform. Normalized
+upper-arm, forearm, and auxiliary-piston extension drives the concentric barrel,
+sleeve, and chrome ram rendering; exact link lengths, fixed anchors, deployment,
+and moved-window behavior are covered by `tests/test_math.c`.
+
 CD-09 is a **ninth, dedicated output** for the instrument panel behind the
 steering wheel. It has a 1000×404 `wl_output` mode and a matching xdg configure,
 rather than the 1000×625 general-app mode. Only `chromedrive.cluster` can occupy

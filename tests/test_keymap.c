@@ -12,8 +12,10 @@ int main(void){
  EXPECT('A',KEY_A);EXPECT('W',KEY_W);EXPECT('Z',KEY_Z);
  EXPECT('0',KEY_0);EXPECT('7',KEY_7);EXPECT(XK_F5,KEY_F5);EXPECT(XK_F7,KEY_F7);EXPECT(XK_F8,KEY_F8);EXPECT(XK_F9,KEY_F9);EXPECT(XK_F10,KEY_F10);
  EXPECT(XK_Up,KEY_UP);EXPECT(XK_Control_L,KEY_LEFTCTRL);EXPECT(XK_space,KEY_SPACE);
+ EXPECT(XK_KP_0,KEY_KP0);EXPECT(XK_KP_9,KEY_KP9);EXPECT(XK_KP_Space,KEY_SPACE);
+ EXPECT(XK_KP_Enter,KEY_KPENTER);EXPECT(XK_KP_Add,KEY_KPPLUS);EXPECT(XK_KP_Subtract,KEY_KPMINUS);
  EXPECT(0,0);EXPECT(0x7fffffffu,0);
  if(failures)return 1;
- puts("PASS: RFB/X11 keysyms map to exact evdev typing, WASD, arrows and function keys");
+ puts("PASS: RFB/X11 keysyms map to exact evdev typing, WASD, arrows, function keys and keypad");
  return 0;
 }

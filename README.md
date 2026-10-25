@@ -429,7 +429,7 @@ src/telemetry.c              shared live EV state for the native instrument clie
 src/keymap.c                 exact RFB/X11 keysym to Linux evdev translation
 src/wayland.c                 the actual compositor protocol implementation
 src/dmabuf.c                  zwp_linux_dmabuf_v1: real EGLImage GPU buffer import
-src/scene.c                   OpenGL cockpit, monitors, Handles, picking, camera rig, 3D garage
+src/scene.c                   OpenGL cockpit, monitors, telescopic manipulators, Handles, picking, camera rig, 3D garage
 src/ui.c                      cairo textures: windshield HUD, chrome, labels
 src/main.c                    CLI parsing, event loop, process spawn (backend-agnostic)
 src/backend_sdl.c             --windowed: SDL2 window + GLX context + SDL input

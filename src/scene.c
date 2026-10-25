@@ -401,96 +401,99 @@ static void draw_arrange_handles(Server *s,Plane p,float k){
  /* Magenta diamond: uniform scale, preserving the current aspect. */
  arrange_handle_point(p,k,CD_HANDLE_SCALE,&x,&y);glPushMatrix();glTranslatef(x,y,z);glRotatef(45,0,0,1);color(.015,.02,.035);box(0,0,0,size*1.22f,size*1.22f,size*.28f);color(.94,.30,.92);box(0,0,size*.09f,size,size,size*.32f);glPopMatrix();
 }
-static void manipulator_retarget(MonitorManipulator *m,Plane from,Plane to){
- Vec3 fr,fu,fn,tr,tu,tn;plane_axes(from,&fr,&fu,&fn);plane_axes(to,&tr,&tu,&tn);
- float sx=to.width/fmaxf(from.width,.001f),sy=to.height/fmaxf(from.height,.001f),sn=sqrtf(fmaxf(sx*sy,.0001f));
- Vec3 *joints[]={&m->base,&m->shoulder,&m->elbow,&m->wrist,&m->piston_base,&m->piston_rod,
-  &m->claws[0],&m->claws[1],&m->claws[2],&m->claws[3]};
- for(unsigned j=0;j<sizeof(joints)/sizeof(joints[0]);j++){
-  Vec3 d=vsub(*joints[j],from.center);
-  *joints[j]=vadd(to.center,vadd(vmul(tr,vdot(d,fr)*sx),
-   vadd(vmul(tu,vdot(d,fu)*sy),vmul(tn,vdot(d,fn)*sn))));
- }
+/* 3-stage concentric telescopic linear actuator with side-mounted electric
+ * servo motor pod, wiper gland collars, neon telemetry seals, and stroke-ring
+ * calibration markings on the inner chrome actuator ram. */
+static void draw_telescopic_actuator(Vec3 a,Vec3 b,Vec3 ortho,float radius,float ext,float ar,float ag,float ab){
+ float e=clampf(ext,0.f,1.f);
+ float s1_end=.54f-.14f*e,s2_end=.82f-.12f*e;
+ Vec3 d=vsub(b,a),dir=vnorm(d);
+ float proj=ortho.x*dir.x+ortho.y*dir.y+ortho.z*dir.z;
+ Vec3 ort=vsub(ortho,vmul(dir,proj));
+ float ort_len=sqrtf(ort.x*ort.x+ort.y*ort.y+ort.z*ort.z);
+ if(ort_len<1e-5f)ort=(fabsf(dir.y)>.9f)?v3(1,0,0):v3(0,1,0);
+ ort=vnorm(ort);
+ Vec3 p1=vadd(a,vmul(d,s1_end)),p2=vadd(a,vmul(d,s2_end));
+
+ /* Stage 1: outer gunmetal actuator barrel + side-mounted servo motor pod. */
+ color(.22f,.26f,.34f);cylinder(a,p1,radius,16);
+ color(.15f,.18f,.25f);cylinder(a,vadd(a,vmul(d,.08f)),radius*1.22f,16);
+ Vec3 servo_a=vadd(vadd(a,vmul(d,.08f)),vmul(ort,radius*1.65f));
+ Vec3 servo_b=vadd(vadd(a,vmul(d,s1_end*.78f)),vmul(ort,radius*1.65f));
+ color(.17f,.20f,.28f);cylinder(servo_a,servo_b,radius*.58f,12);
+ color(.34f,.39f,.49f);
+ cylinder(vadd(a,vmul(d,.12f)),servo_a,radius*.22f,8);
+ cylinder(vadd(a,vmul(d,s1_end*.70f)),servo_b,radius*.22f,8);
+ color(.36f,.41f,.52f);cylinder(vadd(p1,vmul(d,-.045f)),p1,radius*1.16f,16);
+ glow_line(vsub(p1,vmul(ort,radius*.95f)),vadd(p1,vmul(ort,radius*.95f)),radius*.16f,ar,ag,ab);
+
+ /* Stage 2: intermediate brushed-titanium telescopic sleeve + wiper gland. */
+ Vec3 s2_start=vadd(a,vmul(d,s1_end-.05f));
+ color(.42f,.47f,.58f);cylinder(s2_start,p2,radius*.72f,14);
+ color(.56f,.50f,.38f);cylinder(vadd(p2,vmul(d,-.04f)),p2,radius*.86f,14);
+ glow_line(vsub(p2,vmul(ort,radius*.72f)),vadd(p2,vmul(ort,radius*.72f)),radius*.13f,ar,ag,ab);
+
+ /* Stage 3: inner high-polish chrome actuator ram + stroke calibration rings. */
+ Vec3 s3_start=vadd(a,vmul(d,s2_end-.05f));
+ color(.78f,.83f,.91f);cylinder(s3_start,b,radius*.46f,12);
+ float pos1=s2_end+.33f*(1.f-s2_end),pos2=s2_end+.66f*(1.f-s2_end);
+ Vec3 r1=vadd(a,vmul(d,pos1)),r2=vadd(a,vmul(d,pos2));
+ color(.22f,.26f,.34f);
+ cylinder(r1,vadd(r1,vmul(d,.02f)),radius*.54f,12);
+ cylinder(r2,vadd(r2,vmul(d,.02f)),radius*.54f,12);
+ color(.32f,.37f,.47f);cylinder(vadd(b,vmul(d,-.04f)),b,radius*.76f,14);
 }
-static void draw_monitor_manipulator(Server *s,int i,Plane p,float reveal,bool active){
- MonitorManipulator m=monitor_manipulator_at(i,reveal);
+static void draw_monitor_manipulator(Server *s,int i,Plane p,bool active){
+ /* The window and its car-part anchor are different once a frame is dragged.
+  * Door displays additionally rotate the anchor through the physical hinge;
+  * neither case may move a chassis hardpoint merely because the window moved. */
+ Plane mount=monitor_plane(i);
  if(i==3||i==4){
-  /* Door displays and their complete support linkage share the physical door
-   * hinge. Rotating only the monitor plane would strand the base and claws in
-   * the closed-door position as soon as the door opened. */
   int side=i==3?-1:1;
-  Vec3 *joints[]={&m.base,&m.shoulder,&m.elbow,&m.wrist,&m.piston_base,&m.piston_rod,
-   &m.claws[0],&m.claws[1],&m.claws[2],&m.claws[3]};
-  for(unsigned j=0;j<sizeof(joints)/sizeof(joints[0]);j++)
-   *joints[j]=vehicle_door_point(&s->vehicle,side,*joints[j]);
+  mount.center=vehicle_door_point(&s->vehicle,side,mount.center);
+  mount.yaw+=vehicle_door_angle(&s->vehicle,side);
  }
- if(s->monitors[i].custom_transform){
-  /* Frame drags and Arrange move the whole monitor assembly. Retarget every
-   * joint through the same plane transform as the bezel, including roll and
-   * non-uniform resize, instead of leaving a second bay-space approximation. */
-  Plane from=monitor_plane_at(i,reveal);
-  if(i==3||i==4){
-   int side=i==3?-1:1;
-   from.center=vehicle_door_point(&s->vehicle,side,from.center);
-   from.yaw+=vehicle_door_angle(&s->vehicle,side);
-  }
-  manipulator_retarget(&m,from,p);
- }
- Vec3 right,up;plane_axes(p,&right,&up,NULL);
+ MonitorManipulator m=monitor_manipulator_for_plane_on_mount(i,p,mount);
+ Vec3 right,up,normal;plane_axes(p,&right,&up,&normal);
  float nr,ng,nb;neon(s,&nr,&ng,&nb);
- float ar=active?.35f:nr*.85f,ag=active?.92f:ng*.85f,ab=active?.74f:nb*.85f;
+ float ar=active?.35f:nr*.85f,ag=active?.92f:ng*.85f,ab=active?.74f:nb*.74f;
 
  /* 1. Stationary chassis base pedestal & rotary shoulder turret (car-local). */
- color(.18f,.21f,.28f);rbox(m.base.x,m.base.y,m.base.z,.16f,.06f,.16f,.025f);
- color(.32f,.36f,.45f);cylinder(m.base,m.shoulder,.042f,16);
- Vec3 sh_axis=vmul(right,.046f);
- color(.24f,.28f,.36f);cylinder(vsub(m.shoulder,sh_axis),vadd(m.shoulder,sh_axis),.046f,16);
- glow_line(vsub(m.shoulder,vmul(sh_axis,1.06f)),vadd(m.shoulder,vmul(sh_axis,1.06f)),.0045f,ar,ag,ab);
+ color(.18f,.21f,.28f);rbox(m.base.x,m.base.y,m.base.z,.18f,.06f,.18f,.025f);
+ color(.32f,.36f,.45f);cylinder(m.base,m.shoulder,.044f,16);
+ Vec3 sh_axis=vmul(right,.048f);
+ color(.24f,.28f,.36f);cylinder(vsub(m.shoulder,sh_axis),vadd(m.shoulder,sh_axis),.048f,16);
+ glow_line(vsub(m.shoulder,vmul(sh_axis,1.08f)),vadd(m.shoulder,vmul(sh_axis,1.08f)),.0045f,ar,ag,ab);
 
- /* 2. Twin-spar articulated upper arm + cross-braces (shoulder -> elbow). */
- Vec3 spar=vmul(right,.032f);
- color(.29f,.34f,.43f);
- cylinder(vsub(m.shoulder,spar),vsub(m.elbow,spar),.021f,14);
- cylinder(vadd(m.shoulder,spar),vadd(m.elbow,spar),.021f,14);
- for(int k=1;k<=3;k++){
-  float f=.25f*(float)k;
-  Vec3 mid=vadd(m.shoulder,vmul(vsub(m.elbow,m.shoulder),f));
-  color(.42f,.47f,.57f);cylinder(vsub(mid,spar),vadd(mid,spar),.011f,10);
- }
+ /* 2. Upper-arm 3-stage telescopic linear actuator (shoulder -> elbow). */
+ draw_telescopic_actuator(m.shoulder,m.elbow,up,.036f,m.upper_ext,ar,ag,ab);
 
- /* 3. Two-stage hydraulic damping cylinder barrel + chrome piston rod. */
- Vec3 p_mid=vadd(m.piston_base,vmul(vsub(m.piston_rod,m.piston_base),.54f));
- color(.19f,.23f,.31f);cylinder(m.piston_base,p_mid,.024f,14);
- color(.72f,.77f,.86f);cylinder(p_mid,m.piston_rod,.012f,12);
+ /* 3. Underslung auxiliary telescopic drive actuator (piston_base -> piston_rod). */
+ draw_telescopic_actuator(m.piston_base,m.piston_rod,right,.024f,m.piston_ext,ar,ag,ab);
 
  /* 4. Rotary servo elbow drum with neon telemetry ring. */
- Vec3 el_axis=vmul(right,.042f);
- color(.22f,.26f,.34f);cylinder(vsub(m.elbow,el_axis),vadd(m.elbow,el_axis),.044f,16);
- color(.46f,.51f,.61f);cylinder(vsub(m.elbow,vmul(el_axis,1.12f)),vadd(m.elbow,vmul(el_axis,1.12f)),.024f,14);
+ Vec3 el_axis=vmul(right,.048f);
+ color(.22f,.26f,.34f);cylinder(vsub(m.elbow,el_axis),vadd(m.elbow,el_axis),.048f,16);
+ color(.46f,.51f,.61f);cylinder(vsub(m.elbow,vmul(el_axis,1.12f)),vadd(m.elbow,vmul(el_axis,1.12f)),.027f,14);
  glow_line(vsub(m.elbow,vmul(el_axis,1.15f)),vadd(m.elbow,vmul(el_axis,1.15f)),.005f,ar,ag,ab);
 
- /* 5. Twin-spar forearm linkage (elbow -> wrist gimbal). */
- Vec3 fspar=vmul(right,.024f);
- color(.33f,.38f,.48f);
- cylinder(vsub(m.elbow,fspar),vsub(m.wrist,fspar),.018f,14);
- cylinder(vadd(m.elbow,fspar),vadd(m.wrist,fspar),.018f,14);
- Vec3 fmid=vadd(m.elbow,vmul(vsub(m.wrist,m.elbow),.5f));
- color(.44f,.49f,.59f);cylinder(vsub(fmid,fspar),vadd(fmid,fspar),.010f,10);
- /* Braided power/DisplayPort umbilical along the manipulator arm. */
- Vec3 c_sh=vadd(m.shoulder,vmul(up,-.025f)),c_el=vadd(m.elbow,vmul(up,-.032f)),c_wr=vadd(m.wrist,vmul(up,-.025f));
- color(.08f,.10f,.15f);cylinder(c_sh,c_el,.008f,8);cylinder(c_el,c_wr,.008f,8);
+ /* 5. Forearm 3-stage telescopic linear actuator (elbow -> wrist). */
+ draw_telescopic_actuator(m.elbow,m.wrist,up,.030f,m.fore_ext,ar,ag,ab);
 
- /* 6. Wrist gimbal hub & 4-way diagonal VESA spider struts to bezel claws.
-  * An outward-side gusset connects the elbow to the outer bezel claw so the
-  * articulated triangle reads clearly in the outer cockpit bays without ever
-  * crossing in front of the screen. */
- Vec3 wr_axis=vmul(right,.036f);
- color(.25f,.30f,.39f);cylinder(vsub(m.wrist,wr_axis),vadd(m.wrist,wr_axis),.038f,16);
- int outer_claw=(i==1||i==3)?2:((i==2||i==4)?3:(i==6?1:0));
- for(int k=0;k<4;k++){
-  color(.36f,.41f,.51f);cylinder(m.wrist,m.claws[k],.014f,12);
+ /* 6. Wrist gimbal drum & perimeter bezel saddle bar (no front-crossing rods). */
+ Vec3 wr_axis=vmul(right,.040f);
+ color(.25f,.30f,.39f);cylinder(vsub(m.wrist,wr_axis),vadd(m.wrist,wr_axis),.040f,16);
+ glow_line(vsub(m.wrist,vmul(wr_axis,1.10f)),vadd(m.wrist,vmul(wr_axis,1.10f)),.0045f,ar,ag,ab);
+ if(i==0){
+  Vec3 s0=vadd(m.wrist,vmul(up,.32f*p.height)),s1=vadd(m.wrist,vmul(up,-.32f*p.height));
+  color(.30f,.35f,.45f);cylinder(s0,s1,.019f,12);
+  color(.38f,.43f,.53f);cylinder(s0,m.claws[0],.017f,12);cylinder(s1,m.claws[2],.017f,12);
+ }else{
+  int c0=(i==5||i==6)?0:2,c1=(i==5||i==6)?1:3;
+  Vec3 s0=vadd(m.wrist,vmul(right,-.36f*p.width)),s1=vadd(m.wrist,vmul(right,.36f*p.width));
+  color(.30f,.35f,.45f);cylinder(s0,s1,.019f,12);
+  color(.38f,.43f,.53f);cylinder(s0,m.claws[c0],.017f,12);cylinder(s1,m.claws[c1],.017f,12);
  }
- color(.26f,.31f,.40f);cylinder(m.elbow,m.claws[outer_claw],.013f,10);
 }
 static void draw_monitor(Server *s,int i){
  Monitor *m=&s->monitors[i];
@@ -506,7 +509,7 @@ static void draw_monitor(Server *s,int i){
  Plane p=m->plane;float w=p.width,h=p.height,k=monitor_iso_scale(p,i);
  bool active=s->keyboard_focus==m->surface,cluster=i==CD_CLUSTER_SLOT;
  bool arranging=!cluster&&s->arrange_mode&&s->arrange_slot==i;
- if(!cluster)draw_monitor_manipulator(s,i,p,m->reveal,active);
+ if(!cluster)draw_monitor_manipulator(s,i,p,active);
  plane_begin(p);
  if(!cluster){
   /* Hardware belongs to the named car part, not a generic floor stand. */

@@ -113,10 +113,10 @@ int main(void){
  assert(near(clampf(-100,CD_DRIVER_FOV_MIN,CD_DRIVER_FOV_MAX),1));
  assert(near(clampf(500,CD_DRIVER_FOV_MIN,CD_DRIVER_FOV_MAX),100));
  assert(near(clampf(-100,CD_DRIVER_FOV_MIN,CD_DRIVER_SCROLL_FOV_MAX),1));
- /* Verify 2-link inverse-kinematic monitor manipulators across all 8 app slots
-  * and deployment travel (reveal = 0, 0.5, 1.0): fixed chassis base/shoulder,
-  * exact link lengths |elbow-shoulder|==upper_len and |wrist-elbow|==fore_len,
-  * non-degenerate hydraulic piston span, and bezel claw attachment. */
+ /* Verify telescopic monitor manipulators across all 8 app slots, deployment
+  * travel, and freely moved/rotated windows. Car-part base/shoulder anchors
+  * stay fixed, reported lengths exactly match the solved geometry, actuator
+  * extension stays normalized, and elbow/wrist never cross the screen. */
  for(int i=0;i<8;i++){
   MonitorManipulator m0=monitor_manipulator_at(i,0.f);
   for(int step=0;step<=4;step++){
@@ -129,9 +129,8 @@ int main(void){
    float u_len=sqrtf(vdot(u_vec,u_vec)),f_len=sqrtf(vdot(f_vec,f_vec)),p_len=sqrtf(vdot(p_vec,p_vec));
    assert(near(u_len,m.upper_len)&&near(f_len,m.fore_len));
    assert(p_len>.05f&&p_len<m.upper_len+m.fore_len);
-   /* Every manipulator joint must stay in the back half-space behind its
-    * monitor plane so no strut ever crosses in front of the screen. */
-   Vec3 m_right=rotate_y(v3(1,0,0),mp.yaw),m_up=rotate_y(rotate_x(v3(0,1,0),mp.pitch),mp.yaw),m_norm=vcross(m_right,m_up);
+   assert(m.upper_ext>=0.f&&m.upper_ext<=1.f&&m.fore_ext>=0.f&&m.fore_ext<=1.f&&m.piston_ext>=0.f&&m.piston_ext<=1.f);
+   Vec3 m_right,m_up,m_norm;plane_axes(mp,&m_right,&m_up,&m_norm);
    assert(vdot(vsub(m.base,mp.center),m_norm)<=-.04f);
    assert(vdot(vsub(m.shoulder,mp.center),m_norm)<=-.04f);
    assert(vdot(vsub(m.elbow,mp.center),m_norm)<=-.04f);
@@ -142,6 +141,28 @@ int main(void){
     assert(c_dist>.5f&&c_dist<2.0f);
    }
   }
+  /* A free frame/Arrange transform changes telescopic extension, not the
+   * fixed mount anchors. This exercises the actual public live-plane API. */
+  Plane def=monitor_plane(i);
+  MonitorManipulator md=monitor_manipulator_for_plane(i,def);
+  Plane dragged=plane_rotate(plane_translate(def,eye,.45f,(i==5||i==6)?-.55f:.55f,.50f),8,-6,10);
+  MonitorManipulator mf=monitor_manipulator_for_plane(i,dragged);
+  assert(near(mf.base.x,md.base.x)&&near(mf.base.y,md.base.y)&&near(mf.base.z,md.base.z));
+  assert(near(mf.shoulder.x,md.shoulder.x)&&near(mf.shoulder.y,md.shoulder.y)&&near(mf.shoulder.z,md.shoulder.z));
+  assert(fabsf(mf.upper_ext-md.upper_ext)+fabsf(mf.fore_ext-md.fore_ext)>.02f);
+  Vec3 d_right,d_up,d_norm;plane_axes(dragged,&d_right,&d_up,&d_norm);
+  assert(vdot(vsub(mf.elbow,dragged.center),d_norm)<=-.04f);
+  assert(vdot(vsub(mf.wrist,dragged.center),d_norm)<=-.04f);
+  if(i==3){
+   /* The renderer's door path supplies a hinged anchor while the live window
+    * plane can move independently. Only the car-side joints may follow that
+    * anchor; an unchanged window keeps the exact same wrist position. */
+   Plane hinged=def;hinged.center.x+=.40f;hinged.yaw+=20;
+   MonitorManipulator hm=monitor_manipulator_for_plane_on_mount(i,def,hinged);
+   Vec3 anchor_delta=vsub(hm.base,md.base);
+   assert(sqrtf(vdot(anchor_delta,anchor_delta))>.01f);
+   assert(near(hm.wrist.x,md.wrist.x)&&near(hm.wrist.y,md.wrist.y)&&near(hm.wrist.z,md.wrist.z));
+  }
  }
- puts("PASS: output/mount transforms, Arrange resizing, close targets, FOV bounds, back-face rejection, and articulated manipulator IK");return 0;
+ puts("PASS: output/mount transforms, Arrange resizing, close targets, FOV bounds, back-face rejection, and telescopic manipulator IK");return 0;
 }
