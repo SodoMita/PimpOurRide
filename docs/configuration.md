@@ -384,8 +384,10 @@ access, selects a connected connector/compatible CRTC, and creates a GBM
 `XRGB8888` EGL surface for direct KMS page-flip scanout. With `drm_mode` empty
 it retains a valid current mode or selects the connector's preferred mode;
 `drm_mode = "WIDTHxHEIGHT"` requires an exact advertised mode and rejects a
-missing mode instead of silently choosing another. The old CRTC is restored on
-exit. A missing device, active KMS master, unsupported EGL configuration, or
+missing mode instead of silently choosing another. The old CRTC and its saved
+connected/cloned connector set are restored on exit when still available; if
+that set is stale, the original connectors are retried individually. An output
+with no valid previous mode is disabled instead. A missing device, active KMS master, unsupported EGL configuration, or
 unavailable output is a fatal backend-init error—there is no implicit fbdev
 fallback. Use `--drm [DEVICE]`, `--drm-device PATH`, or `--drm-mode WxH` on the
 command line. Actual scanout requires KMS hardware and appropriate seat/udev

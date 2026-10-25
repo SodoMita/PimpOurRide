@@ -11,6 +11,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <gbm.h>
+#include <drm_fourcc.h>
 #include <poll.h>
 #include <stdlib.h>
 #include <string.h>
@@ -30,6 +31,7 @@ typedef struct {
  uint32_t connector_id,crtc_id;
  drmModeModeInfo mode;
  drmModeCrtcPtr saved_crtc;
+ uint32_t *saved_connectors;int saved_connector_count;
  struct gbm_device *gbm;
  struct gbm_surface *surface;
  EGLSurface egl_surface;
@@ -57,11 +59,36 @@ static uint32_t drm_bo_framebuffer(DrmState *st,struct gbm_bo *bo){
  for(int i=0;i<st->framebuffer_count;i++)if(st->framebuffers[i].bo==bo)return st->framebuffers[i].fb_id;
  if(st->framebuffer_count>=2){fprintf(stderr,"[drm] more than two locked GBM buffers\n");return 0;}
  uint32_t handle=gbm_bo_get_handle(bo).u32,stride=gbm_bo_get_stride(bo),fb_id=0;
- uint32_t width=gbm_bo_get_width(bo),height=gbm_bo_get_height(bo);
- /* GBM_FORMAT_XRGB8888 is depth 24 with a 32-bit scanout word. */
- if(drmModeAddFB(st->fd,width,height,24,32,stride,handle,&fb_id)<0){
-  fprintf(stderr,"[drm] drmModeAddFB %ux%u stride=%u failed: %s\n",width,height,stride,strerror(errno));return 0;
+ uint32_t width=gbm_bo_get_width(bo),height=gbm_bo_get_height(bo),offset=gbm_bo_get_offset(bo,0);
+ uint64_t modifier=gbm_bo_get_modifier(bo),modifier_cap=0;
+ bool has_modifier=modifier!=DRM_FORMAT_MOD_INVALID;
+ drmGetCap(st->fd,DRM_CAP_ADDFB2_MODIFIERS,&modifier_cap); /* zero is a valid legacy-only result */
+ uint32_t handles[4]={handle},pitches[4]={stride},offsets[4]={offset};
+ int result=-1;
+ /* Legacy drmModeAddFB cannot describe a tiled/compressed BO or a nonzero
+  * plane offset. Use the real GBM layout whenever the driver exposes modifier
+  * support; silently scanning a non-linear BO out as linear is not a fallback. */
+ if(has_modifier&&modifier_cap){
+  uint64_t modifiers[4]={modifier};
+  result=drmModeAddFB2WithModifiers(st->fd,width,height,GBM_FORMAT_XRGB8888,
+   handles,pitches,offsets,modifiers,&fb_id,DRM_MODE_FB_MODIFIERS);
+  if(result<0&&modifier!=DRM_FORMAT_MOD_LINEAR){
+   fprintf(stderr,"[drm] drmModeAddFB2WithModifiers %ux%u modifier=%llx failed: %s\n",
+    width,height,(unsigned long long)modifier,strerror(errno));return 0;
+  }
  }
+ if(result<0&&(!has_modifier||modifier==DRM_FORMAT_MOD_LINEAR)){
+  /* Linear scanout remains safe without modifier flags, including when a
+   * driver advertises the cap but rejects the modifier-form request. */
+  result=drmModeAddFB2(st->fd,width,height,GBM_FORMAT_XRGB8888,handles,pitches,offsets,&fb_id,0);
+  /* Very old KMS drivers may expose AddFB but not AddFB2. This fallback is
+   * valid only for a linear, zero-offset, single-plane XRGB8888 buffer. */
+  if(result<0&&offset==0)result=drmModeAddFB(st->fd,width,height,24,32,stride,handle,&fb_id);
+  if(result<0)fprintf(stderr,"[drm] framebuffer registration %ux%u stride=%u offset=%u failed: %s\n",
+   width,height,stride,offset,strerror(errno));
+ }else if(result<0)fprintf(stderr,"[drm] KMS cannot register non-linear GBM modifier %llx without ADDFB2 modifier support\n",
+  (unsigned long long)modifier);
+ if(result<0)return 0;
  st->framebuffers[st->framebuffer_count++]=(DrmFramebuffer){.bo=bo,.fb_id=fb_id};
  return fb_id;
 }
@@ -132,6 +159,23 @@ static bool drm_choose_mode(DrmState *st,drmModeConnectorPtr connector,drmModeCr
  return false;
 }
 
+static void drm_save_crtc_connectors(DrmState *st,drmModeResPtr resources){
+ /* A CRTC can feed several cloned connectors. Driving only the selected one
+  * must not silently forget the others when the previous CRTC is restored. */
+ if(!st->saved_crtc||!st->saved_crtc->mode_valid||resources->count_connectors<=0)return;
+ st->saved_connectors=calloc((size_t)resources->count_connectors,sizeof(*st->saved_connectors));
+ if(!st->saved_connectors){fprintf(stderr,"[drm] cannot save cloned connector set; restoration will use the selected connector\n");return;}
+ for(int i=0;i<resources->count_connectors;i++){
+  drmModeConnectorPtr connector=drmModeGetConnector(st->fd,resources->connectors[i]);
+  if(!connector)continue;
+  drmModeEncoderPtr encoder=connector->encoder_id?drmModeGetEncoder(st->fd,connector->encoder_id):NULL;
+  if(connector->connection==DRM_MODE_CONNECTED&&encoder&&encoder->crtc_id==st->crtc_id)
+   st->saved_connectors[st->saved_connector_count++]=connector->connector_id;
+  if(encoder)drmModeFreeEncoder(encoder);
+  drmModeFreeConnector(connector);
+ }
+}
+
 static bool drm_select_output(Server *s,DrmState *st){
  drmModeResPtr resources=drmModeGetResources(st->fd);
  if(!resources){fprintf(stderr,"[drm] drmModeGetResources failed on %s: %s\n",st->path,strerror(errno));return false;}
@@ -146,6 +190,7 @@ static bool drm_select_output(Server *s,DrmState *st){
    if(current)drmModeFreeCrtc(current);drmModeFreeConnector(connector);continue;
   }
   st->connector_id=connector->connector_id;st->crtc_id=crtc_id;st->saved_crtc=current;
+  drm_save_crtc_connectors(st,resources);
   const char *type=drmModeGetConnectorTypeName(connector->connector_type);
   snprintf(st->connector_name,sizeof(st->connector_name),"%s-%u",type?type:"connector",connector->connector_type_id);
   drmModeFreeConnector(connector);drmModeFreeResources(resources);return true;
@@ -168,7 +213,10 @@ static bool drm_egl_init(Server *s,DrmState *st){
  }
  if(!eglBindAPI(EGL_OPENGL_API)){fprintf(stderr,"[drm] eglBindAPI(EGL_OPENGL_API) failed\n");return false;}
  EGLint attributes[]={EGL_SURFACE_TYPE,EGL_WINDOW_BIT,EGL_RED_SIZE,8,EGL_GREEN_SIZE,8,EGL_BLUE_SIZE,8,
-  EGL_RENDERABLE_TYPE,EGL_OPENGL_BIT,EGL_NONE};
+  /* render_to_texture normally supplies its own depth/stencil FBO, but the
+   * direct path and allocation-failure fallback draw 3D into this default
+   * framebuffer. Match the SDL backend instead of accepting a depthless config. */
+  EGL_DEPTH_SIZE,24,EGL_STENCIL_SIZE,8,EGL_RENDERABLE_TYPE,EGL_OPENGL_BIT,EGL_NONE};
  EGLConfig configs[64];EGLint count=0;
  if(!eglChooseConfig(s->egl_display,attributes,configs,64,&count)||count<1){
   fprintf(stderr,"[drm] no desktop-GL GBM EGL configs\n");return false;
@@ -253,9 +301,23 @@ void backend_drm_present(Server *s){
 static void drm_restore_crtc(DrmState *st){
  if(!st->mode_set)return;
  int result;
- if(st->saved_crtc&&st->saved_crtc->mode_valid)
+ if(st->saved_crtc&&st->saved_crtc->mode_valid){
+  uint32_t *connectors=st->saved_connector_count>0?st->saved_connectors:&st->connector_id;
+  int connector_count=st->saved_connector_count>0?st->saved_connector_count:1;
   result=drmModeSetCrtc(st->fd,st->crtc_id,st->saved_crtc->buffer_id,st->saved_crtc->x,st->saved_crtc->y,
-   &st->connector_id,1,&st->saved_crtc->mode);
+   connectors,connector_count,&st->saved_crtc->mode);
+  /* A clone may have disappeared since startup. Do not let one stale connector
+   * prevent restoration of every other originally active output. */
+  if(result<0&&st->saved_connector_count>1){
+   fprintf(stderr,"[drm] cloned CRTC restore failed; trying original connectors individually\n");
+   for(int i=0;i<st->saved_connector_count;i++){
+    uint32_t connector=st->saved_connectors[i];
+    result=drmModeSetCrtc(st->fd,st->crtc_id,st->saved_crtc->buffer_id,st->saved_crtc->x,st->saved_crtc->y,
+     &connector,1,&st->saved_crtc->mode);
+    if(result==0)break;
+   }
+  }
+ }
  else result=drmModeSetCrtc(st->fd,st->crtc_id,0,0,0,NULL,0,NULL);
  if(result<0)fprintf(stderr,"[drm] failed to restore the previous CRTC: %s\n",strerror(errno));
  else st->mode_set=false;
@@ -280,6 +342,7 @@ void backend_drm_shutdown(Server *s){
  if(st->surface)gbm_surface_destroy(st->surface);
  if(st->gbm)gbm_device_destroy(st->gbm);
  if(st->saved_crtc)drmModeFreeCrtc(st->saved_crtc);
+ free(st->saved_connectors);
  if(st->fd>=0){if(st->master)drmDropMaster(st->fd);close(st->fd);}
  free(st);s->drm_state=NULL;
 }
