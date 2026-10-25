@@ -148,6 +148,7 @@ SdlTouchFinger sdl_touch[CD_MAX_TOUCH_POINTS];int sdl_touch_chrome_id;
  GLuint rtt_mag_filter,rtt_min_filter;
  int render_width,render_height;                       /* active 3D size; 0 = direct */
  void *vnc_screen;int vnc_port;                        /* rfbScreenInfoPtr, opaque here (see backend_vnc.c) */
+ void *headless_state;                                 /* asynchronous pixel-pack ring, owned by backend_headless.c */
  int vnc_prev_mask,vnc_prev_x,vnc_prev_y;              /* RFB pointer edge-detection state (no separate down/up events in the protocol) */
  char fbdev_path[256];bool fbdev_vsync,fbdev_pan,fbdev_vnc_mirror,fbdev_modeset,fbdev_evdev,fbdev_grab_input;int fbdev_mode_width,fbdev_mode_height,fbdev_mode_bpp;void *fbdev_state;char fbdev_input_devices[8][256];int fbdev_input_device_count;void *evdev_state;
  bool dmabuf_supported;int dmabuf_format_count;DmabufFormat dmabuf_formats[CD_DMABUF_MAX_FORMATS];
@@ -218,6 +219,7 @@ void server_each_surface(Surface *root,void (*fn)(Surface*,int,int,void*),void *
 uint32_t sdl_to_evdev(SDL_Scancode code);
 void scene_init(Server *s);
 void city_render(Server *s);
+void city_finish(Server *s);
 void scene_render(Server *s);
 void scene_update_mounts(Server *s);
 /* Offscreen 3D pass: begin binds/allocates the scaled render target and
@@ -241,6 +243,7 @@ void scene_save_screenshot(Server *s,const char *path);
 void scene_neon_color(Server *s,float *r,float *g,float *b);
 void vehicle_render(Server *s,bool cutaway);
 void vehicle_render_glass(Server *s);
+void vehicle_scene_finish(void);
 void app_release_input(Server *s,uint32_t time);
 GLuint ui_texture(cairo_surface_t *surface,GLuint reuse);
 GLuint ui_load_webp(const char *path);
@@ -289,6 +292,8 @@ void backend_sdl_shutdown(Server *s);
 /* backend_vnc.c: embedded RFB server used by headless and the fbdev mirror. */
 bool backend_vnc_init(Server *s,bool loopback_only);
 void backend_vnc_poll(Server *s);
+bool backend_vnc_has_clients(Server *s);
+void backend_vnc_present_pixels(Server *s,const uint8_t *pixels);
 void backend_vnc_present_readback(Server *s);
 void backend_vnc_shutdown(Server *s);
 /* backend_headless.c: default backend — surfaceless EGL + embedded VNC server, no X at all. */

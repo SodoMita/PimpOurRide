@@ -8,6 +8,7 @@
 #include <webp/encode.h>
 #define PI 3.14159265358979323846f
 #define RAD (PI/180.f)
+static GLuint seat_list;
 static void color(float r,float g,float b){glColor3f(r,g,b);}
 static void quad(float x,float y,float w,float h,float z){glBegin(GL_QUADS);glNormal3f(0,0,1);glVertex3f(x,y,z);glVertex3f(x+w,y,z);glVertex3f(x+w,y+h,z);glVertex3f(x,y+h,z);glEnd();}
 static void texture(GLuint tex,float x,float y,float w,float h,float z){
@@ -548,7 +549,9 @@ static void draw_monitor(Server *s,int i){
   ui_monitor_label(s,i);texture(m->label,-w/2,h/2+.011,w,.137,.024);
   {float bx,by,bw,bh;handles_button_rect(p,k,&bx,&by,&bw,&bh);if(s->handles_tex)texture(s->handles_tex,bx,by,bw,bh,.032*k);if(arranging&&s->arrange_handles){float z=.040*k,r=.004*k;glow_line(v3(bx,by,z),v3(bx+bw,by,z),r,1,.62,.16);glow_line(v3(bx+bw,by,z),v3(bx+bw,by+bh,z),r,1,.62,.16);glow_line(v3(bx+bw,by+bh,z),v3(bx,by+bh,z),r,1,.62,.16);glow_line(v3(bx,by+bh,z),v3(bx,by,z),r,1,.62,.16);}}
  }
- glEnable(GL_STENCIL_TEST);glClear(GL_STENCIL_BUFFER_BIT);glStencilMask(0xff);glStencilFunc(GL_ALWAYS,1,0xff);glStencilOp(GL_KEEP,GL_KEEP,GL_REPLACE);glColorMask(GL_FALSE,GL_FALSE,GL_FALSE,GL_FALSE);glDepthMask(GL_FALSE);glDisable(GL_DEPTH_TEST);quad(-w/2,-h/2,w,h,.021*k);glEnable(GL_DEPTH_TEST);glColorMask(GL_TRUE,GL_TRUE,GL_TRUE,GL_TRUE);glDepthMask(GL_TRUE);glStencilFunc(GL_EQUAL,1,0xff);glStencilOp(GL_KEEP,GL_KEEP,GL_KEEP);glStencilMask(0);
+ /* scene_render() already cleared stencil once. A unique reference per
+  * monitor avoids another full-frame clear for every overlapping app. */
+ glEnable(GL_STENCIL_TEST);glStencilMask(0xff);glStencilFunc(GL_ALWAYS,i+1,0xff);glStencilOp(GL_KEEP,GL_KEEP,GL_REPLACE);glColorMask(GL_FALSE,GL_FALSE,GL_FALSE,GL_FALSE);glDepthMask(GL_FALSE);glDisable(GL_DEPTH_TEST);quad(-w/2,-h/2,w,h,.021*k);glEnable(GL_DEPTH_TEST);glColorMask(GL_TRUE,GL_TRUE,GL_TRUE,GL_TRUE);glDepthMask(GL_TRUE);glStencilFunc(GL_EQUAL,i+1,0xff);glStencilOp(GL_KEEP,GL_KEEP,GL_KEEP);glStencilMask(0);
  float scale=fminf(w/m->surface->width,h/m->surface->height);DrawSurface d={.scale=scale,.w=m->surface->width*scale,.h=m->surface->height*scale,.z0=.024*k,.zstep=.0007*k};server_each_surface(m->surface,draw_app_surface,&d);
  glStencilMask(0xff);glDisable(GL_STENCIL_TEST);
  if(arranging){
@@ -778,7 +781,14 @@ void scene_render(Server *s){
  /* One physical cockpit in all views. Drawing it before the hull lets opaque
   * bodywork occlude it naturally; cutaway and the late shared glass pass then
   * reveal exactly the same seats, panels, controls and Wayland surfaces. */
- vehicle_seats_render();dashboard(s);draw_buttons(s);draw_cog(s);draw_quit_button(s);
+ /* Seat upholstery is static in vehicle-local space; unlike the manipulator,
+  * its cushions, stitching and seams can be replayed without rebuilding. */
+ if(!seat_list){
+  seat_list=glGenLists(1);
+  if(seat_list){glNewList(seat_list,GL_COMPILE);vehicle_seats_render();glEndList();}
+ }
+ if(seat_list)glCallList(seat_list);else vehicle_seats_render();
+ dashboard(s);draw_buttons(s);draw_cog(s);draw_quit_button(s);
  for(int i=0;i<CD_MAX_MONITORS;i++)draw_monitor(s,i);
  steering_wheel(s);
  vehicle_render(s,s->camera_mode==VEHICLE_CAMERA_SYSTEMS);
@@ -930,8 +940,7 @@ void scene_save_screenshot(Server *s,const char *path){
  free(flipped);free(pixels);
 }
 void scene_finish(Server *s){
- if(s->city_list)glDeleteLists(s->city_list,1);
- for(int i=0;i<10;i++)if(s->city_signs[i])glDeleteTextures(1,&s->city_signs[i]);
+ city_finish(s);vehicle_scene_finish();if(seat_list)glDeleteLists(seat_list,1);seat_list=0;
  GLuint textures[]={s->garage_tex,s->carbon_tex,s->console_tex,s->hub_tex,s->hud_tex,s->windshield_tex,s->help_tex,s->plate_tex,s->handles_tex};glDeleteTextures(sizeof(textures)/sizeof(textures[0]),textures);for(int i=0;i<6;i++)glDeleteTextures(1,&s->buttons[i].texture);for(int i=0;i<CD_MAX_MONITORS;i++)glDeleteTextures(1,&s->monitors[i].label);
  rtt_release(s);
 }

@@ -47,6 +47,14 @@ static int canopy_zone(float u, float v);
 static void render_canopy_structure(void);
 static void render_door_canopy_structure(int side);
 
+/* The concept hull, fixed canopy, trim and glass are immutable car-local
+ * splines. Cache them per camera class/theme instead of evaluating thousands
+ * of Catmull-Rom points on every remote frame. Doors, EV cutaway animation,
+ * hover pulses, cockpit monitors and controls remain outside these lists. */
+static GLuint driver_body_lists[3],exterior_body_lists[3],exterior_detail_lists[3];
+static GLuint canopy_glass_lists[2][2];
+static int vehicle_theme(const Server *s){return s->theme==1?1:s->theme==2?2:0;}
+
 static void ev_set_material(EvMaterial mat) {
  switch (mat) {
  case EV_MAT_BODY_PAINT: {
@@ -1241,22 +1249,46 @@ void vehicle_render(Server *s, bool cutaway) {
   return;
  }
 
+ int theme=vehicle_theme(s);
  if (s->camera_mode == VEHICLE_CAMERA_DRIVER) {
   /* Driver mode renders only the exterior panels visible through the cockpit
    * windows; internal EV cutaway geometry is omitted so no cables or boxes
    * ever intersect the interior dashboard or waste software-rasterizer time. */
-  render_driver_hull();
-  render_fascia_cap(s, true);
-  render_fascia_cap(s, false);
-  render_canopy_structure();
-  render_exterior_details(s);
+  if(!driver_body_lists[theme]){
+   driver_body_lists[theme]=glGenLists(1);
+   if(driver_body_lists[theme]){
+    glNewList(driver_body_lists[theme],GL_COMPILE);
+    render_driver_hull();render_fascia_cap(s,true);render_fascia_cap(s,false);
+    render_canopy_structure();render_exterior_details(s);
+    glEndList();
+   }
+  }
+  if(driver_body_lists[theme])glCallList(driver_body_lists[theme]);
+  else{
+   render_driver_hull();render_fascia_cap(s,true);render_fascia_cap(s,false);
+   render_canopy_structure();render_exterior_details(s);
+  }
  } else {
-  render_exterior_hull();
-  render_fascia_cap(s, true);
-  render_fascia_cap(s, false);
-  render_exterior_canopy(s);
+  /* Preserve the original opaque/transparent ordering around the animated
+   * hover nacelles: body first, then pulse/cushion, then surface trim. */
+  if(!exterior_body_lists[theme]){
+   exterior_body_lists[theme]=glGenLists(1);
+   if(exterior_body_lists[theme]){
+    glNewList(exterior_body_lists[theme],GL_COMPILE);
+    render_exterior_hull();render_fascia_cap(s,true);render_fascia_cap(s,false);
+    render_exterior_canopy(s);glEndList();
+   }
+  }
+  if(exterior_body_lists[theme])glCallList(exterior_body_lists[theme]);
+  else{render_exterior_hull();render_fascia_cap(s,true);render_fascia_cap(s,false);render_exterior_canopy(s);}
   render_all_hover_nacelles(s, false);
-  render_exterior_details(s);
+  if(!exterior_detail_lists[theme]){
+   exterior_detail_lists[theme]=glGenLists(1);
+   if(exterior_detail_lists[theme]){
+    glNewList(exterior_detail_lists[theme],GL_COMPILE);render_exterior_details(s);glEndList();
+   }
+  }
+  if(exterior_detail_lists[theme])glCallList(exterior_detail_lists[theme]);else render_exterior_details(s);
  }
 
  render_doors(s);
@@ -1289,11 +1321,32 @@ void vehicle_render_glass(Server *s) {
  glDisable(GL_LIGHTING);
  glEnable(GL_BLEND); glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA); glDepthMask(GL_FALSE);
  glColor4f(0.035f, 0.075f, 0.11f, driver ? 0.13f : 0.22f);
- for (int side = -1; side <= 1; side += 2) render_canopy_glass_part(side, false);
- for (int side = -1; side <= 1; side += 2) {
-  glPushMatrix();door_gl_transform(&s->vehicle, side);
-  render_canopy_glass_part(side, true);
-  glPopMatrix();
+ for(int moving=0;moving<2;moving++)for(int side=-1;side<=1;side+=2){
+  int si=side<0?0:1;
+  if(!canopy_glass_lists[si][moving]){
+   canopy_glass_lists[si][moving]=glGenLists(1);
+   if(canopy_glass_lists[si][moving]){
+    glNewList(canopy_glass_lists[si][moving],GL_COMPILE);
+    render_canopy_glass_part(side,moving);glEndList();
+   }
+  }
+  if(moving){glPushMatrix();door_gl_transform(&s->vehicle,side);}
+  if(canopy_glass_lists[si][moving])glCallList(canopy_glass_lists[si][moving]);
+  else render_canopy_glass_part(side,moving);
+  if(moving)glPopMatrix();
  }
  glDepthMask(GL_TRUE); glDisable(GL_BLEND); glEnable(GL_LIGHTING);
+}
+
+void vehicle_scene_finish(void){
+ for(int theme=0;theme<3;theme++){
+  if(driver_body_lists[theme])glDeleteLists(driver_body_lists[theme],1);
+  if(exterior_body_lists[theme])glDeleteLists(exterior_body_lists[theme],1);
+  if(exterior_detail_lists[theme])glDeleteLists(exterior_detail_lists[theme],1);
+  driver_body_lists[theme]=exterior_body_lists[theme]=exterior_detail_lists[theme]=0;
+ }
+ for(int side=0;side<2;side++)for(int moving=0;moving<2;moving++){
+  if(canopy_glass_lists[side][moving])glDeleteLists(canopy_glass_lists[side][moving],1);
+  canopy_glass_lists[side][moving]=0;
+ }
 }

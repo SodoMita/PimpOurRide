@@ -80,6 +80,14 @@ void cd_vnc_key(rfbBool down,rfbKeySym key,rfbClientPtr cl){
  if(!app_global_key(s,evdev,down))server_key(s,evdev,down,now);
 }
 
+static enum rfbNewClientAction cd_vnc_new_client(rfbClientPtr cl){
+ Server *s=cl->screen->screenData;
+ /* Dirty tiles are deltas against the previous server framebuffer. A new
+  * client has no such history, so its first update must remain a full frame. */
+ rfbMarkRectAsModified(cl->screen,0,0,s->width,s->height);
+ return RFB_CLIENT_ACCEPT;
+}
+
 bool backend_vnc_init(Server *s,bool loopback_only){
  if(s->vnc_screen)return true;
  if(s->vnc_port<1||s->vnc_port>65535){fprintf(stderr,"[vnc] invalid port %d\n",s->vnc_port);return false;}
@@ -99,6 +107,7 @@ bool backend_vnc_init(Server *s,bool loopback_only){
  extern void cd_vnc_key(rfbBool,rfbKeySym,rfbClientPtr);
  screen->ptrAddEvent=cd_vnc_ptr;
  screen->kbdAddEvent=cd_vnc_key;
+ screen->newClientHook=cd_vnc_new_client;
  rfbInitServer(screen);
  if(screen->listenSock==RFB_INVALID_SOCKET){
   fprintf(stderr,"[vnc] cannot listen on %s:%d\n",loopback_only?"127.0.0.1":"0.0.0.0",s->vnc_port);
@@ -114,14 +123,39 @@ void backend_vnc_poll(Server *s){
  if(s->vnc_screen)rfbProcessEvents((rfbScreenInfoPtr)s->vnc_screen,0);
 }
 
-void backend_vnc_present_readback(Server *s){
- if(!s->vnc_screen||!s->readback_pixels)return;
+bool backend_vnc_has_clients(Server *s){
+ if(!s||!s->vnc_screen)return false;
  rfbScreenInfoPtr screen=(rfbScreenInfoPtr)s->vnc_screen;
- int stride=s->width*4;
- for(int row=0;row<s->height;row++)
-  memcpy(screen->frameBuffer+(size_t)row*stride,s->readback_pixels+(size_t)(s->height-1-row)*stride,stride); /* GL is bottom-up, VNC/raster is top-down */
- rfbMarkRectAsModified(screen,0,0,s->width,s->height);
+ return screen->clientHead!=NULL;
 }
+
+void backend_vnc_present_pixels(Server *s,const uint8_t *pixels){
+ if(!s->vnc_screen||!pixels)return;
+ rfbScreenInfoPtr screen=(rfbScreenInfoPtr)s->vnc_screen;
+ const int tile=128,stride=s->width*4;
+ /* Compare in top-down RFB space while the GL image is still bottom-up.
+  * Copying and marking only changed 128x128 tiles avoids pushing a 6.4 MB raw
+  * frame for a stationary cockpit with a few animated instruments/raindrops.
+  * libvncserver coalesces intersecting tiles in each client's update region. */
+ for(int y=0;y<s->height;y+=tile)for(int x=0;x<s->width;x+=tile){
+  int tw=x+tile<=s->width?tile:s->width-x,th=y+tile<=s->height?tile:s->height-y;
+  bool changed=false;
+  for(int row=0;row<th&&!changed;row++){
+   const uint8_t *src=pixels+(size_t)(s->height-1-y-row)*stride+(size_t)x*4;
+   const uint8_t *dst=(const uint8_t*)screen->frameBuffer+(size_t)(y+row)*stride+(size_t)x*4;
+   changed=memcmp(src,dst,(size_t)tw*4)!=0;
+  }
+  if(!changed)continue;
+  for(int row=0;row<th;row++){
+   const uint8_t *src=pixels+(size_t)(s->height-1-y-row)*stride+(size_t)x*4;
+   uint8_t *dst=(uint8_t*)screen->frameBuffer+(size_t)(y+row)*stride+(size_t)x*4;
+   memcpy(dst,src,(size_t)tw*4);
+  }
+  rfbMarkRectAsModified(screen,x,y,tw,th);
+ }
+}
+
+void backend_vnc_present_readback(Server *s){backend_vnc_present_pixels(s,s->readback_pixels);}
 
 void backend_vnc_shutdown(Server *s){
  if(s->vnc_screen){rfbScreenInfoPtr screen=(rfbScreenInfoPtr)s->vnc_screen;rfbShutdownServer(screen,TRUE);free(screen->frameBuffer);rfbScreenCleanup(screen);s->vnc_screen=NULL;}

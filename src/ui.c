@@ -197,7 +197,8 @@ void ui_update(Server *s){
  if(s->time-s->last_windshield_time>.10){windshield_hud(s);s->last_windshield_time=s->time;}
  if(s->time-s->last_ui_time>.24||old_w!=s->width||old_h!=s->height){hud(s);s->last_ui_time=s->time;old_w=s->width;old_h=s->height;}
 }
-static void overlay_texture(GLuint tex,float x,float y,float w,float h){glBindTexture(GL_TEXTURE_2D,tex);glBegin(GL_QUADS);glTexCoord2f(0,0);glVertex2f(x,y);glTexCoord2f(1,0);glVertex2f(x+w,y);glTexCoord2f(1,1);glVertex2f(x+w,y+h);glTexCoord2f(0,1);glVertex2f(x,y+h);glEnd();}
+static void overlay_texture_region(GLuint tex,float x,float y,float w,float h,float u0,float v0,float u1,float v1){glBindTexture(GL_TEXTURE_2D,tex);glBegin(GL_QUADS);glTexCoord2f(u0,v0);glVertex2f(x,y);glTexCoord2f(u1,v0);glVertex2f(x+w,y);glTexCoord2f(u1,v1);glVertex2f(x+w,y+h);glTexCoord2f(u0,v1);glVertex2f(x,y+h);glEnd();}
+static void overlay_texture(GLuint tex,float x,float y,float w,float h){overlay_texture_region(tex,x,y,w,h,0,0,1,1);}
 /* Custom neon reticle, drawn into the framebuffer itself rather than relying
  * on a host cursor. There is no OS cursor at all in --headless mode (no X,
  * no window — raw VNC clients with no cursor-shape-update support would show
@@ -218,7 +219,16 @@ static void draw_cursor(Server *s){
  glLineWidth(1.f);
 }
 void ui_draw_overlay(Server *s){
- glDisable(GL_DEPTH_TEST);glDisable(GL_LIGHTING);glMatrixMode(GL_PROJECTION);glPushMatrix();glLoadIdentity();glOrtho(0,s->width,s->height,0,-1,1);glMatrixMode(GL_MODELVIEW);glPushMatrix();glLoadIdentity();glEnable(GL_BLEND);glBlendFunc(GL_ONE,GL_ONE_MINUS_SRC_ALPHA);glEnable(GL_TEXTURE_2D);glColor4f(1,1,1,1);if(s->hud_visible)overlay_texture(s->hud_tex,0,0,s->width,s->height);
+ glDisable(GL_DEPTH_TEST);glDisable(GL_LIGHTING);glMatrixMode(GL_PROJECTION);glPushMatrix();glLoadIdentity();glOrtho(0,s->width,s->height,0,-1,1);glMatrixMode(GL_MODELVIEW);glPushMatrix();glLoadIdentity();glEnable(GL_BLEND);glBlendFunc(GL_ONE,GL_ONE_MINUS_SRC_ALPHA);glEnable(GL_TEXTURE_2D);glColor4f(1,1,1,1);
+ if(s->hud_visible){
+  /* hud() only paints the top 150 and bottom 140 pixels (apart from the
+   * optional centre look reticle). Cropping the source texture avoids a
+   * full-screen alpha blend over millions of known-transparent pixels. */
+  float top=fminf(150,(float)s->height),bottom=fminf(140,(float)s->height-top);
+  overlay_texture_region(s->hud_tex,0,0,s->width,top,0,0,1,top/s->height);
+  if(bottom>0)overlay_texture_region(s->hud_tex,0,s->height-bottom,s->width,bottom,0,(s->height-bottom)/s->height,1,1);
+  if(s->middle_look){float x=s->width/2-16,y=s->height/2-16;overlay_texture_region(s->hud_tex,x,y,32,32,x/s->width,y/s->height,(x+32)/s->width,(y+32)/s->height);}
+ }
  if(s->show_help){glDisable(GL_TEXTURE_2D);glColor4f(0,0,0,.50);glBegin(GL_QUADS);glVertex2f(0,0);glVertex2f(s->width,0);glVertex2f(s->width,s->height);glVertex2f(0,s->height);glEnd();glEnable(GL_TEXTURE_2D);glColor4f(1,1,1,1);float scale=fminf((s->width-90)/1000.f,(s->height-120)/720.f);scale=fminf(scale,.9);overlay_texture(s->help_tex,(s->width-1000*scale)/2,(s->height-720*scale)/2,1000*scale,720*scale);}
  draw_cursor(s);
  glDisable(GL_TEXTURE_2D);glDisable(GL_BLEND);glPopMatrix();glMatrixMode(GL_PROJECTION);glPopMatrix();glMatrixMode(GL_MODELVIEW);glEnable(GL_DEPTH_TEST);

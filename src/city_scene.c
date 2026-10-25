@@ -7,6 +7,21 @@
 #define CITY_PI 3.14159265358979323846f
 
 static float city_hash(int n){float x=sinf((float)n*127.1f)*43758.5453f;return x-floorf(x);}
+/* Streamed chunks are immutable functions of integer coordinates. Replaying
+ * their unchanged immediate-mode geometry every frame made llvmpipe spend
+ * most of its time in vertex submission rather than presentation. A bounded
+ * LRU retains the visible working set without putting a finite cap on the
+ * world; dynamic traffic, beacons, rain and hover bob stay outside the lists. */
+#define CITY_CHUNK_CACHE_SIZE 49
+typedef struct {
+ bool used,near;
+ int x,z;
+ GLuint list;
+ uint64_t last_used;
+} CityChunkCache;
+static CityChunkCache chunk_cache[CITY_CHUNK_CACHE_SIZE];
+static GLuint traffic_lists[CITY_TRAFFIC_COUNT];
+static uint64_t chunk_clock;
 static void city_spline_vehicle(CityVehicleModel m);
 static void city_color(float r,float g,float b){glColor3f(r,g,b);}
 static void city_box(float x,float y,float z,float w,float h,float d){
@@ -343,13 +358,35 @@ static void city_stream_chunk(Server *s,CityChunk chunk,bool near){
  int count=city_chunk_solid_count(chunk);for(int i=0;i<count;i++)city_stream_solid(s,chunk,city_chunk_solid(chunk,i),i,near);
  for(int i=0;i<city_chunk_garage_count(chunk);i++)city_drive_garage(s,city_chunk_garage(chunk,i),8+i,true);
 }
+static GLuint city_chunk_list(Server *s,CityChunk chunk,bool near){
+ for(int i=0;i<CITY_CHUNK_CACHE_SIZE;i++){
+  CityChunkCache *e=&chunk_cache[i];
+  if(e->used&&e->x==chunk.x&&e->z==chunk.z&&e->near==near){
+   e->last_used=++chunk_clock;return e->list;
+  }
+ }
+ int slot=-1;uint64_t oldest=UINT64_MAX;
+ for(int i=0;i<CITY_CHUNK_CACHE_SIZE;i++){
+  if(!chunk_cache[i].used){slot=i;break;}
+  if(chunk_cache[i].last_used<oldest){oldest=chunk_cache[i].last_used;slot=i;}
+ }
+ CityChunkCache *e=&chunk_cache[slot];
+ if(e->list)glDeleteLists(e->list,1);
+ e->list=glGenLists(1);
+ if(e->list){
+  glNewList(e->list,GL_COMPILE);city_stream_chunk(s,chunk,near);glEndList();
+ }else city_stream_chunk(s,chunk,near); /* allocation failure must not hide the world */
+ e->used=true;e->near=near;e->x=chunk.x;e->z=chunk.z;e->last_used=++chunk_clock;
+ return e->list;
+}
 static void city_stream(Server *s){
  CityChunk centre=city_chunk_at(s->vehicle.position);
  for(int dz=-2;dz<=2;dz++)for(int dx=-2;dx<=2;dx++){
   CityChunk chunk=city_chunk(centre.x+dx,centre.z+dz);if(city_stream_chunk_is_core(chunk))continue;
   float x=chunk.x*80+40-s->vehicle.position.x,z=chunk.z*80+40-s->vehicle.position.z;
   float distance=x*x+z*z;if(distance>200.0f*200.0f)continue;
-  city_stream_chunk(s,chunk,distance<110.0f*110.0f);
+  bool near=distance<110.0f*110.0f;GLuint list=city_chunk_list(s,chunk,near);
+  if(list)glCallList(list);
  }
 }
 
@@ -429,7 +466,12 @@ static void city_traffic_car(int index,double time){
  float bob=model.wheels?0:sinf((float)time*2+index)*.035f;
  /* Wheeled traffic meets the -1.39 m outer-ring road; hover cars bob above. */
  glPushMatrix();glTranslatef(car.position.x,(model.wheels?-.03f:-.12f)+bob,car.position.z);glRotatef(car.yaw,0,1,0);
- city_spline_vehicle(model);glPopMatrix();
+ if(!traffic_lists[index]){
+  traffic_lists[index]=glGenLists(1);
+  if(traffic_lists[index]){glNewList(traffic_lists[index],GL_COMPILE);city_spline_vehicle(model);glEndList();}
+ }
+ if(traffic_lists[index])glCallList(traffic_lists[index]);else city_spline_vehicle(model);
+ glPopMatrix();
 }
 static void city_dynamic(Server *s){
  for(int i=0;i<city_traffic_count();i++)city_traffic_car(i,s->vehicle.simulation_time);
@@ -457,4 +499,18 @@ void city_render(Server *s){
  }
  if(!s->city_list){s->city_list=glGenLists(1);glNewList(s->city_list,GL_COMPILE);city_static(s);glEndList();}
  city_sky(s->vehicle.position);glCallList(s->city_list);city_stream(s);city_dynamic(s);
+}
+void city_finish(Server *s){
+ /* All lists are destroyed while the owning EGL/GL context is still current. */
+ for(int i=0;i<CITY_CHUNK_CACHE_SIZE;i++){
+  if(chunk_cache[i].list)glDeleteLists(chunk_cache[i].list,1);
+  chunk_cache[i]=(CityChunkCache){0};
+ }
+ for(int i=0;i<CITY_TRAFFIC_COUNT;i++){
+  if(traffic_lists[i])glDeleteLists(traffic_lists[i],1);traffic_lists[i]=0;
+ }
+ chunk_clock=0;
+ if(s->city_list)glDeleteLists(s->city_list,1);s->city_list=0;
+ for(int i=0;i<10;i++)if(s->city_signs[i])glDeleteTextures(1,&s->city_signs[i]);
+ memset(s->city_signs,0,sizeof(s->city_signs));
 }
