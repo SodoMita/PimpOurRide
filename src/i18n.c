@@ -15,6 +15,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 /* One path buffer size shared by the directory list, the full catalog path,
  * and the stored g_catalog, so no snprintf can be flagged as truncating. */
@@ -226,6 +227,48 @@ const char *tr(const char *english) {
     }
     g_misses++;
     return english;
+}
+
+/* Returns the length of the codepoint starting at `p` (1..4), or 1 for a byte
+ * that cannot start one - malformed input must not stall the copy. */
+static size_t utf8_len(unsigned char c) {
+    if (c < 0x80) return 1;
+    if ((c & 0xE0) == 0xC0) return 2;
+    if ((c & 0xF0) == 0xE0) return 3;
+    if ((c & 0xF8) == 0xF0) return 4;
+    return 1;
+}
+
+size_t i18n_utf8_truncate(char *dst, size_t cap, const char *src, size_t max_bytes) {
+    if (!dst || !cap) return 0;
+    dst[0] = 0;
+    if (!src) return 0;
+    size_t out = 0;
+    for (size_t i = 0; src[i] && out < cap - 1;) {
+        size_t n = utf8_len((unsigned char)src[i]);
+        /* Stop before a codepoint that would straddle the byte limit, and
+         * before one that does not fit the destination at all. */
+        if (i + n > max_bytes || out + n >= cap) break;
+        memcpy(dst + out, src + i, n);
+        out += n;
+        i += n;
+    }
+    dst[out] = 0;
+    return out;
+}
+
+bool i18n_root_from_exe(char *buf, size_t size) {
+    if (!buf || size < 2) return false;
+    buf[0] = 0;
+    ssize_t n = readlink("/proc/self/exe", buf, size - 1);
+    if (n <= 0) { buf[0] = 0; return false; }
+    buf[n] = 0;
+    for (int strip = 0; strip < 2; strip++) {   /* binary name, then bin/ */
+        char *slash = strrchr(buf, '/');
+        if (!slash) { buf[0] = 0; return false; }
+        *slash = 0;
+    }
+    return true;
 }
 
 void i18n_stats(int *entries, int *lookups, int *misses) {

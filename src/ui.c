@@ -68,7 +68,7 @@ static void windshield_hud(Server *s){
  rgba(c,.45,.95,.79,.95);text(c,358,211,72,gear,true);rgba(c,.40,.61,.69,.85);mono(c,352,260,15,s->vehicle.autopilot_enabled?tr("AUTO"):s->steering_mode==VEHICLE_STEER_DRIVE?tr("DRIVE"):tr("CLIENT"));
  /* Pack and instantaneous power at the right edge. */
  snprintf(value,sizeof(value),"%.0f%%",100*s->vehicle.battery_kwh/VEHICLE_BATTERY_CAPACITY_KWH);rgba(c,.80,.95,1,.92);text(c,1070,190,72,value,true);
- rgba(c,.43,.68,.76,.85);mono(c,1080,232,18,tr("82 KWH PACK"));snprintf(value,sizeof(value),"%+.0f KW",s->vehicle.power_kw);mono(c,1080,278,21,value);
+ rgba(c,.43,.68,.76,.85);mono(c,1080,232,18,tr("82 KWH PACK"));snprintf(value,sizeof(value),tr("%+.0f KW"),s->vehicle.power_kw);mono(c,1080,278,21,value);
  /* Centre stays mostly empty. A small live steering chevron and status line
   * read as glass projection without covering the fixed windshield client. */
  rgba(c,.48,.72,.80,.72);mono(c,568,62,14,tr("WINDSHIELD HUD / LIVE"));
@@ -76,7 +76,7 @@ static void windshield_hud(Server *s){
  cairo_move_to(c,cx-34,370);cairo_line_to(c,cx,352);cairo_line_to(c,cx+34,370);cairo_stroke(c);
  char auto_mode[96];
  const char *mode=s->steering_mode==VEHICLE_STEER_DRIVE?(s->drive_brake?tr("REGEN BRAKE"):tr("HOVER DRIVE")):tr("CLIENT INPUT / PARKED");
- if(s->vehicle.autopilot_enabled){snprintf(auto_mode,sizeof(auto_mode),tr("AUTOPILOT / %.62s"),city_autopilot_destination(&s->vehicle));mode=auto_mode;}
+ if(s->vehicle.autopilot_enabled){char dest[64];i18n_utf8_truncate(dest,sizeof(dest),city_autopilot_destination(&s->vehicle),62);snprintf(auto_mode,sizeof(auto_mode),tr("AUTOPILOT / %s"),dest);mode=auto_mode;}
  if(s->vehicle.door_target[0]>.5f||s->vehicle.door_target[1]>.5f)mode=s->vehicle.door_open[0]>.995f&&s->vehicle.door_open[1]>.995f?tr("DOORS OPEN / META+O TO CLOSE"):tr("DOORS OPENING");
  else if(s->vehicle.door_open[0]>.001f||s->vehicle.door_open[1]>.001f)mode=tr("DOORS CLOSING");
  rgba(c,.55,.77,.82,.82);cairo_text_extents_t ex;font(c,17,false,true);cairo_text_extents(c,mode,&ex);cairo_move_to(c,700-ex.width/2,414);cairo_show_text(c,mode);
@@ -108,7 +108,7 @@ void ui_monitor_label(Server *s,int i){
  if(!strcmp(buf,m->label_text)&&m->label)return;snprintf(m->label_text,sizeof(m->label_text),"%s",buf);
  cairo_surface_t *im=cairo_image_surface_create(CAIRO_FORMAT_ARGB32,1200,76);cairo_t *c=cairo_create(im);rgb(c,.025,.04,.06);cairo_paint(c);
  rgb(c,active?.40:.52,active?.93:.49,active?.76:.74);cairo_arc(c,29,38,5,0,2*PI);cairo_fill(c);
- char title[90],name[48];const char *display_name=m->surface->title;if(strstr(m->surface->app_id,"foot"))display_name=tr("TERMINAL");else if(strstr(m->surface->app_id,"files"))display_name=tr("FILES");else if(strstr(m->surface->app_id,"audio"))display_name=tr("AUDIO");else if(strstr(m->surface->app_id,"telemetry"))display_name=tr("METERS");snprintf(name,sizeof(name),"%.42s",display_name);snprintf(title,sizeof(title),tr("%02d  /  %s"),i+1,name);
+ char title[90],name[48];const char *display_name=m->surface->title;if(strstr(m->surface->app_id,"foot"))display_name=tr("TERMINAL");else if(strstr(m->surface->app_id,"files"))display_name=tr("FILES");else if(strstr(m->surface->app_id,"audio"))display_name=tr("AUDIO");else if(strstr(m->surface->app_id,"telemetry"))display_name=tr("METERS");i18n_utf8_truncate(name,sizeof(name),display_name,42);snprintf(title,sizeof(title),tr("%02d  /  %s"),i+1,name);
  rgb(c,.76,.82,.89);mono(c,54,48,25,title);rgb(c,.36,.49,.58);mono(c,790,47,17,active?tr("INPUT ACTIVE"):tr(monitor_mount_name(i)));
  if(hot){rgba(c,.65,.12,.22,.95);rounded(c,1128,9,62,58,12);cairo_fill(c);}
  rgb(c,hot?1:.50,hot?.82:.59,hot?.88:.67);cairo_set_line_width(c,hot?3:2);line(c,1150,30,1168,48);line(c,1168,30,1150,48);m->label=ui_texture(im,m->label);cairo_destroy(c);cairo_surface_destroy(im);
@@ -141,7 +141,7 @@ static void hud(Server *s){
  }
  char mode[64];snprintf(mode,sizeof(mode),"%s",tr("ARRANGE MODE"));if(s->arrange_mode&&s->arrange_slot>=0)snprintf(mode,sizeof(mode),tr("ARRANGE MODE / CD-%02d"),s->arrange_slot+1);
  const char *seat_state=s->camera_mode==VEHICLE_CAMERA_SYSTEMS?tr("EV SKATEBOARD / NO WHEELS"):s->camera_mode==VEHICLE_CAMERA_CHASE?tr("SPLINE-BUILT ELECTRIC HOVER CAR"):s->steering_mode==VEHICLE_STEER_DRIVE?tr("HOVER DRIVE / F7 FOR CLIENTS"):tr("CLIENT INPUT / WHEEL SCROLLS");
- char auto_state[128];if(s->vehicle.autopilot_enabled){snprintf(auto_state,sizeof(auto_state),tr("AUTOPILOT / %.90s"),city_autopilot_destination(&s->vehicle));seat_state=auto_state;}
+ char auto_state[128];if(s->vehicle.autopilot_enabled){char dest[92];i18n_utf8_truncate(dest,sizeof(dest),city_autopilot_destination(&s->vehicle),90);snprintf(auto_state,sizeof(auto_state),tr("AUTOPILOT / %s"),dest);seat_state=auto_state;}
  const char *state=s->arrange_mode?mode:s->focus_view&&s->camera_mode==VEHICLE_CAMERA_DRIVER?tr("FOCUS MODE"):seat_state;
  rgb(c,.75,.81,.87);text(c,29,h-47,12,state,true);rgb(c,.37,.45,.55);mono(c,29,h-26,9,"NATIVE WAYLAND / v" CD_VERSION);
  rgb(c,.72,.78,.84);snprintf(b,sizeof(b),"%02.0f FPS",s->fps);mono(c,w-94,h-47,12,b);rgb(c,.39,.48,.56);mono(c,w-107,h-26,9,"OPENGL / SHM");
@@ -152,10 +152,13 @@ static void hud(Server *s){
 static void help(Server *s){
  cairo_surface_t *im=cairo_image_surface_create(CAIRO_FORMAT_ARGB32,1000,720);cairo_t *c=cairo_create(im);rgba(c,.025,.038,.063,.98);rounded(c,1,1,998,718,25);cairo_fill(c);rgb(c,.25,.33,.43);cairo_set_line_width(c,2);rounded(c,1,1,998,718,25);cairo_stroke(c);
  rgb(c,.52,.90,.77);mono(c,58,63,15,tr("CHROMEDRIVE / DRIVER'S MANUAL"));rgb(c,.94,.95,.97);text(c,55,130,45,tr("Make yourself at home."),true);rgb(c,.47,.58,.69);text(c,58,176,18,tr("Real Wayland apps. One virtual monitor for every window."),false);
- const char *keys[]={"MIDDLE + DRAG","CLICK / DRAG FRAME","META+O / META+A","F7","WASD / SPACE","DRAG WHEEL","F8 / F9 / F10","F2 / F3","F4 / F12","META+SHIFT+Q","DASH COG"};
+ /* Physical key names (F7, META+O, WASD, META+SHIFT+Q) are not translated -
+  * they are on the keyboard. The descriptive ones are chrome and do translate. */
+ const char *keys[]={tr("MIDDLE + DRAG"),tr("CLICK / DRAG FRAME"),"META+O / META+A","F7","WASD / SPACE",tr("DRAG WHEEL"),"F8 / F9 / F10","F2 / F3","F4 / F12","META+SHIFT+Q",tr("DASH COG")};
  const char *desc[]={tr("Look around from the selected seat"),tr("Focus a screen / drag its titlebar to move it"),tr("Doors / city autopilot; a drive key returns manual control"),tr("Toggle client input / hover-drive ownership"),tr("Accelerate, reverse, steer and regenerative brake"),tr("Steer in drive mode; scroll focused app in client mode"),tr("Change view / switch seat / recover the car"),tr("Selected seat / focus app or next spatial monitor"),tr("Change underglow / save a WebP screenshot"),tr("Quit immediately; red EXIT button needs a second press to confirm"),tr("Settings; Shift-click a tile for another instance")};
  for(int i=0;i<11;i++){int y=218+i*37;rgb(c,.69,.77,.88);mono(c,61,y,14,keys[i]);rgb(c,.54,.63,.73);text(c,294,y,14,desc[i],false);rgba(c,.26,.33,.43,.4);line(c,58,y+13,942,y+13);}
  rgb(c,.40,.49,.60);text(c,58,640,14,tr("Arrange: Tab next - HANDLES/H gizmo - drag transforms - R reset - right-click tile assigns app"),false);rgb(c,.50,.87,.73);mono(c,58,686,15,tr("F1 CLOSE    F6/ESC EXIT ARRANGE    CTRL+ALT+Q / META+SHIFT+Q EXIT"));s->help_tex=ui_texture(im,0);cairo_destroy(c);cairo_surface_destroy(im);
+
 }
 static void make_leather(Server *s){
  cairo_surface_t *im=cairo_image_surface_create(CAIRO_FORMAT_ARGB32,256,256);

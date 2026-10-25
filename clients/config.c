@@ -1001,9 +1001,14 @@ static void picker_assign(Gui *g, int catalog_idx) {
     app_load_fields(g, slot);
     touch_file(g, FILE_CD);
     flush_saves(g, true);
-    if (!g->save_pending[FILE_CD])
-        snprintf(g->saved_note, sizeof(g->saved_note), "Assigned %.*s to Launch Control %d",
-                 utf8_prefix_len(assigned_name, 52), assigned_name, slot + 1);
+    if (!g->save_pending[FILE_CD]) {
+        /* Width-limited "%.*s" counts bytes and cannot translate the name, so
+         * truncate with the UTF-8-safe helper and hand tr() a plain %s. */
+        char shown[64];
+        i18n_utf8_truncate(shown, sizeof(shown), tr(assigned_name), 52);
+        snprintf(g->saved_note, sizeof(g->saved_note),
+                 tr("Assigned %s to Launch Control %d"), shown, slot + 1);
+    }
     g->draw_dirty = true;
 }
 static void picker_geometry(Gui *g, double *x, double *y, double *w, double *h) {
@@ -1050,6 +1055,9 @@ static void txt_fit(cairo_t *c, double x, double y, double maxw, const char *s) 
     char buf[640];
     snprintf(buf, sizeof(buf), "%s", s);
     for (int n = (int)strlen(buf); n > 3; n--) {
+        /* Back off over UTF-8 continuation bytes so a truncation can never
+         * split a codepoint (Russian already, CJK later). */
+        while (n > 0 && ((unsigned char)buf[n] & 0xC0) == 0x80) n--;
         buf[n] = 0;
         char tmp[644];
         snprintf(tmp, sizeof(tmp), "%s..", buf);
