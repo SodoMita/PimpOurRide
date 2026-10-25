@@ -142,10 +142,10 @@ static void hud(Server *s){
  if(w>=1100){int bx=w/2-438,by=h-66;rgba(c,.025,.038,.059,.88);rounded(c,bx,by,876,43,21);cairo_fill(c);rgba(c,.35,.43,.53,.30);rounded(c,bx,by,876,43,21);cairo_stroke(c);
   if(s->arrange_mode){rgb(c,1,.70,.28);mono(c,bx+28,by+26,11,s->arrange_handles?tr("GIZMO: amber move | RGB axes/rings | white corners/edges resize | magenta scale"):tr("DRAG move | HANDLES/H gizmo | SHIFT-DRAG yaw/pitch | CTRL-DRAG roll | WHEEL scale"));}
   else{
-   const char *keys[]={"F7","WASD","META+O","META+A","F8","F9","F6","F1"};
-   const char *labels[]={tr("Input"),tr("Drive"),tr("Doors"),tr("Auto"),tr("View"),tr("Seat"),tr("Arrange"),tr("Help")};
-   int widths[]={100,105,108,100,90,88,113,0};int x=bx+12;
-   for(int i=0;i<8;i++){int kw=strlen(keys[i])>5?48:strlen(keys[i])>3?34:25;rgb(c,.14,.19,.25);rounded(c,x,by+11,kw,21,4);cairo_fill(c);rgb(c,.80,.85,.91);mono(c,x+5,by+25,10,keys[i]);rgb(c,.60,.67,.74);text(c,x+kw+9,by+26,11,labels[i],false);x+=widths[i];}
+   const char *keys[]={"F7","WASD","META+O","META+A","META+H","F8","F9","F6","F1"};
+   const char *labels[]={tr("Input"),tr("Drive"),tr("Doors"),tr("Auto"),tr("HUD"),tr("View"),tr("Seat"),tr("Arrange"),tr("Help")};
+   int widths[]={94,98,106,100,94,84,82,100,0};int x=bx+12;
+   for(int i=0;i<9;i++){int kw=strlen(keys[i])>5?48:strlen(keys[i])>3?34:25;rgb(c,.14,.19,.25);rounded(c,x,by+11,kw,21,4);cairo_fill(c);rgb(c,.80,.85,.91);mono(c,x+5,by+25,10,keys[i]);rgb(c,.60,.67,.74);text(c,x+kw+9,by+26,11,labels[i],false);x+=widths[i];}
   }
  }
  char mode[64];snprintf(mode,sizeof(mode),"%s",tr("ARRANGE MODE"));if(s->arrange_mode&&s->arrange_slot>=0)snprintf(mode,sizeof(mode),tr("ARRANGE MODE / CD-%02d"),s->arrange_slot+1);
@@ -161,11 +161,11 @@ static void hud(Server *s){
 static void help(Server *s){
  cairo_surface_t *im=cairo_image_surface_create(CAIRO_FORMAT_ARGB32,1000,720);cairo_t *c=cairo_create(im);rgba(c,.025,.038,.063,.98);rounded(c,1,1,998,718,25);cairo_fill(c);rgb(c,.25,.33,.43);cairo_set_line_width(c,2);rounded(c,1,1,998,718,25);cairo_stroke(c);
  rgb(c,.52,.90,.77);mono(c,58,63,15,tr("CHROMEDRIVE / DRIVER'S MANUAL"));rgb(c,.94,.95,.97);text(c,55,130,45,tr("Make yourself at home."),true);rgb(c,.47,.58,.69);text(c,58,176,18,tr("Real Wayland apps. One virtual monitor for every window."),false);
- /* Physical key names (F7, META+O, WASD, META+SHIFT+Q) are not translated -
+ /* Physical key names (F7, META+O, META+H, WASD, META+SHIFT+Q) are not translated -
   * they are on the keyboard. The descriptive ones are chrome and do translate. */
- const char *keys[]={tr("MIDDLE + DRAG"),tr("CLICK / DRAG FRAME"),"META+O / META+A","F7","WASD / SPACE",tr("DRAG WHEEL"),"F8 / F9 / F10","F2 / F3","F4 / F12","META+SHIFT+Q",tr("DASH COG")};
- const char *desc[]={tr("Look around from the selected seat"),tr("Focus a screen / drag its titlebar to move it"),tr("Doors / city autopilot; a drive key returns manual control"),tr("Toggle client input / hover-drive ownership"),tr("Accelerate, reverse, steer and regenerative brake"),tr("Steer in drive mode; scroll focused app in client mode"),tr("Change view / switch seat / recover the car"),tr("Selected seat / focus app or next spatial monitor"),tr("Change underglow / save a WebP screenshot"),tr("Quit immediately; red EXIT button needs a second press to confirm"),tr("Settings; Shift-click a tile for another instance")};
- for(int i=0;i<11;i++){int y=218+i*37;rgb(c,.69,.77,.88);mono(c,61,y,14,keys[i]);rgb(c,.54,.63,.73);text(c,294,y,14,desc[i],false);rgba(c,.26,.33,.43,.4);line(c,58,y+13,942,y+13);}
+ const char *keys[]={tr("MIDDLE + DRAG"),tr("CLICK / DRAG FRAME"),"META+O / META+A","F7","WASD / SPACE",tr("DRAG WHEEL"),"F8 / F9 / F10","F2 / F3","F4 / F12","META+H","META+SHIFT+Q",tr("DASH COG")};
+ const char *desc[]={tr("Look around from the selected seat"),tr("Focus a screen / drag its titlebar to move it"),tr("Doors / city autopilot; a drive key returns manual control"),tr("Toggle client input / hover-drive ownership"),tr("Accelerate, reverse, steer and regenerative brake"),tr("Steer in drive mode; scroll focused app in client mode"),tr("Change view / switch seat / recover the car"),tr("Selected seat / focus app or next spatial monitor"),tr("Change underglow / save a WebP screenshot"),tr("Show or hide the 2D HUD; the dash HUD button mirrors it"),tr("Quit immediately; red EXIT button needs a second press to confirm"),tr("Settings; Shift-click a tile for another instance")};
+ for(int i=0;i<12;i++){int y=218+i*34;rgb(c,.69,.77,.88);mono(c,61,y,14,keys[i]);rgb(c,.54,.63,.73);text(c,294,y,14,desc[i],false);rgba(c,.26,.33,.43,.4);line(c,58,y+13,942,y+13);}
  rgb(c,.40,.49,.60);text(c,58,640,14,tr("Arrange: Tab next - HANDLES/H gizmo - drag transforms - R reset - right-click tile assigns app"),false);rgb(c,.50,.87,.73);mono(c,58,686,15,tr("F1 CLOSE    F6/ESC EXIT ARRANGE    CTRL+ALT+Q / META+SHIFT+Q EXIT"));s->help_tex=ui_texture(im,0);cairo_destroy(c);cairo_surface_destroy(im);
 
 }
@@ -207,7 +207,7 @@ static void overlay_texture(GLuint tex,float x,float y,float w,float h){overlay_
 static void draw_cursor(Server *s){
  if(s->middle_look)return; /* mid-drag means "looking around", not pointing at anything */
  float r,g,b;scene_neon_color(s,&r,&g,&b);
- bool hot=s->hover_button>=0||s->hover_close>=0||s->cog_hover||s->quit_hover||s->wheel_hover||s->wheel_drag;float cx=s->mouse_x,cy=s->mouse_y,ring=hot?11.f:8.f;
+ bool hot=s->hover_button>=0||s->hover_close>=0||s->cog_hover||s->quit_hover||s->hud_hover||s->wheel_hover||s->wheel_drag;float cx=s->mouse_x,cy=s->mouse_y,ring=hot?11.f:8.f;
  glDisable(GL_TEXTURE_2D);glLineWidth(hot?2.2f:1.4f);
  glColor4f(hot?1.f:r,hot?1.f:g,hot?.95f:b,hot?.95f:.78f);
  glBegin(GL_LINE_LOOP);for(int i=0;i<24;i++){float a=i*(2.f*(float)PI/24.f);glVertex2f(cx+cosf(a)*ring,cy+sinf(a)*ring);}glEnd();

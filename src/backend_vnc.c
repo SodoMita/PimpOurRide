@@ -65,6 +65,7 @@ void cd_vnc_ptr(int mask,int x,int y,rfbClientPtr cl){
    else if(left&&!prev_left&&hit.kind==HIT_BUTTON)app_launch(s,hit.button,false);
    else if(left&&!prev_left&&hit.kind==HIT_COG)app_open_settings(s);
    else if(left&&!prev_left&&hit.kind==HIT_QUIT)app_request_quit(s,false);
+   else if(left&&!prev_left&&hit.kind==HIT_HUD)app_toggle_hud(s);
    else if(left&&!prev_left&&hit.kind==HIT_CLOSE)server_close_surface(hit.surface);
    else if(left!=prev_left&&(hit.kind==HIT_APP||s->pointer_grab))server_pointer_button(s,BTN_LEFT,left,now);
    if(right&&!prev_right&&hit.kind==HIT_BUTTON)app_open_settings_slot(s,hit.button,true);

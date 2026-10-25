@@ -311,6 +311,7 @@ reverse proxy and firewall before exposing them to an untrusted network.
 | F4 | Cycle underglow color (violet / ice blue / acid lime) |
 | Meta+O | Open or close both full-height hinged doors (sill, glass, roof rail, trim and door displays move too) |
 | Meta+A | Toggle city autopilot; closes the doors, tours service garages + northern tunnel/square/parking/garage districts, and parks at home |
+| Meta+H | Show or hide the 2D HUD overlay (the round dash HUD button mirrors it) |
 | Meta+Shift+Q | Quit ChromeDrive immediately (also works in Arrange mode) |
 | F5 | Unbound in the compositor; reserved for browser/client restart or reload |
 | F6 | Toggle Arrange for the selected screen (move / rotate / roll / scale / resize) |

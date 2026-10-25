@@ -178,6 +178,8 @@ tests run config-isolated for the same reason). Once running, the file is
 the live control surface: editing it overrides the startup state. Session
 tweaks made inside the apps (F4 neon cycle, Garage3D Space pause, +/- FOV)
 last until the next file edit, then the file wins for the keys it sets.
+The Meta+H / dash HUD button toggle is session-only: it never writes the file,
+and a later config edit hot-reloads `[cockpit] hud` back over the runtime choice.
 
 ### What's live vs restart
 
@@ -249,7 +251,7 @@ language = auto       # auto | en | ru | any tag with an installed catalog (live
 
 [cockpit]
 neon = 0              # 0 Ultraviolet, 1 Ice Blue, 2 Acid Lime
-hud = true            # HUD overlay visible
+hud = true            # HUD overlay visible (Meta+H / dash HUD button at runtime)
 background = 3d       # 3d | texture (flat poster) | none
 
 [session]

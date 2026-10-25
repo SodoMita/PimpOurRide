@@ -310,6 +310,45 @@ static void draw_quit_button(Server *s){
  glBegin(GL_LINES);glVertex3f(0,.010f,.018f);glVertex3f(0,.079f,.018f);glEnd();
  glLineWidth(1.f);glEnable(GL_LIGHTING);glPopMatrix();
 }
+/* HUD on/off medallion: same sloped-dash hardware as the cog and EXIT
+ * switch. Teal ring and white corner brackets mean the 2D overlay is up;
+ * dim grey with a red slash means it is hidden. Geometry is plane-local. */
+static void draw_hud_button(Server *s){
+ bool on=s->hud_visible,hot=s->hud_hover;
+ float tone=hot?1.f:.78f;
+ plane_begin(s->hud_button);
+ color(.035,.030,.045);cylinder(v3(0,0,-.030),v3(0,0,-.006),.108,48); /* recessed bezel */
+ color(.18,.19,.24);torus(.108,.008,64,12);                               /* dark outer rim */
+ color(on?.20f*tone:.32f*tone,on?.88f*tone:.34f*tone,on?.78f*tone:.38f*tone); /* teal / grey rim */
+ torus(.099,.011,64,12);
+ color(on?.035f:.10f,on?.13f:.105f,on?.12f:.125f);                        /* dark cap */
+ cylinder(v3(0,0,-.004),v3(0,0,.014),.088,48);
+ if(hot){
+  glDisable(GL_LIGHTING);glEnable(GL_BLEND);glBlendFunc(GL_SRC_ALPHA,GL_ONE);glDepthMask(GL_FALSE);
+  if(on)glColor4f(.30f,1.f,.88f,.16f);else glColor4f(.72f,.76f,.82f,.11f);
+  torus(.104f,.013f,64,10);
+  glDepthMask(GL_TRUE);glDisable(GL_BLEND);glEnable(GL_LIGHTING);
+ }
+ /* Four corner brackets + center dot: a viewfinder/HUD glyph. */
+ glDisable(GL_LIGHTING);
+ if(on)color(.88f,.99f,1.f);else color(.57f,.60f,.66f);
+ glLineWidth(hot?3.2f:2.6f);
+ const float o=.054f,l=.021f,z=.018f;
+ glBegin(GL_LINES);
+ glVertex3f(-o,o-l,z);glVertex3f(-o,o,z);glVertex3f(-o,o,z);glVertex3f(-o+l,o,z);
+ glVertex3f(o-l,o,z);glVertex3f(o,o,z);glVertex3f(o,o,z);glVertex3f(o,o-l,z);
+ glVertex3f(-o,-o,z);glVertex3f(-o,-o+l,z);glVertex3f(-o,-o+l,z);glVertex3f(-o+l,-o+l,z);
+ glVertex3f(o,-o+l,z);glVertex3f(o,-o,z);glVertex3f(o,-o+l,z);glVertex3f(o-l,-o+l,z);
+ glEnd();
+ glLineWidth(1.f);
+ quad(-.007,-.007,.014,.014,.019f);
+ if(!on){
+  color(.93f,.22f,.18f);glLineWidth(hot?3.4f:2.8f);
+  glBegin(GL_LINES);glVertex3f(-.052f,-.052f,.020f);glVertex3f(.052f,.052f,.020f);glEnd();
+  glLineWidth(1.f);
+ }
+ glEnable(GL_LIGHTING);glPopMatrix();
+}
 typedef struct {float scale,w,h,z0,zstep;int layer;} DrawSurface;
 static void transformed_uv(int transform,float x,float y,float *u,float *v){float a=x,b=y;switch(transform&3){case 1:a=1-y;b=x;break;case 2:a=1-x;b=1-y;break;case 3:a=y;b=1-x;break;}if(transform>=4)a=1-a;*u=a;*v=b;}
 static void draw_app_surface(Surface *p,int sx,int sy,void *data){
@@ -599,6 +638,10 @@ void scene_init(Server *s){
   * its normal. The .22 m disc is fully in front of the console frame instead
   * of peeking out between the wheel and the console corner. */
  s->quit_button=(Plane){.center={-.05f,-.200f,.850f-VEHICLE_COCKPIT_FORWARD},.width=.22f,.height=.22f,.yaw=0,.pitch=-61};
+ /* HUD switch on the same lower slope, right of the EXIT button and below the
+  * Launch Control bay, clear of the wheel pick disc and visible in the default
+  * 1600x1000 driver view. */
+ s->hud_button=(Plane){.center={.200f,-.200f,.850f-VEHICLE_COCKPIT_FORWARD},.width=.22f,.height=.22f,.yaw=0,.pitch=-61};
 }
 typedef struct {Vec3 eye,forward,right,up;} SceneCamera;
 static SceneCamera scene_camera(Server *s){
@@ -788,7 +831,7 @@ void scene_render(Server *s){
   if(seat_list){glNewList(seat_list,GL_COMPILE);vehicle_seats_render();glEndList();}
  }
  if(seat_list)glCallList(seat_list);else vehicle_seats_render();
- dashboard(s);draw_buttons(s);draw_cog(s);draw_quit_button(s);
+ dashboard(s);draw_buttons(s);draw_cog(s);draw_quit_button(s);draw_hud_button(s);
  for(int i=0;i<CD_MAX_MONITORS;i++)draw_monitor(s,i);
  steering_wheel(s);
  vehicle_render(s,s->camera_mode==VEHICLE_CAMERA_SYSTEMS);
@@ -842,6 +885,8 @@ Hit scene_pick(Server *s,float x,float y,bool grab){
  if(plane_hit(s->cog,s->eye,ray,&u,&v,&d,false)&&d<best.distance){float du=u-.5f,dv=v-.5f;if(du*du+dv*dv<=.25f)best=(Hit){.kind=HIT_COG,.distance=d};}
  /* EXIT switch uses the same circular radial mask as the cog. */
  if(plane_hit(s->quit_button,s->eye,ray,&u,&v,&d,false)&&d<best.distance){float du=u-.5f,dv=v-.5f;if(du*du+dv*dv<=.25f)best=(Hit){.kind=HIT_QUIT,.distance=d};}
+ /* HUD switch follows the same circular radial mask. */
+ if(plane_hit(s->hud_button,s->eye,ray,&u,&v,&d,false)&&d<best.distance){float du=u-.5f,dv=v-.5f;if(du*du+dv*dv<=.25f)best=(Hit){.kind=HIT_HUD,.distance=d};}
  Plane wheel=steering_plane();
  if(plane_hit(wheel,s->eye,ray,&u,&v,&d,false)&&d<best.distance){
   float dx=(u-.5f)*wheel.width,dy=(v-.5f)*wheel.height;

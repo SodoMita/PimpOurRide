@@ -65,6 +65,7 @@ static void sdl_touch_chrome_down(Server *s,SdlTouchFinger *f,Hit hit,int x,int 
  if(hit.kind==HIT_CLOSE){server_close_surface(hit.surface);return;}
  if(hit.kind==HIT_COG){app_open_settings(s);return;}
  if(hit.kind==HIT_QUIT){app_request_quit(s,false);return;}
+ if(hit.kind==HIT_HUD){app_toggle_hud(s);return;}
  /* Empty cockpit: one-finger drag looks around, matching middle-drag. */
  f->route=CD_TOUCH_ROUTE_LOOK;server_pointer_motion(s,(Hit){0},now);
 }
@@ -158,7 +159,7 @@ void backend_sdl_poll(Server *s){
    if(s->arrange_mode){app_arrange_pointer_button(s,hit,button,down);continue;}
    if(s->frame_dragging||hit.kind==HIT_FRAME||hit.kind==HIT_HANDLES_BUTTON){app_frame_pointer_button(s,hit,button,down);continue;}
    server_pointer_motion(s,hit,now);
-   if(down&&e.button.button==SDL_BUTTON_LEFT){if(hit.kind==HIT_BUTTON){app_launch(s,hit.button,(SDL_GetModState()&KMOD_SHIFT)!=0);continue;}if(hit.kind==HIT_CLOSE){server_close_surface(hit.surface);continue;}if(hit.kind==HIT_COG){app_open_settings(s);continue;}if(hit.kind==HIT_QUIT){app_request_quit(s,false);continue;}}
+   if(down&&e.button.button==SDL_BUTTON_LEFT){if(hit.kind==HIT_BUTTON){app_launch(s,hit.button,(SDL_GetModState()&KMOD_SHIFT)!=0);continue;}if(hit.kind==HIT_CLOSE){server_close_surface(hit.surface);continue;}if(hit.kind==HIT_COG){app_open_settings(s);continue;}if(hit.kind==HIT_QUIT){app_request_quit(s,false);continue;}if(hit.kind==HIT_HUD){app_toggle_hud(s);continue;}}
    if(down&&e.button.button==SDL_BUTTON_RIGHT&&hit.kind==HIT_BUTTON){app_open_settings_slot(s,hit.button,true);continue;}
    if(hit.kind==HIT_APP||s->pointer_grab)server_pointer_button(s,button,down,now);
   }else if(e.type==SDL_MOUSEWHEEL){if(e.wheel.which==SDL_TOUCH_MOUSEID)continue;if(s->arrange_mode)app_arrange_pointer_wheel(s,e.wheel.preciseY);else{Hit hit=scene_pick(s,s->mouse_x,s->mouse_y,false);if(hit.kind==HIT_APP)server_pointer_axis(s,e.wheel.preciseX,e.wheel.preciseY,now);else s->target_fov=clampf(s->target_fov-e.wheel.preciseY*2,CD_DRIVER_FOV_MIN,CD_DRIVER_SCROLL_FOV_MAX);}}

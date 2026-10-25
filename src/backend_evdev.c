@@ -334,6 +334,10 @@ static void evdev_chrome_down(Server *s, EvdevDevice *d, EvdevFinger *f, Hit hit
         app_request_quit(s, false);
         return;
     }
+    if (hit.kind == HIT_HUD) {
+        app_toggle_hud(s);
+        return;
+    }
     f->route = CD_TOUCH_ROUTE_LOOK;
     server_pointer_motion(s, (Hit){0}, time);
 }
@@ -616,6 +620,10 @@ static void evdev_dispatch_pointer_buttons(Server *s, EvdevDevice *d, uint32_t t
             }
             if (hit.kind == HIT_QUIT) {
                 app_request_quit(s, false);
+                continue;
+            }
+            if (hit.kind == HIT_HUD) {
+                app_toggle_hud(s);
                 continue;
             }
         }
