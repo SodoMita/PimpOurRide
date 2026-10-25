@@ -21,7 +21,7 @@ void app_release_input(Server *s,uint32_t time){
  /* Drive keys are compositor-local and therefore are not present in the
   * Wayland seat's s->keys[] bitmap. Both sets must be released on focus loss,
   * otherwise switching windows could leave a client key or motor latched. */
- server_release_keys(s,time);clear_drive_controls(s);s->door_shortcut_down=false;scene_wheel_cancel(s);
+ server_touch_cancel(s);server_release_keys(s,time);clear_drive_controls(s);s->door_shortcut_down=false;scene_wheel_cancel(s);
 }
 /* ---- persistent configuration (chromedrive.conf, edited by the GUI) ----
  * Precedence: built-in defaults < config file < command line. The file is
@@ -250,6 +250,7 @@ static void arrange_toggle(Server *s){
  if(s->held_buttons>0||s->frame_dragging){app_notice(s,"Arrange: release the pointer button first");return;}
  int slot=arrange_find_slot(s);
  if(slot<0){app_notice(s,"Arrange: no window is open");return;}
+ server_touch_cancel(s); /* Arrange is modal: do not leave app contacts live */
  s->arrange_mode=true;s->arrange_dragging=false;s->arrange_drag_button=0;s->arrange_handle=CD_HANDLE_NONE;s->arrange_handles=false;
  arrange_set_target(s,slot,true);
 }
@@ -283,6 +284,7 @@ static bool arrange_handles_button(Server *s,int slot){
  bool same=arrange_valid(s)&&s->arrange_slot==slot;
  if(!s->arrange_mode){
   if(s->held_buttons>0||s->frame_dragging){app_notice(s,"Arrange: release the pointer button first");return false;}
+  server_touch_cancel(s); /* Arrange is modal: do not leave app contacts live */
   s->arrange_mode=true;
  }
  if(!arrange_set_target(s,slot,false))return false;

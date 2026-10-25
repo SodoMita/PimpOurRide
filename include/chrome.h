@@ -95,15 +95,27 @@ enum { CD_HANDLE_NONE=0,CD_HANDLE_MOVE,CD_HANDLE_AXIS_X,CD_HANDLE_AXIS_Y,CD_HAND
  CD_HANDLE_RESIZE_SE,CD_HANDLE_RESIZE_S,CD_HANDLE_RESIZE_SW,CD_HANDLE_RESIZE_W };
 typedef struct { HitKind kind;Surface *surface;int slot,button,handle;float x,y,distance; } Hit;
 typedef struct { uint32_t format;uint64_t modifiers[CD_DMABUF_MAX_MODIFIERS];int modifier_count; } DmabufFormat;
+#define CD_MAX_TOUCH_POINTS 10
+/* One active wl_touch contact. The surface is the exact child surface that
+ * received wl_touch.down; motion/up keep going there (implicit grab) until
+ * up/cancel, with coordinates converted through scene_pick_surface(). */
+typedef struct { bool active;int32_t id;Surface *surface;float x,y; } CdTouchPoint;
+/* SDL backend finger routing: app contacts become wl_touch points, while a
+ * single primary finger may drive cockpit chrome as the left pointer. */
+enum { CD_TOUCH_ROUTE_NONE=0,CD_TOUCH_ROUTE_APP,CD_TOUCH_ROUTE_CHROME,
+ CD_TOUCH_ROUTE_POINTER,CD_TOUCH_ROUTE_WHEEL,CD_TOUCH_ROUTE_LOOK };
+typedef struct { bool active;int64_t device_id,finger_id;int32_t id;int route,last_x,last_y; } SdlTouchFinger;
 struct Server {
  struct wl_display *display;struct wl_event_loop *loop;
- struct wl_list surfaces,pointers,keyboards,outputs,data_devices;
+ struct wl_list surfaces,pointers,keyboards,touch_resources,outputs,data_devices;
  struct wl_global *output_globals[CD_MAX_MONITORS];
  struct { Server *server;int index; } output_info[CD_MAX_MONITORS];
  struct xkb_context *xkb_context;struct xkb_keymap *keymap;struct xkb_state *xkb_state;
  int keymap_fd;uint32_t keymap_size;bool keys[256];
  Surface *keyboard_focus,*pointer_focus,*pointer_grab;int held_buttons;uint32_t held_button_mask;
  float pointer_sx,pointer_sy;int mouse_x,mouse_y;
+ bool touch_available;CdTouchPoint touch_points[CD_MAX_TOUCH_POINTS];
+ SdlTouchFinger sdl_touch[CD_MAX_TOUCH_POINTS];int sdl_touch_chrome_id;
  Monitor monitors[CD_MAX_MONITORS];DashButton buttons[6];
  /* The settings cog: a slowly spinning 3D gear medallioned into the sloped
   * dash between wheel and console (scene.c draw_cog). Clicking it opens
@@ -167,6 +179,10 @@ void server_pointer_motion(Server *s,Hit hit,uint32_t time);
 void server_pointer_button(Server *s,uint32_t button,bool down,uint32_t time);
 void server_release_pointer_buttons(Server *s,uint32_t time);
 void server_pointer_axis(Server *s,double dx,double dy,uint32_t time);
+bool server_touch_down(Server *s,Hit hit,int32_t id,uint32_t time);
+bool server_touch_motion(Server *s,int32_t id,float x,float y,uint32_t time);
+bool server_touch_up(Server *s,int32_t id,uint32_t time);
+void server_touch_cancel(Server *s);
 void server_key(Server *s,uint32_t key,bool down,uint32_t time);
 void server_release_keys(Server *s,uint32_t time);
 void server_focus(Server *s,Surface *surface);
@@ -181,6 +197,7 @@ void scene_render(Server *s);
 void scene_update_mounts(Server *s);
 void scene_finish(Server *s);
 Hit scene_pick(Server *s,float x,float y,bool grab);
+Hit scene_pick_surface(Server *s,Surface *surface,float x,float y);
 void scene_focus_monitor(Server *s,int slot,bool zoom);
 void scene_monitor_reset(Server *s,int slot);
 void scene_monitor_translate(Server *s,int slot,float right,float up,float toward_eye);

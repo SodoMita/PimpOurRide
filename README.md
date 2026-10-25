@@ -25,7 +25,8 @@ lives behind the steering wheel, with a transparent live HUD on the windshield.
 See [`docs/vehicle-and-remote.md`](docs/vehicle-and-remote.md).
 
 This is a real compositor: it implements `wl_compositor`, `wl_subcompositor`,
-`xdg-shell` (toplevels + popups), `wl_seat` (pointer + xkbcommon keyboard),
+`xdg-shell` (toplevels + popups), `wl_seat` (pointer + xkbcommon keyboard,
+plus SDL touchscreen `wl_touch` in `--windowed` mode),
 `wl_data_device_manager` (in-session clipboard), `zxdg_decoration_manager_v1`,
 `zwp_linux_dmabuf_v1` (GPU zero-copy buffer import), and one `wl_output`
 global per virtual monitor. Any well-behaved Wayland client can connect to it
@@ -59,7 +60,9 @@ It runs two ways:
   (`--windowed`) or headless-with-VNC-output (`--headless`); eight general app
   mounts plus one dedicated instrument-cluster output; buffers capped at
   16 MiB/64 MiB total per surface for safety;
-  single input seat, no touch/tablet.
+  single input seat and no tablet; touchscreen `wl_touch` is fed by SDL
+  finger events in `--windowed` mode, while the headless RFB/VNC path remains
+  a single pointer because RFB has no multitouch events to forward.
 - The "Audio" app is explicitly a UI/interaction demo — it does not play audio.
   The fixed instrument cluster is a real Wayland client showing shared EV
   telemetry. The separately launched `telemetry` demo mode reads real
@@ -152,10 +155,15 @@ make -C clients/garage3d smoke                        # headless weston pixel ch
 Architecture, the full Wayland surface lifecycle, and the frame-callback
 render loop are documented in
 [`docs/garage3d-architecture.md`](docs/garage3d-architecture.md).
-Note the touch asymmetry: the *client* implements `wl_touch` fully, but the
-ChromeDrive *compositor* does not yet advertise or forward touch (its seat is
-pointer+keyboard), so gestures work on touch-capable host compositors, not
-yet through ChromeDrive itself.
+Touch now works through ChromeDrive itself in `--windowed` mode: the SDL
+backend advertises `WL_SEAT_CAPABILITY_TOUCH`, ray-picks each finger through
+the same 3D monitor planes as the pointer, and forwards up to 10 contacts
+with stable IDs and `wl_touch.frame` grouping to clients that bind
+`wl_touch`. Clients that only bind `wl_pointer` receive the first app finger
+as a single left-pointer press/drag/release. The headless VNC/noVNC path is
+still pointer-only (RFB carries no multitouch), so Garage3D's pinch/pan
+gestures need `--windowed` on a touchscreen host or a touch-capable host
+compositor.
 
 ### Configuration: the launch-menu editor & settings GUI
 
@@ -242,6 +250,8 @@ reverse proxy and firewall before exposing them to an untrusted network.
 | Input | Action |
 |---|---|
 | Middle-drag (mouse or VNC) | Look around (first-person) |
+| Touch an app screen (`--windowed`) | Send real multi-touch to apps that bind `wl_touch`; pointer-only apps receive the first finger as a left-pointer press/drag/release |
+| One finger on cockpit chrome (`--windowed`) | Tap/drag the picked dashboard button, cog, close target, frame, Arrange handle or steering wheel; drag empty cockpit to look around |
 | Click a screen | Focus it — keyboard/pointer now go to that app |
 | Drag a monitor titlebar/frame | Move that whole window/monitor in its plane (KWin-style) |
 | Click **HANDLES** on a titlebar | Enter Arrange for that window and show its move/rotate/scale/resize gizmo |
@@ -401,8 +411,9 @@ tools/viewer/                 static noVNC remote desktop + safe hold-to-drive c
 - No layer-shell (so panels/launchers built for wlroots-style shells won't run).
 - dma-buf import only works on `--headless` (EGL); not on `--windowed` (GLX) —
   by design, see "GPU / dma-buf" above.
-- Single input seat, no touch, no tablet *in the compositor* (the Garage3D
-  client implements `wl_touch` gestures, but ChromeDrive does not yet
-  advertise/forward touch to clients — see “Garage3D” above).
+- Single input seat and no tablet. Touchscreen `wl_touch` is available from
+  SDL finger events in `--windowed` mode (including Garage3D gestures);
+  headless RFB/VNC remains a single-pointer protocol with no multitouch to
+  forward.
 - Eight app mounts plus one cluster output are fixed at compile time
   (`CD_APP_BAYS`, `CD_MAX_MONITORS`).
