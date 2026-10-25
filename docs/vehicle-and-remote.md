@@ -192,8 +192,10 @@ not on a public through-road. Three connected streets and two cross streets join
 roofs, service benches and clear drive-through lanes. Core geometry is cached in
 a GL display list; nearby streamed chunks are emitted from the same data used by
 collision and garage lookup. Vehicle-relative rain is suppressed inside garages
-and tunnels. Eight moving hover cars use the authoritative fixed-step simulation
-clock for rendering, prediction and collision.
+and tunnels. Eight moving cars use the authoritative fixed-step simulation clock
+for rendering, prediction and collision. Moving and parked cars share seeded
+Catmull–Rom body/cabin lofts, with both wheeled and wheel-free variants; tyre
+assemblies meet the road while hover variants retain their plasma pods.
 
 Meta+A toggles autopilot in either input-ownership mode. Engagement requests
 both doors to close and holds the parking brake until they have physically
@@ -210,7 +212,9 @@ fixed-step tests require every destination, actual parked rest and zero contacts
 Ambient traffic follows deterministic closed-form routes on that same
 clock; it is not a substitute for the main car's simulated controls. Rendering,
 predictive yielding/braking, and collision fallback use identical traffic poses
-and body dimensions. Crossing reservations protect corners and Home exits;
+and per-seed body envelopes (including spline, wheel and lamp overhang). Streamed
+parked solids likewise carry the exact renderer seed and matching footprint.
+Crossing reservations protect corners and Home exits;
 last-resort contact resolution remains enabled rather than hiding traffic.
 
 In Drive mode, pressing a driving key immediately disengages autopilot and

@@ -82,18 +82,20 @@ CityTrafficCar city_traffic_at(int index,double time){
  const double span_x=300.0,span_z=64.0,perimeter=2.0*(span_x+span_z),speed=6.0;
  double d=fmod(time*speed+index*perimeter/CITY_TRAFFIC_COUNT,perimeter);
  if(d<0)d+=perimeter;
- CityTrafficCar car={.speed=(float)speed};
+ CityTrafficCar car={.speed=(float)speed,
+  .model=city_vehicle_model(0xc0010000u+(uint32_t)index)};
  if(d<span_x){car.position=v3(-150.0f+(float)d,0,-60.0f);car.yaw=-90;}
  else if(d<span_x+span_z){car.position=v3(150.0f,0,-60.0f-(float)(d-span_x));car.yaw=0;}
  else if(d<2*span_x+span_z){car.position=v3(150.0f-(float)(d-span_x-span_z),0,-124.0f);car.yaw=90;}
  else{car.position=v3(-150.0f,0,-124.0f+(float)(d-2*span_x-span_z));car.yaw=180;}
  return car;
 }
-Vec3 city_traffic_collision_extents(float yaw){
- float c=fabsf(cosf(yaw*(3.14159265358979323846f/180.0f)));
- float s=fabsf(sinf(yaw*(3.14159265358979323846f/180.0f)));
- return v3(c*CITY_TRAFFIC_HALF_WIDTH+s*CITY_TRAFFIC_HALF_LENGTH,0,
-           s*CITY_TRAFFIC_HALF_WIDTH+c*CITY_TRAFFIC_HALF_LENGTH);
+Vec3 city_traffic_collision_extents(CityTrafficCar car){
+ float width,length;city_vehicle_dimensions(car.model,&width,&length);
+ float hw=width*.5f,hl=length*.5f;
+ float c=fabsf(cosf(car.yaw*(3.14159265358979323846f/180.0f)));
+ float s=fabsf(sinf(car.yaw*(3.14159265358979323846f/180.0f)));
+ return v3(c*hw+s*hl,0,s*hw+c*hl);
 }
 
 int city_building_count(void){return (int)(sizeof(buildings)/sizeof(buildings[0]));}
@@ -175,7 +177,7 @@ static RouteProbe route_probe(const Vehicle *v,int waypoint,float travel,bool tu
  return p;
 }
 static bool traffic_overlap(Vec3 p,float yaw,bool turning,CityTrafficCar car,float margin){
- Vec3 a=vehicle_collision_extents(yaw),b=city_traffic_collision_extents(car.yaw);
+ Vec3 a=vehicle_collision_extents(yaw),b=city_traffic_collision_extents(car);
  if(turning){float swept=fmaxf(a.x,a.z);a.x=a.z=swept;}
  return fabsf(p.x-car.position.x)<a.x+b.x+margin&&
         fabsf(p.z-car.position.z)<a.z+b.z+margin;
@@ -407,7 +409,7 @@ void city_constrain_vehicle(Vehicle *v,Vec3 previous){
   * is the final guard against a moving car entering an already safe pose. */
  for(int i=0;i<CITY_TRAFFIC_COUNT;i++){
   CityTrafficCar car=city_traffic_at(i,v->simulation_time);
-  Vec3 e=city_traffic_collision_extents(car.yaw);
+  Vec3 e=city_traffic_collision_extents(car);
   Obstacle o={car.position.x,car.position.z,e.x*2,e.z*2};
   if(collide_obstacle(v,previous,extent,o))return;
  }

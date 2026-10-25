@@ -109,8 +109,44 @@ float city_road_width(CityRoadType type){
  return 14.0f;
 }
 
+static float vehicle_random(uint32_t seed,int salt){
+ return (stream_hash((int)(seed&0xffffu),(int)(seed>>16),salt)&0x00ffffffu)/16777216.0f;
+}
+CityVehicleModel city_vehicle_model(uint32_t seed){
+ CityVehicleModel m={
+  .width=2.65f+.40f*vehicle_random(seed,301),
+  .length=6.15f+.40f*vehicle_random(seed,303),
+  .height=1.20f+.40f*vehicle_random(seed,307),
+  .cabin_height=.70f+.25f*vehicle_random(seed,311),
+  .front_taper=.20f+.20f*vehicle_random(seed,313),
+  .rear_taper=.28f+.22f*vehicle_random(seed,317),
+  .wheels=vehicle_random(seed,331)>.47f
+ };
+ m.color[0]=.12f+.58f*vehicle_random(seed,337);
+ m.color[1]=.10f+.48f*vehicle_random(seed,347);
+ m.color[2]=.22f+.60f*vehicle_random(seed,349);
+ return m;
+}
+void city_vehicle_dimensions(CityVehicleModel m,float *width,float *length){
+ /* Tyres extend 0.20 m beyond the nominal body width. The extra 0.05 m
+  * covers the small Catmull-Rom shoulder overshoot; wheel-free cars need only
+  * that spline allowance. Attached lamp lenses reach 0.049 m past each end.
+  * Thus the physical box follows each visible variant within a few cm. */
+ if(width)*width=m.width+(m.wheels?.25f:.10f);
+ if(length)*length=m.length+.10f;
+}
+uint32_t city_parked_vehicle_seed(CityChunk c,int index){
+ return ((unsigned)c.x*97u+(unsigned)c.z*131u+(unsigned)index*17u)&0x7fffffffu;
+}
+
 static CitySolid solid(float x,float z,float w,float d,float h,int style,CitySolidKind kind){
  CitySolid s={.x=x,.z=z,.width=w,.depth=d,.height=h,.style=style,.kind=kind};return s;
+}
+static CitySolid parked_car(CityChunk c,int index,float x,float z,int style){
+ uint32_t seed=city_parked_vehicle_seed(c,index);float width,length;
+ city_vehicle_dimensions(city_vehicle_model(seed),&width,&length);
+ CitySolid s=solid(x,z,width,length,1.5f,style,CITY_SOLID_PARKED_CAR);
+ s.vehicle_seed=seed;return s;
 }
 int city_chunk_solid_count(CityChunk c){
  if(city_stream_chunk_is_core(c))return 0;
@@ -137,14 +173,14 @@ CitySolid city_chunk_solid(CityChunk c,int i){
  if(c.feature==CITY_FEATURE_PARKING){
   if(i==0)return solid(ox+21,oz+57,10,10,5.5f,style,CITY_SOLID_KIOSK);
   static const float cars[4][2]={{28,26},{41,26},{54,26},{34,45}};
-  return solid(ox+cars[i-1][0],oz+cars[i-1][1],3.4f,6.8f,1.5f,style,CITY_SOLID_PARKED_CAR);
+  return parked_car(c,i,ox+cars[i-1][0],oz+cars[i-1][1],style);
  }
  if(c.feature==CITY_FEATURE_PARK){
   float x=22+(i%3)*18,z=24+(i/3)*16;
   return solid(ox+x,oz+z,1.2f,1.2f,5.0f+2.0f*stream_random(c.x,c.z,i+173),style,CITY_SOLID_TREE);
  }
  if(c.feature==CITY_FEATURE_GARAGES)
-  return solid(ox+40,oz+(i==0?20:60),3.4f,6.8f,1.5f,style,CITY_SOLID_PARKED_CAR);
+  return parked_car(c,i,ox+40,oz+(i==0?20:60),style);
  if(c.district==CITY_DISTRICT_DOWNTOWN){
   float height=48+52*stream_random(c.x,c.z,i+211);
   return solid(ox+(i==0?28:52),oz+40,16,30,height,style,CITY_SOLID_BUILDING);

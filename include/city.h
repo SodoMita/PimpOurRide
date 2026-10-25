@@ -2,6 +2,7 @@
 #define CD_CITY_H
 
 #include "vehicle.h"
+#include <stdint.h>
 
 /* One data model owns the visible city and its physical boundaries. Renderer
  * code iterates these same buildings/garages; it does not keep a second set of
@@ -58,6 +59,8 @@ typedef struct {
  float x,z,width,depth,height;
  int style;
  CitySolidKind kind;
+ /* Physical parked cars carry the exact seed used by the shared renderer. */
+ uint32_t vehicle_seed;
 } CitySolid;
 typedef struct {
  int x,z;
@@ -89,19 +92,31 @@ int city_campus_garage_count(void);
 CityGarage city_campus_garage(int index);
 
 /* Ambient cars are part of the simulation, not renderer-only decoration.
- * These dimensions cover the visible body and lamps; poses are evaluated
- * from the same fixed-step clock by rendering, control and collision. */
+ * These are upper bounds, not a deliberately oversized collision box: the
+ * per-model helper below follows the visible spline, wheel and lamp extents. */
 #define CITY_TRAFFIC_COUNT 8
 #define CITY_TRAFFIC_HALF_WIDTH 1.75f
-#define CITY_TRAFFIC_HALF_LENGTH 3.40f /* includes the front/rear lamp lenses at +/-3.37 m */
+#define CITY_TRAFFIC_HALF_LENGTH 3.40f
+/* Seeded variants are shared by ambient and streamed parked cars. The pure
+ * dimension helper also owns their physical footprint, so prediction and
+ * collision use the same model as the renderer without any GL dependency. */
+typedef struct {
+ float width,length,height,cabin_height,front_taper,rear_taper;
+ float color[3];
+ bool wheels;
+} CityVehicleModel;
+CityVehicleModel city_vehicle_model(uint32_t seed);
+void city_vehicle_dimensions(CityVehicleModel model,float *width,float *length);
+uint32_t city_parked_vehicle_seed(CityChunk chunk,int index);
 typedef struct {
  Vec3 position;
  float yaw,speed;
+ CityVehicleModel model;
 } CityTrafficCar;
 
 int city_traffic_count(void);
 CityTrafficCar city_traffic_at(int index,double simulation_time);
-Vec3 city_traffic_collision_extents(float yaw_degrees);
+Vec3 city_traffic_collision_extents(CityTrafficCar car);
 
 int city_building_count(void);
 CityBuilding city_building(int index);

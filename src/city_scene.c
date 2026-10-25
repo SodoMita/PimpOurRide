@@ -7,6 +7,7 @@
 #define CITY_PI 3.14159265358979323846f
 
 static float city_hash(int n){float x=sinf((float)n*127.1f)*43758.5453f;return x-floorf(x);}
+static void city_spline_vehicle(CityVehicleModel m);
 static void city_color(float r,float g,float b){glColor3f(r,g,b);}
 static void city_box(float x,float y,float z,float w,float h,float d){
  float a=x-w/2,b=x+w/2,c=y-h/2,e=y+h/2,f=z-d/2,g=z+d/2;
@@ -21,6 +22,15 @@ static void city_box(float x,float y,float z,float w,float h,float d){
 static void city_cylinder(Vec3 a,Vec3 b,float radius,int slices){
  Vec3 dir=vnorm(vsub(b,a)),u=vnorm(vcross(dir,fabsf(dir.y)>.9?v3(1,0,0):v3(0,1,0))),v=vcross(dir,u);
  glBegin(GL_QUAD_STRIP);for(int i=0;i<=slices;i++){float t=i*2*CITY_PI/slices;Vec3 n=vadd(vmul(u,cosf(t)),vmul(v,sinf(t))),pa=vadd(a,vmul(n,radius)),pb=vadd(b,vmul(n,radius));glNormal3f(n.x,n.y,n.z);glVertex3f(pa.x,pa.y,pa.z);glVertex3f(pb.x,pb.y,pb.z);}glEnd();
+}
+static void city_capped_cylinder(Vec3 a,Vec3 b,float radius,int slices){
+ /* Tyres are solid assemblies, not open tubes when seen from either side. */
+ city_cylinder(a,b,radius,slices);
+ Vec3 dir=vnorm(vsub(b,a)),u=vnorm(vcross(dir,fabsf(dir.y)>.9?v3(1,0,0):v3(0,1,0))),v=vcross(dir,u);
+ glBegin(GL_TRIANGLE_FAN);glNormal3f(-dir.x,-dir.y,-dir.z);glVertex3f(a.x,a.y,a.z);
+ for(int i=slices;i>=0;i--){float t=i*2*CITY_PI/slices;Vec3 n=vadd(vmul(u,cosf(t)),vmul(v,sinf(t))),p=vadd(a,vmul(n,radius));glVertex3f(p.x,p.y,p.z);}glEnd();
+ glBegin(GL_TRIANGLE_FAN);glNormal3f(dir.x,dir.y,dir.z);glVertex3f(b.x,b.y,b.z);
+ for(int i=0;i<=slices;i++){float t=i*2*CITY_PI/slices;Vec3 n=vadd(vmul(u,cosf(t)),vmul(v,sinf(t))),p=vadd(b,vmul(n,radius));glVertex3f(p.x,p.y,p.z);}glEnd();
 }
 static void city_glow(Vec3 a,Vec3 b,float radius,float r,float g,float bl){
  glDisable(GL_LIGHTING);city_color(r,g,bl);city_cylinder(a,b,radius,8);glEnable(GL_BLEND);glBlendFunc(GL_SRC_ALPHA,GL_ONE);glDepthMask(GL_FALSE);
@@ -303,9 +313,11 @@ static void city_stream_solid(Server *s,CityChunk chunk,CitySolid solid,int inde
   city_color(.08,.32,.46);city_cylinder(v3(solid.x,-.35f,solid.z),v3(solid.x,-.23f,solid.z),solid.width*.42f,16);
   city_glow(v3(solid.x,-.15f,solid.z),v3(solid.x,2.2f,solid.z),.09f,.25,.65,1);break;
  case CITY_SOLID_PARKED_CAR:{
-  float hue=city_hash(key);city_color(.18+.55*hue,.16+.35*(1-hue),.28+.45*hue);
-  city_box(solid.x,-.72f,solid.z,solid.width,.85f,solid.depth);
-  city_color(.035,.055,.085);city_box(solid.x,-.12f,solid.z+.15f,solid.width*.78f,.55f,solid.depth*.52f);break;}
+  CityVehicleModel model=city_vehicle_model(solid.vehicle_seed);
+  /* Tyre bottoms meet the -1.43 m court surface; hover pods keep their gap. */
+  glPushMatrix();glTranslatef(solid.x,model.wheels?-.07f:-.12f,solid.z);
+  if(solid.vehicle_seed&1)glRotatef(180,0,1,0);
+  city_spline_vehicle(model);glPopMatrix();break;}
  case CITY_SOLID_TREE:
   city_color(.20,.12,.065);city_cylinder(v3(solid.x,-1.45f,solid.z),v3(solid.x,1.85f,solid.z),.30f,7);
   city_color(.07+.05f*city_hash(key),.24+.12f*city_hash(key+2),.10);city_cylinder(v3(solid.x,1.2f,solid.z),v3(solid.x,5.4f,solid.z),2.4f+.6f*city_hash(key+4),8);break;
@@ -341,16 +353,83 @@ static void city_stream(Server *s){
  }
 }
 
+static float city_spline_series(const float *v,int count,int segment,float t){
+ int i1=segment,i2=segment+1,i0=i1>0?i1-1:0,i3=i2+1<count?i2+1:count-1;
+ return vehicle_catmull_rom(v[i0],v[i1],v[i2],v[i3],t);
+}
+static Vec3 city_ring_center(const Vec3 ring[8]){
+ Vec3 centre={0};for(int i=0;i<8;i++)centre=vadd(centre,ring[i]);return vmul(centre,1.0f/8.0f);
+}
+static void city_spline_loft(const float *z,const float *width,const float *top,int count,float bottom){
+ /* Every longitudinal span is an actual Catmull-Rom evaluation, including
+  * tapered nose/tail stations. Closed end caps and outward quad normals keep
+  * the generated cars volumetric from every camera, not billboard shells. */
+ const int subdivisions=3,samples=(count-1)*subdivisions;
+ Vec3 previous[8],first[8],last[8];bool have_previous=false;
+ glBegin(GL_QUADS);
+ for(int sample=0;sample<=samples;sample++){
+  int segment=sample/subdivisions;if(segment>=count-1)segment=count-2;
+  float t=(float)(sample-segment*subdivisions)/subdivisions;
+  float zz=city_spline_series(z,count,segment,t),w=city_spline_series(width,count,segment,t);
+  float yy=city_spline_series(top,count,segment,t),shoulder=bottom+(yy-bottom)*.40f;
+  Vec3 ring[8]={
+   v3(-w*.75f,yy,zz),v3(0,yy+.08f,zz),v3(w*.75f,yy,zz),v3(w,shoulder,zz),
+   v3(w*.90f,bottom,zz),v3(0,bottom-.04f,zz),v3(-w*.90f,bottom,zz),v3(-w,shoulder,zz)
+  };
+  if(sample==0)memcpy(first,ring,sizeof(first));memcpy(last,ring,sizeof(last));
+  if(have_previous)for(int i=0;i<8;i++){
+   int j=(i+1)&7;Vec3 a=previous[i],b=ring[i],c=ring[j],d=previous[j];
+   Vec3 n=vnorm(vcross(vsub(b,a),vsub(d,a)));glNormal3f(n.x,n.y,n.z);
+   glVertex3f(a.x,a.y,a.z);glVertex3f(b.x,b.y,b.z);glVertex3f(c.x,c.y,c.z);glVertex3f(d.x,d.y,d.z);
+  }
+  memcpy(previous,ring,sizeof(previous));have_previous=true;
+ }
+ glEnd();
+ Vec3 centre=city_ring_center(first);glBegin(GL_TRIANGLE_FAN);glNormal3f(0,0,-1);
+ glVertex3f(centre.x,centre.y,centre.z);for(int i=0;i<=8;i++){Vec3 p=first[i&7];glVertex3f(p.x,p.y,p.z);}glEnd();
+ centre=city_ring_center(last);glBegin(GL_TRIANGLE_FAN);glNormal3f(0,0,1);
+ glVertex3f(centre.x,centre.y,centre.z);for(int i=8;i>=0;i--){Vec3 p=last[i&7];glVertex3f(p.x,p.y,p.z);}glEnd();
+}
+static void city_spline_vehicle(CityVehicleModel m){
+ GLboolean was_lit=glIsEnabled(GL_LIGHTING);
+ float hl=m.length*.5f,hw=m.width*.5f;
+ float z[5]={-hl,-hl*.56f,0,hl*.54f,hl};
+ float width[5]={hw*m.front_taper,hw*.92f,hw,hw*.90f,hw*m.rear_taper};
+ const float profile[5]={.34f,.82f,1.0f,.84f,.36f};float top[5];
+ for(int i=0;i<5;i++)top[i]=-1.12f+m.height*profile[i];
+ city_color(m.color[0],m.color[1],m.color[2]);city_spline_loft(z,width,top,5,-1.12f);
+ float cabin_z[4]={-hl*.45f,-hl*.15f,hl*.30f,hl*.68f};
+ float cabin_w[4]={hw*.25f,hw*.68f,hw*.62f,hw*.25f};
+ const float cabin_profile[4]={.20f,1.0f,.90f,.20f};float cabin_top[4];
+ for(int i=0;i<4;i++)cabin_top[i]=-.12f+m.cabin_height*cabin_profile[i];
+ city_color(.025f+m.color[0]*.055f,.04f+m.color[1]*.07f,.075f+m.color[2]*.09f);
+ city_spline_loft(cabin_z,cabin_w,cabin_top,4,-.28f);
+ for(int side=-1;side<=1;side+=2)for(int end=-1;end<=1;end+=2){
+  float x=side*(hw-.02f),zz=end*hl*.58f;
+  if(m.wheels){
+   city_color(.018,.022,.028);city_capped_cylinder(v3(x-side*.12f,-.96f,zz),v3(x+side*.12f,-.96f,zz),.40f,12);
+   city_glow(v3(x-side*.125f,-.96f,zz),v3(x+side*.125f,-.96f,zz),.10f,.20,.28,.36);
+  }else{
+   float px=side*hw*.72f,pz=end*hl*.56f;
+   city_glow(v3(px,-1.20f,pz),v3(px,-.94f,pz),.16f,.22,.58,1);
+  }
+ }
+ /* Lamps sit on the actual tapered end caps, not on an invisible maximum-
+  * width rectangle beyond the nose. Their outer faces remain within the
+  * shared model.length+0.10 m physical envelope. */
+ glDisable(GL_LIGHTING);city_color(.65,.90,1);
+ city_box(0,top[0]-.12f,-hl-.024f,width[0]*1.40f,.14f,.05f);
+ city_color(1,.15,.25);city_box(0,top[4]-.12f,hl+.024f,width[4]*1.40f,.13f,.05f);
+ if(was_lit)glEnable(GL_LIGHTING);else glDisable(GL_LIGHTING);
+}
+
 static void city_traffic_car(int index,double time){
  CityTrafficCar car=city_traffic_at(index,time);
- glPushMatrix();glTranslatef(car.position.x,-.12f+sinf((float)time*2+index)*.035f,car.position.z);glRotatef(car.yaw,0,1,0);
- const float colors[][3]={{.12,.55,.72},{.62,.20,.75},{.78,.42,.12},{.18,.68,.42}};
- city_color(colors[index&3][0],colors[index&3][1],colors[index&3][2]);city_box(0,-.40f,0,CITY_TRAFFIC_HALF_WIDTH*2,.65f,(CITY_TRAFFIC_HALF_LENGTH-.10f)*2);
- city_color(.055,.075,.11);city_box(0,.12f,.25f,2.5f,.72f,3.3f);
- city_color(.02,.025,.035);city_box(0,.20f,-.45f,2.3f,.48f,1.7f);
- glDisable(GL_LIGHTING);city_color(.65,.90,1);city_box(0,-.30f,-3.34f,2.5f,.15f,.06f);city_color(1,.15,.25);city_box(0,-.30f,3.34f,2.3f,.13f,.06f);glEnable(GL_LIGHTING);
- for(int side=-1;side<=1;side+=2)for(int end=-1;end<=1;end+=2)city_glow(v3(side*1.35f,-.95f,end*2.2f),v3(side*1.35f,-.80f,end*2.2f),.16f,.25,.65,1);
- glPopMatrix();
+ CityVehicleModel model=car.model;
+ float bob=model.wheels?0:sinf((float)time*2+index)*.035f;
+ /* Wheeled traffic meets the -1.39 m outer-ring road; hover cars bob above. */
+ glPushMatrix();glTranslatef(car.position.x,(model.wheels?-.03f:-.12f)+bob,car.position.z);glRotatef(car.yaw,0,1,0);
+ city_spline_vehicle(model);glPopMatrix();
 }
 static void city_dynamic(Server *s){
  for(int i=0;i<city_traffic_count();i++)city_traffic_car(i,s->vehicle.simulation_time);

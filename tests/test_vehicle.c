@@ -82,13 +82,13 @@ static TourResult run_city_tour(double phase) {
 
 static int vehicle_traffic_overlap(const Vehicle *v, CityTrafficCar car) {
  Vec3 a = vehicle_collision_extents_for_vehicle(v);
- Vec3 b = city_traffic_collision_extents(car.yaw);
+ Vec3 b = city_traffic_collision_extents(car);
  return fabsf(v->position.x - car.position.x) < a.x + b.x - 1e-4f
         && fabsf(v->position.z - car.position.z) < a.z + b.z - 1e-4f;
 }
 
 static int traffic_box_overlap(CityTrafficCar car, float x, float z, float w, float d) {
- Vec3 e = city_traffic_collision_extents(car.yaw);
+ Vec3 e = city_traffic_collision_extents(car);
  return fabsf(car.position.x - x) < e.x + w * 0.5f
         && fabsf(car.position.z - z) < e.z + d * 0.5f;
 }
