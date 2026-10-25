@@ -17,6 +17,21 @@ typedef struct {
  const char *name;
 } CityGarage;
 
+/* Ambient cars are part of the simulation, not renderer-only decoration.
+ * These dimensions cover the visible body and lamps; poses are evaluated
+ * from the same fixed-step clock by rendering, control and collision. */
+#define CITY_TRAFFIC_COUNT 8
+#define CITY_TRAFFIC_HALF_WIDTH 1.75f
+#define CITY_TRAFFIC_HALF_LENGTH 3.40f /* includes the front/rear lamp lenses at +/-3.37 m */
+typedef struct {
+ Vec3 position;
+ float yaw,speed;
+} CityTrafficCar;
+
+int city_traffic_count(void);
+CityTrafficCar city_traffic_at(int index,double simulation_time);
+Vec3 city_traffic_collision_extents(float yaw_degrees);
+
 int city_building_count(void);
 CityBuilding city_building(int index);
 int city_garage_count(void);

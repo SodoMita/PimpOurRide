@@ -82,6 +82,12 @@ static void city_roads(void){
    city_color(.85,.68,.26);city_box(xs[i],-1.378,z,.18,.022,4.5f);
   }
  }
+ /* Ambient through-traffic owns the outer ring. These connectors keep every
+  * rendered traffic pose on an actual road and outside the service garages. */
+ for(int side=-1;side<=1;side+=2){
+  float x=side*150.0f;city_vertical_road(x,-124,-60);
+  for(float z=-120;z<-60;z+=10){city_color(.85,.68,.26);city_box(x,-1.378,z,.18,.022,4.5f);}
+ }
  for(int i=0;i<2;i++){
   city_color(.11,.13,.16);city_box(0,-1.49,zs[i],320,.10,24);
   city_color(.035,.042,.055);city_box(0,-1.42,zs[i],320,.08,16);
@@ -187,16 +193,10 @@ static void city_garages(Server *s){
 static void city_static(Server *s){city_roads();city_buildings();city_streetlights();city_garages(s);}
 
 static void city_traffic_car(int index,double time){
- const float span_x=130,span_z=45,perimeter=2*(span_x+span_z);
- float speed=5.5f+(index%3),d=fmodf((float)(time*speed+index*perimeter/8),perimeter);if(d<0)d+=perimeter;
- float x,z,yaw;
- if(d<span_x){x=-65+d;z=-70;yaw=-90;}
- else if(d<span_x+span_z){x=65;z=-70-(d-span_x);yaw=0;}
- else if(d<2*span_x+span_z){x=65-(d-span_x-span_z);z=-115;yaw=90;}
- else{x=-65;z=-115+(d-2*span_x-span_z);yaw=180;}
- glPushMatrix();glTranslatef(x,-.12f+sinf((float)time*2+index)*.035f,z);glRotatef(yaw,0,1,0);
+ CityTrafficCar car=city_traffic_at(index,time);
+ glPushMatrix();glTranslatef(car.position.x,-.12f+sinf((float)time*2+index)*.035f,car.position.z);glRotatef(car.yaw,0,1,0);
  const float colors[][3]={{.12,.55,.72},{.62,.20,.75},{.78,.42,.12},{.18,.68,.42}};
- city_color(colors[index&3][0],colors[index&3][1],colors[index&3][2]);city_box(0,-.40f,0,3.5f,.65f,6.6f);
+ city_color(colors[index&3][0],colors[index&3][1],colors[index&3][2]);city_box(0,-.40f,0,CITY_TRAFFIC_HALF_WIDTH*2,.65f,(CITY_TRAFFIC_HALF_LENGTH-.10f)*2);
  city_color(.055,.075,.11);city_box(0,.12f,.25f,2.5f,.72f,3.3f);
  city_color(.02,.025,.035);city_box(0,.20f,-.45f,2.3f,.48f,1.7f);
  glDisable(GL_LIGHTING);city_color(.65,.90,1);city_box(0,-.30f,-3.34f,2.5f,.15f,.06f);city_color(1,.15,.25);city_box(0,-.30f,3.34f,2.3f,.13f,.06f);glEnable(GL_LIGHTING);
@@ -204,7 +204,7 @@ static void city_traffic_car(int index,double time){
  glPopMatrix();
 }
 static void city_dynamic(Server *s){
- for(int i=0;i<8;i++)city_traffic_car(i,s->time);
+ for(int i=0;i<city_traffic_count();i++)city_traffic_car(i,s->vehicle.simulation_time);
  /* Rooftop beacons and rain are time-dependent and therefore stay outside the
   * static display list. Everything remains a closed-form function of time. */
  glDisable(GL_LIGHTING);glPointSize(5);glBegin(GL_POINTS);

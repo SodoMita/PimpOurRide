@@ -80,16 +80,21 @@ typedef struct {
  float power_kw;       /* positive = battery discharge, negative = net charging */
  float motor_temp_c;
  float distance_m;
- bool collision;       /* true only on a tick that contacts visible city/garage bounds */
+ bool collision;       /* true only on a tick contacting visible static bounds or traffic */
 
  /* Deterministic city navigation is evaluated inside each 120 Hz fixed tick.
   * It produces the same VehicleInput as the physical controls; it never moves
   * the rig with a separate animation or frame-rate-dependent transform. */
  bool autopilot_enabled;
  bool autopilot_reverse; /* reverse out when a completed run parked nose-in */
+ bool autopilot_yield;   /* predictive traffic limiter is reducing the request */
+ int autopilot_crossing; /* 0 none, 1 home exit, 2 home return; committed crossings do not stop mid-junction */
  int autopilot_waypoint;
 
- double accumulator;   /* fixed-step remainder carried between rendered frames */
+ /* Authoritative world clock for traffic rendering, prediction and contact.
+  * It advances once per fixed step and survives F10 pose recovery. */
+ double simulation_time;
+ double accumulator;    /* fixed-step remainder carried between rendered frames */
 } Vehicle;
 
 /* Parametric bicubic Catmull-Rom hull & fastback canopy evaluation.

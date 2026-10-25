@@ -46,10 +46,12 @@ void vehicle_reset_pose(Vehicle *v) {
  /* Reset is a recovery action, not a magical battery refill or odometer
   * rollback. Energy and distance deliberately survive an F10 recovery. */
  double battery = v->battery_kwh;
+ double world_time = v->simulation_time;
  float temperature = v->motor_temp_c;
  float distance = v->distance_m;
  memset(v, 0, sizeof(*v));
  v->battery_kwh = battery;
+ v->simulation_time = world_time;
  v->motor_temp_c = temperature;
  v->distance_m = distance;
  v->hover_height = VEHICLE_HOVER_REST_HEIGHT;
@@ -64,6 +66,8 @@ void vehicle_init(Vehicle *v) {
 
 void vehicle_autopilot_set(Vehicle *v,bool enabled){
  v->autopilot_enabled=enabled;
+ v->autopilot_yield=false;
+ v->autopilot_crossing=0;
  v->autopilot_waypoint=city_nearest_route_point(v->position);
  v->autopilot_reverse=false;
  if(enabled){
@@ -155,9 +159,12 @@ void vehicle_step(Vehicle *v, VehicleInput input, float dt) {
  v->position = vadd(v->position, vmul(forward, v->speed * dt));
  v->distance_m += fabsf(v->speed) * dt;
 
- /* The same wall/building boxes used by the city renderer constrain the full
-  * yaw-rotated visible car. Home's far wall has a real opening, so the rig can
-  * now leave the original garage and drive through the connected city. */
+ /* Advance the authoritative world clock before contact resolution. Rendering
+  * and traffic prediction can therefore query the exact same end-of-tick pose;
+  * no independent wall-clock animation is hidden from the controller. */
+ v->simulation_time += dt;
+ /* The same wall/building boxes and traffic silhouettes used by the renderer
+  * constrain the full yaw-rotated visible car. */
  city_constrain_vehicle(v,previous);
 
  float roll_target = clampf(v->steering * v->speed * v->speed * 0.004f, -4.5f, 4.5f);

@@ -39,6 +39,49 @@ static void run_steps(Vehicle *v, VehicleInput input, int steps) {
  for (int i = 0; i < steps; i++) vehicle_step(v, input, (float)VEHICLE_FIXED_DT);
 }
 
+typedef struct {
+ Vehicle vehicle;
+ double phase;
+ int ticks, contacts, yield_ticks;
+ bool visited[4];
+} TourResult;
+
+static TourResult run_city_tour(double phase) {
+ TourResult r = {.phase = phase};
+ vehicle_init(&r.vehicle);
+ r.vehicle.simulation_time = phase;
+ vehicle_autopilot_set(&r.vehicle, true);
+ while (r.vehicle.autopilot_enabled && r.ticks < 22000) {
+  vehicle_step(&r.vehicle, (VehicleInput){0}, (float)VEHICLE_FIXED_DT);
+  r.ticks++;
+  r.contacts += r.vehicle.collision;
+  r.yield_ticks += r.vehicle.autopilot_yield;
+  const char *here = city_garage_at(r.vehicle.position);
+  for (int g = 0; g < 4; g++) if (here == city_garage(g).name) r.visited[g] = true;
+ }
+ /* Autopilot requests a final brake at the home terminus. Keep simulating
+  * after it disables so the test proves actual parked rest, not merely route
+  * completion with residual speed. */
+ if (!r.vehicle.autopilot_enabled) for (int i = 0; i < 240; i++) {
+  vehicle_step(&r.vehicle, (VehicleInput){0}, (float)VEHICLE_FIXED_DT);
+  r.contacts += r.vehicle.collision;
+ }
+ return r;
+}
+
+static int vehicle_traffic_overlap(const Vehicle *v, CityTrafficCar car) {
+ Vec3 a = vehicle_collision_extents_for_vehicle(v);
+ Vec3 b = city_traffic_collision_extents(car.yaw);
+ return fabsf(v->position.x - car.position.x) < a.x + b.x - 1e-4f
+        && fabsf(v->position.z - car.position.z) < a.z + b.z - 1e-4f;
+}
+
+static int traffic_box_overlap(CityTrafficCar car, float x, float z, float w, float d) {
+ Vec3 e = city_traffic_collision_extents(car.yaw);
+ return fabsf(car.position.x - x) < e.x + w * 0.5f
+        && fabsf(car.position.z - z) < e.z + d * 0.5f;
+}
+
 int main(void) {
  CHECK(vehicle_catmull_rom(9, 2, 7, 20, 0) == 2.0f, "spline must interpolate p1");
  CHECK(vehicle_catmull_rom(9, 2, 7, 20, 1) == 7.0f, "spline must interpolate p2");
@@ -128,42 +171,140 @@ int main(void) {
  CHECK(nearf(a.position.x, b.position.x, 1e-3f) && nearf(a.position.z, b.position.z, 1e-3f)
        && nearf(a.speed, b.speed, 1e-3f), "fixed-step result depends on render cadence");
 
- /* Autopilot is a fixed-step input controller, not a render animation. Two
-  * identical runs must match exactly, visit all three remote garages, return
-  * home without contact, and reverse out when a new run starts nose-in. */
+ /* Autopilot is a fixed-step input controller, not a render animation. Full
+  * tours at independent traffic phases must be deterministic, visit every
+  * garage, yield when necessary, and settle at home without a single contact. */
  {
-  Vehicle route_a, route_b;
-  vehicle_init(&route_a); vehicle_init(&route_b);
-  vehicle_autopilot_set(&route_a, true); vehicle_autopilot_set(&route_b, true);
-  for (int i = 0; i < 2400; i++) {
-   vehicle_step(&route_a, (VehicleInput){0}, (float)VEHICLE_FIXED_DT);
-   vehicle_step(&route_b, (VehicleInput){0}, (float)VEHICLE_FIXED_DT);
+  const double phases[] = {0, 3, 6, 9, 12, 15};
+  TourResult first = run_city_tour(phases[0]);
+  TourResult repeat = run_city_tour(phases[0]);
+  CHECK(first.ticks == repeat.ticks && first.contacts == repeat.contacts
+        && nearf(first.vehicle.position.x, repeat.vehicle.position.x, 1e-5f)
+        && nearf(first.vehicle.position.z, repeat.vehicle.position.z, 1e-5f)
+        && nearf(first.vehicle.distance_m, repeat.vehicle.distance_m, 1e-4f),
+        "identical traffic-phase tours are not deterministic");
+  int total_yields = 0;
+  for (size_t p = 0; p < sizeof(phases) / sizeof(phases[0]); p++) {
+   TourResult r = p == 0 ? first : run_city_tour(phases[p]);
+   total_yields += r.yield_ticks;
+   CHECK(r.visited[0] && r.visited[1] && r.visited[2] && r.visited[3]
+         && !r.vehicle.autopilot_enabled && r.ticks < 22000
+         && r.vehicle.distance_m > 450.0f && r.contacts == 0
+         && fabsf(r.vehicle.speed) < 0.2f
+         && city_garage_at(r.vehicle.position) == city_garage(0).name,
+         "phase %.1f tour failed: ticks=%d contacts=%d enabled=%d visited=%d%d%d%d speed=%f pos=(%f,%f) distance=%f",
+         phases[p], r.ticks, r.contacts, r.vehicle.autopilot_enabled,
+         r.visited[0], r.visited[1], r.visited[2], r.visited[3],
+         r.vehicle.speed, r.vehicle.position.x, r.vehicle.position.z, r.vehicle.distance_m);
+
+   Vehicle exit = r.vehicle;
+   vehicle_autopilot_set(&exit, true);
+   bool reversed = false;
+   int exit_contacts = 0, exit_ticks = 0;
+   while (exit_ticks++ < 6000 && (exit.autopilot_reverse || exit.autopilot_waypoint < 3)) {
+    vehicle_step(&exit, (VehicleInput){0}, (float)VEHICLE_FIXED_DT);
+    reversed |= exit.speed < -0.5f;
+    exit_contacts += exit.collision;
+   }
+   CHECK(reversed && !exit.autopilot_reverse && exit.autopilot_waypoint >= 3
+         && exit_ticks < 6000 && exit_contacts == 0,
+         "phase %.1f reverse restart failed: ticks=%d wp=%d reverse=%d contacts=%d",
+         phases[p], exit_ticks, exit.autopilot_waypoint, exit.autopilot_reverse, exit_contacts);
   }
-  CHECK(nearf(route_a.position.x, route_b.position.x, 1e-5f)
-        && nearf(route_a.position.z, route_b.position.z, 1e-5f)
-        && nearf(route_a.speed, route_b.speed, 1e-5f)
-        && route_a.distance_m > 50.0f, "deterministic city autopilot did not drive");
-  bool visited[4] = {false}, route_collision = false;
-  int ticks = 0;
-  while (route_a.autopilot_enabled && ticks++ < 18000) {
-   vehicle_step(&route_a, (VehicleInput){0}, (float)VEHICLE_FIXED_DT);
-   route_collision |= route_a.collision;
-   const char *here = city_garage_at(route_a.position);
-   for (int g = 0; g < 4; g++) if (here == city_garage(g).name) visited[g] = true;
+  CHECK(total_yields > 0, "traffic phases never exercised predictive yielding");
+
+  /* Probe the home gate directly across a complete stream of gaps. At least
+   * one phase must hold outside the junction and one must commit through it. */
+  bool blocked = false, released = false;
+  for (float phase = 0; phase < 16.0f; phase += 0.25f) {
+   Vehicle gate; vehicle_init(&gate);
+   gate.position = v3(0, 0, -46); gate.simulation_time = phase;
+   gate.autopilot_enabled = true; gate.autopilot_waypoint = 1;
+   VehicleInput in = city_autopilot_input(&gate, (float)VEHICLE_FIXED_DT);
+   blocked |= gate.autopilot_yield && gate.autopilot_crossing == 0 && in.brake > 0.9f;
+   released |= !gate.autopilot_yield && gate.autopilot_crossing == 1;
   }
-  CHECK(visited[1] && visited[2] && visited[3] && !route_a.autopilot_enabled
-        && route_a.distance_m > 450.0f && !route_collision,
-        "city route did not tour every garage and park cleanly: distance=%f collision=%d",
-        route_a.distance_m, route_collision);
-  vehicle_autopilot_set(&route_a, true);
-  CHECK(route_a.autopilot_reverse, "nose-in restart did not select reverse exit");
-  bool reversed = false;
-  for (int i = 0; i < 2400; i++) {
-   vehicle_step(&route_a, (VehicleInput){0}, (float)VEHICLE_FIXED_DT);
-   reversed |= route_a.speed < -0.5f; route_collision |= route_a.collision;
+  CHECK(blocked && released, "home crossing did not demonstrate both predictive braking and gap release");
+
+  /* A completed run parked nose-in must back through the opening, then resume
+  * the forward route without resetting the world clock or contacting traffic. */
+  Vehicle restart = first.vehicle;
+  vehicle_autopilot_set(&restart, true);
+  CHECK(restart.autopilot_reverse, "nose-in restart did not select reverse exit");
+  bool reversed = false, forward = false;
+  int restart_contacts = 0;
+  double restart_distance = restart.distance_m;
+  for (int i = 0; i < 7200 && restart.autopilot_enabled; i++) {
+   vehicle_step(&restart, (VehicleInput){0}, (float)VEHICLE_FIXED_DT);
+   reversed |= restart.speed < -0.5f;
+   forward |= !restart.autopilot_reverse && restart.speed > 0.5f;
+   restart_contacts += restart.collision;
   }
-  CHECK(reversed && !route_a.autopilot_reverse && route_a.position.x < -30.0f
-        && !route_collision, "reverse exit did not resume the forward city route");
+  CHECK(reversed && forward && !restart.autopilot_reverse
+        && restart.autopilot_waypoint >= 3 && restart.distance_m > restart_distance + 100.0f
+        && restart_contacts == 0,
+        "reverse exit did not resume the forward city route cleanly: wp=%d contacts=%d",
+        restart.autopilot_waypoint, restart_contacts);
+ }
+
+ /* The renderer's deterministic traffic poses also clear the visible static
+  * city. This prevents a collision-free tour from being achieved by moving
+  * ambient cars through a wall or off their rendered roads. */
+ CHECK(city_traffic_count() == CITY_TRAFFIC_COUNT, "traffic count mismatch");
+ for (double time = -2.0; time < 124.0; time += 0.25) {
+  for (int i = 0; i < city_traffic_count(); i++) {
+   CityTrafficCar car = city_traffic_at(i, time);
+   CityTrafficCar same = city_traffic_at(i, time);
+   CHECK(nearf(car.position.x, same.position.x, 1e-6f)
+         && nearf(car.position.z, same.position.z, 1e-6f) && car.speed > 0.0f,
+         "traffic pose is not deterministic");
+   bool on_road = nearf(car.position.z, -60.0f, 1e-4f)
+                  || nearf(car.position.z, -124.0f, 1e-4f)
+                  || nearf(fabsf(car.position.x), 150.0f, 1e-4f);
+   CHECK(on_road, "traffic left the outer ring at t=%f car=%d pos=(%f,%f)",
+         time, i, car.position.x, car.position.z);
+   for (int b = 0; b < city_building_count(); b++) {
+    CityBuilding building = city_building(b);
+    CHECK(!traffic_box_overlap(car, building.x, building.z,
+                               building.width + 2, building.depth + 2),
+          "traffic intersects building %d at t=%f car=%d", b, time, i);
+   }
+   for (int g = 1; g < city_garage_count(); g++) {
+    CityGarage garage = city_garage(g);
+    if (garage.axis == 1) {
+     CHECK(!traffic_box_overlap(car, garage.x - garage.width * 0.5f, garage.z, 0.6f, garage.depth)
+           && !traffic_box_overlap(car, garage.x + garage.width * 0.5f, garage.z, 0.6f, garage.depth),
+           "traffic intersects garage %d side wall", g);
+    } else {
+     CHECK(!traffic_box_overlap(car, garage.x, garage.z - garage.depth * 0.5f, garage.width, 0.6f)
+           && !traffic_box_overlap(car, garage.x, garage.z + garage.depth * 0.5f, garage.width, 0.6f),
+           "traffic intersects garage %d side wall", g);
+    }
+   }
+  }
+ }
+
+ /* Collision fallback uses the same end-of-tick traffic pose as rendering.
+  * A stationary manual car ahead of an ambient car must be pushed clear, not
+  * left visibly interpenetrated, and F10 recovery must not rewind that world. */
+ {
+  Vehicle fallback; vehicle_init(&fallback);
+  CityTrafficCar target = city_traffic_at(2, fallback.simulation_time);
+  fallback.position = vadd(target.position, v3(12, 0, 0));
+  fallback.yaw = target.yaw;
+  bool contacted = false, overlapped = false;
+  for (int i = 0; i < 180; i++) {
+   vehicle_step(&fallback, (VehicleInput){0}, (float)VEHICLE_FIXED_DT);
+   contacted |= fallback.collision;
+   target = city_traffic_at(2, fallback.simulation_time);
+   overlapped |= vehicle_traffic_overlap(&fallback, target);
+  }
+  CHECK(contacted && !overlapped, "moving traffic fallback left visible overlap: contact=%d overlap=%d",
+        contacted, overlapped);
+  double world_time = fallback.simulation_time;
+  vehicle_reset_pose(&fallback);
+  CHECK(nearf((float)fallback.simulation_time, (float)world_time, 1e-5f),
+        "F10 recovery rewound the shared traffic clock");
  }
 
  /* The physical door interlock remains authoritative in automatic mode. */
