@@ -277,6 +277,7 @@ void scene_build(Scene *s, const GarageSettings *settings) {
 }
 
 void scene_apply_settings(Scene *s, const GarageSettings *settings) {
+    float prev_cfg_fov = s->settings.fov;
     s->settings = *settings;
     settings_clamp(&s->settings);
     const GarageSettings *g = &s->settings;
@@ -300,7 +301,11 @@ void scene_apply_settings(Scene *s, const GarageSettings *settings) {
      * everything at upload time in the renderer.) */
 
     s->fog_density = g->fog_density;
-    s->camera.fov_deg = g->fov;
+    /* Only overwrite the live camera FOV when camera.fov in settings actually
+     * changed (or on initial scene_build when fov_deg is 0), so reloading
+     * unrelated settings never resets interactive +/- FOV adjustments. */
+    if (s->camera.fov_deg <= 0.0f || fabsf(g->fov - prev_cfg_fov) > 1e-4f)
+        s->camera.fov_deg = g->fov;
     for (int i = 0; i < s->mist_count; i++)
         s->nodes[s->mists[i]].material.albedo =
             vec3(0.55f * g->mist, 0.45f * g->mist, 0.85f * g->mist);

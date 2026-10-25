@@ -143,6 +143,22 @@ int main(void) {
         /* Hot-apply: fog + neon material follow, rain helper respects cap. */
         scene_apply_settings(&scene, &loaded);
         CHECK(approx(scene.fog_density, 0.03f, 1e-6f), "applied fog=%f", scene.fog_density);
+        CHECK(approx(scene.camera.fov_deg, 90.0f, 1e-4f), "applied fov=%f", scene.camera.fov_deg);
+        /* Reloading settings without changing camera.fov must not reset a
+         * user-orbited/panned/zoomed camera or interactive +/- FOV change. */
+        scene.camera.yaw_deg = 42.0f;
+        scene.camera.pitch_deg = -11.0f;
+        scene.camera.distance = 12.5f;
+        scene.camera.target = vec3(1.5f, 3.0f, -5.0f);
+        scene.camera.fov_deg = 54.0f;
+        loaded.fog_density = 0.02f;
+        scene_apply_settings(&scene, &loaded);
+        CHECK(approx(scene.camera.yaw_deg, 42.0f, 1e-4f) &&
+              approx(scene.camera.pitch_deg, -11.0f, 1e-4f) &&
+              approx(scene.camera.distance, 12.5f, 1e-4f) &&
+              approx(scene.camera.target.x, 1.5f, 1e-4f) &&
+              approx(scene.camera.fov_deg, 54.0f, 1e-4f),
+              "settings reload reset camera state");
         CHECK(scene.nodes[scene.flicker_tube].color_role == 2,
               "flicker tube should be tagged as right-neon");
         AnimationState a3;

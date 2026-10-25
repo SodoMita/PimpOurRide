@@ -48,9 +48,21 @@ static void apply_config(Server *s,const CdConfig *cfg,bool startup,const char *
   const char *sock=cd_config_get_string(cfg,"session","socket","");
   if(socket_out&&sock&&*sock){snprintf(socket_buf,sizeof(socket_buf),"%s",sock);*socket_out=socket_buf;}
  }
+ static float config_fov_seen=65.f;
+ float cfg_fov=clampf((float)cd_config_get_double(cfg,"display","fov",65.0),40,100);
  s->fps_limit=(int)clampf((float)cd_config_get_int(cfg,"display","fps",s->fps_limit),1,120);
- s->target_fov=clampf((float)cd_config_get_double(cfg,"display","fov",s->target_fov),40,100);
- if(startup)s->fov=s->target_fov;
+ /* Preserve live camera state (focus_view zoom, wheel-zoom, yaw/pitch/mode)
+  * across config reloads: only update target_fov on hot-reload when
+  * display.fov itself changed in the config file and the camera is not
+  * currently locked in focus_view on a monitor. */
+ if(startup){
+  s->base_fov=s->target_fov=s->fov=cfg_fov;
+  config_fov_seen=cfg_fov;
+ }else if(fabsf(cfg_fov-config_fov_seen)>1e-4f){
+  config_fov_seen=cfg_fov;
+  s->base_fov=cfg_fov;
+  if(!s->focus_view)s->target_fov=cfg_fov;
+ }
  long neon=cd_config_get_int(cfg,"cockpit","neon",s->theme);neon=((neon%3)+3)%3;
  if((int)neon!=s->theme){s->theme=(int)neon;s->rebuild_scene=true;}
  s->hud_visible=cd_config_get_bool(cfg,"cockpit","hud",s->hud_visible);
@@ -199,7 +211,7 @@ bool app_global_key(Server *s,uint32_t evdev,bool down){
 }
 static void usage(const char *name){printf("ChromeDrive " CD_VERSION " — native, first-person Wayland cockpit\n\nUsage: %s [options]\n  --demo                Start a real terminal + Files + Audio clients\n  --socket NAME         Wayland socket (default: automatic)\n  --exec COMMAND        Launch an extra Wayland client (repeatable)\n  --size WIDTHxHEIGHT   Framebuffer/host window size (default 1600x1000)\n  --fps N               Frame cap, 1..120 (default 60)\n  --headless            Run with no X server: surfaceless EGL + built-in VNC server (default)\n  --windowed            Dev/debug mode: open a real SDL2/GLX window on an X server instead\n  --vnc-port N          VNC port for --headless mode (default 5900)\n  --fullscreen          --windowed only: start fullscreen, F11 to leave\n  --exit-after SECONDS   Useful for automated checks\n  --screenshot PATH     Capture a WebP after 3 seconds\n  --config PATH         Config file (default: ~/.config/chromedrive/chromedrive.conf)\n  --no-config           Ignore the config file entirely\n  --help                Show this help\n\nF1 help | F2 cockpit | F3 focus | F4 neon | F5 driver/exterior/systems | F6 next display\nF7 client/drive input | F8 recover car | Drive: WASD/arrows + Space + drag wheel\nMiddle-drag/VNC-drag to look | Click a screen to focus | Ctrl+Alt+Enter new terminal\n",name);}
 int main(int argc,char **argv){
- Server s={.width=1600,.height=1000,.fps_limit=60,.running=true,.hud_visible=true,.hover_button=-1,.keymap_fd=-1,.fov=65,.target_fov=65,.eye={0,1.0f,2.8f},.headless=true,.vnc_port=5900,.telemetry_fd=-1};
+ Server s={.width=1600,.height=1000,.fps_limit=60,.running=true,.hud_visible=true,.hover_button=-1,.keymap_fd=-1,.fov=65,.target_fov=65,.base_fov=65,.eye={0,1.0f,2.8f},.headless=true,.vnc_port=5900,.telemetry_fd=-1};
  vehicle_init(&s.vehicle);
  const char *socket_name=NULL;double exit_after=0;bool auto_screenshot=false;
  /* Config pre-scan: --config/--no-config must be known before the file is

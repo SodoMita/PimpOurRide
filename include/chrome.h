@@ -110,7 +110,7 @@ struct Server {
  int width,height,fps_limit,theme,hover_button,active_slot;
  int bg_mode; /* CD_BG_*: which environment() backdrop to draw */
  bool running,middle_look,focus_view,show_help,hud_visible,fullscreen,demo,launch_pending;
- float yaw,pitch,target_yaw,target_pitch,fov,target_fov;
+ float yaw,pitch,target_yaw,target_pitch,fov,target_fov,base_fov;
  Vec3 eye;
  /* Native electric hover-car rig and input routing. In CLIENT mode drive keys
   * continue to Wayland clients and the wheel emits pointer-axis input; in

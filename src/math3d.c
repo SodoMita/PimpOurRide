@@ -52,3 +52,75 @@ Plane monitor_plane_at(int index,float reveal){
  deployed.pitch=stowed.pitch+(deployed.pitch-stowed.pitch)*t;
  return deployed;
 }
+/* Stationary chassis hardpoints and 2-link inverse-kinematic parameters for the
+ * eight articulated mechanical manipulators holding monitors CD-01 .. CD-08.
+ * Every base, shoulder, elbow, and wrist sits in the back half-space behind
+ * its monitor plane (vdot(joint - p.center, normal) <= -0.04) and bends outward
+ * into the visible inter-monitor or outer-cockpit bays so the driver sees the
+ * articulated manipulator linkage without any strut ever crossing in front of
+ * a monitor screen or the center console. */
+static const Vec3 manip_base[8]={
+ {-0.78f, 2.32f,-1.78f}, /* CD-01: upper-left windshield header gantry */
+ {-3.32f, 0.24f,-0.94f}, /* CD-02: outer-left dashboard wing turret */
+ { 3.32f, 0.24f,-0.94f}, /* CD-03: outer-right dashboard wing turret */
+ {-5.05f, 0.48f, 0.86f}, /* CD-04: left door inner sill turret */
+ { 5.05f, 0.48f, 0.86f}, /* CD-05: right door inner sill turret */
+ {-3.28f, 2.39f,-0.12f}, /* CD-06: left roof cantrail hinge turret */
+ { 3.28f, 2.39f,-0.12f}, /* CD-07: right roof cantrail hinge turret */
+ { 0.00f, 0.56f, 7.52f}  /* CD-08: rear deck bulkhead pedestal */
+};
+static const Vec3 manip_shoulder[8]={
+ {-0.92f, 2.16f,-1.82f},
+ {-3.22f, 0.42f,-1.00f},
+ { 3.22f, 0.42f,-1.00f},
+ {-5.12f, 0.64f, 0.84f},
+ { 5.12f, 0.64f, 0.84f},
+ {-3.24f, 2.28f,-0.08f},
+ { 3.24f, 2.28f,-0.08f},
+ { 0.00f, 0.72f, 7.46f}
+};
+static const float manip_upper_len[8]={.64f,.42f,.42f,.94f,.94f,.48f,.48f,.52f};
+static const float manip_fore_len[8] ={1.18f,.88f,.88f,.90f,.90f,.44f,.44f,.48f};
+static const Vec3 manip_bend_hint[8]={
+ {-0.95f,-0.35f,-0.18f},
+ { 0.65f,-0.72f,-0.35f},
+ {-0.65f,-0.72f,-0.35f},
+ {-0.65f,-0.55f,-0.52f},
+ { 0.65f,-0.55f,-0.52f},
+ {-0.72f, 0.45f,-0.52f},
+ { 0.72f, 0.45f,-0.52f},
+ { 0.55f,-0.75f, 0.36f}
+};
+static const float manip_wrist_lat[8] ={0.f,-.32f,.32f,0.f,0.f,0.f,0.f,0.f};
+static const float manip_wrist_vert[8]={0.f,-.12f,-.12f,0.f,0.f,0.f,0.f,0.f};
+MonitorManipulator monitor_manipulator_at(int index,float reveal){
+ int slot=index<0?0:(index>7?7:index);
+ Plane p=monitor_plane_at(slot,reveal);
+ Vec3 right=rotate_y(v3(1,0,0),p.yaw),up=rotate_y(rotate_x(v3(0,1,0),p.pitch),p.yaw),normal=vcross(right,up);
+ MonitorManipulator m={
+  .base=manip_base[slot],.shoulder=manip_shoulder[slot],
+  .wrist=vadd(vadd(vadd(p.center,vmul(right,manip_wrist_lat[slot])),vmul(up,manip_wrist_vert[slot])),vmul(normal,-.09f)),
+  .upper_len=manip_upper_len[slot],.fore_len=manip_fore_len[slot]
+ };
+ Vec3 delta=vsub(m.wrist,m.shoulder);
+ float dist=sqrtf(vdot(delta,delta));
+ Vec3 dir=dist>1e-6f?vmul(delta,1.f/dist):v3(0,0,-1);
+ Vec3 bend=manip_bend_hint[slot];
+ Vec3 perp_raw=vsub(bend,vmul(dir,vdot(bend,dir)));
+ float plen=sqrtf(vdot(perp_raw,perp_raw));
+ Vec3 perp=plen>1e-6f?vmul(perp_raw,1.f/plen):vnorm(vcross(dir,fabsf(dir.y)>.9f?v3(1,0,0):v3(0,1,0)));
+ float ul=m.upper_len,fl=m.fore_len;
+ float d=clampf(dist,fabsf(ul-fl)+1e-4f,ul+fl-1e-4f);
+ float a=(ul*ul-fl*fl+d*d)/(2.f*d);
+ float h=sqrtf(fmaxf(0.f,ul*ul-a*a));
+ m.elbow=vadd(m.shoulder,vadd(vmul(dir,a),vmul(perp,h)));
+ m.piston_base=vadd(m.base,vmul(vsub(m.shoulder,m.base),.35f));
+ m.piston_rod=vadd(m.shoulder,vmul(vsub(m.elbow,m.shoulder),.62f));
+ float w=p.width,hp=p.height;
+ Vec3 back=vmul(normal,-.025f);
+ m.claws[0]=vadd(vadd(p.center,back),vadd(vmul(right,-w*.38f),vmul(up, hp*.5f+.20f)));
+ m.claws[1]=vadd(vadd(p.center,back),vadd(vmul(right, w*.38f),vmul(up, hp*.5f+.20f)));
+ m.claws[2]=vadd(vadd(p.center,back),vadd(vmul(right,-w*.38f),vmul(up,-hp*.5f-.05f)));
+ m.claws[3]=vadd(vadd(p.center,back),vadd(vmul(right, w*.38f),vmul(up,-hp*.5f-.05f)));
+ return m;
+}

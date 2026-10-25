@@ -314,23 +314,101 @@ static void draw_app_surface(Surface *p,int sx,int sy,void *data){
  glDisable(GL_LIGHTING);glEnable(GL_TEXTURE_2D);glBindTexture(GL_TEXTURE_2D,p->texture);glEnable(GL_BLEND);glBlendFunc(GL_ONE,GL_ONE_MINUS_SRC_ALPHA);glColor4f(1,1,1,1);
  float coords[4][2]={{0,0},{1,0},{1,1},{0,1}},vx[]={x,x+w,x+w,x},vy[]={y,y,y-h,y-h};glBegin(GL_QUADS);for(int i=0;i<4;i++){float u,v;transformed_uv(p->transform,coords[i][0],coords[i][1],&u,&v);glTexCoord2f(u,v);glVertex3f(vx[i],vy[i],z);}glEnd();glDisable(GL_BLEND);glDisable(GL_TEXTURE_2D);glEnable(GL_LIGHTING);
 }
+static void draw_monitor_manipulator(Server *s,int i,Plane p,float reveal,bool active){
+ MonitorManipulator m=monitor_manipulator_at(i,reveal);
+ Vec3 right=rotate_y(v3(1,0,0),p.yaw),up=rotate_y(rotate_x(v3(0,1,0),p.pitch),p.yaw);
+ float nr,ng,nb;neon(s,&nr,&ng,&nb);
+ float ar=active?.35f:nr*.85f,ag=active?.92f:ng*.85f,ab=active?.74f:nb*.85f;
+
+ /* 1. Stationary chassis base pedestal & rotary shoulder turret (car-local). */
+ color(.18f,.21f,.28f);rbox(m.base.x,m.base.y,m.base.z,.16f,.06f,.16f,.025f);
+ color(.32f,.36f,.45f);cylinder(m.base,m.shoulder,.042f,16);
+ Vec3 sh_axis=vmul(right,.046f);
+ color(.24f,.28f,.36f);cylinder(vsub(m.shoulder,sh_axis),vadd(m.shoulder,sh_axis),.046f,16);
+ glow_line(vsub(m.shoulder,vmul(sh_axis,1.06f)),vadd(m.shoulder,vmul(sh_axis,1.06f)),.0045f,ar,ag,ab);
+
+ /* 2. Twin-spar articulated upper arm + cross-braces (shoulder -> elbow). */
+ Vec3 spar=vmul(right,.032f);
+ color(.29f,.34f,.43f);
+ cylinder(vsub(m.shoulder,spar),vsub(m.elbow,spar),.021f,14);
+ cylinder(vadd(m.shoulder,spar),vadd(m.elbow,spar),.021f,14);
+ for(int k=1;k<=3;k++){
+  float f=.25f*(float)k;
+  Vec3 mid=vadd(m.shoulder,vmul(vsub(m.elbow,m.shoulder),f));
+  color(.42f,.47f,.57f);cylinder(vsub(mid,spar),vadd(mid,spar),.011f,10);
+ }
+
+ /* 3. Two-stage hydraulic damping cylinder barrel + chrome piston rod. */
+ Vec3 p_mid=vadd(m.piston_base,vmul(vsub(m.piston_rod,m.piston_base),.54f));
+ color(.19f,.23f,.31f);cylinder(m.piston_base,p_mid,.024f,14);
+ color(.72f,.77f,.86f);cylinder(p_mid,m.piston_rod,.012f,12);
+
+ /* 4. Rotary servo elbow drum with neon telemetry ring. */
+ Vec3 el_axis=vmul(right,.042f);
+ color(.22f,.26f,.34f);cylinder(vsub(m.elbow,el_axis),vadd(m.elbow,el_axis),.044f,16);
+ color(.46f,.51f,.61f);cylinder(vsub(m.elbow,vmul(el_axis,1.12f)),vadd(m.elbow,vmul(el_axis,1.12f)),.024f,14);
+ glow_line(vsub(m.elbow,vmul(el_axis,1.15f)),vadd(m.elbow,vmul(el_axis,1.15f)),.005f,ar,ag,ab);
+
+ /* 5. Twin-spar forearm linkage (elbow -> wrist gimbal). */
+ Vec3 fspar=vmul(right,.024f);
+ color(.33f,.38f,.48f);
+ cylinder(vsub(m.elbow,fspar),vsub(m.wrist,fspar),.018f,14);
+ cylinder(vadd(m.elbow,fspar),vadd(m.wrist,fspar),.018f,14);
+ Vec3 fmid=vadd(m.elbow,vmul(vsub(m.wrist,m.elbow),.5f));
+ color(.44f,.49f,.59f);cylinder(vsub(fmid,fspar),vadd(fmid,fspar),.010f,10);
+ /* Braided power/DisplayPort umbilical along the manipulator arm. */
+ Vec3 c_sh=vadd(m.shoulder,vmul(up,-.025f)),c_el=vadd(m.elbow,vmul(up,-.032f)),c_wr=vadd(m.wrist,vmul(up,-.025f));
+ color(.08f,.10f,.15f);cylinder(c_sh,c_el,.008f,8);cylinder(c_el,c_wr,.008f,8);
+
+ /* 6. Wrist gimbal hub & 4-way diagonal VESA spider struts to bezel claws.
+  * An outward-side gusset connects the elbow to the outer bezel claw so the
+  * articulated triangle reads clearly in the outer cockpit bays without ever
+  * crossing in front of the screen. */
+ Vec3 wr_axis=vmul(right,.036f);
+ color(.25f,.30f,.39f);cylinder(vsub(m.wrist,wr_axis),vadd(m.wrist,wr_axis),.038f,16);
+ int outer_claw=(i==1||i==3)?2:((i==2||i==4)?3:(i==6?1:0));
+ for(int k=0;k<4;k++){
+  color(.36f,.41f,.51f);cylinder(m.wrist,m.claws[k],.014f,12);
+ }
+ color(.26f,.31f,.40f);cylinder(m.elbow,m.claws[outer_claw],.013f,10);
+}
 static void draw_monitor(Server *s,int i){
- Monitor *m=&s->monitors[i];if(!m->surface)return;Plane p=m->plane;float w=p.width,h=p.height;bool active=s->keyboard_focus==m->surface,cluster=i==CD_CLUSTER_SLOT;
+ Monitor *m=&s->monitors[i];
+ if(!m->surface){
+  /* Render docked chassis manipulator turret sockets on the dash bays so the
+   * mechanical mount hardpoints remain grounded even when a slot is idle. */
+  if(i>=0&&i<=2){
+   MonitorManipulator idle=monitor_manipulator_at(i,0);
+   color(.16f,.19f,.26f);rbox(idle.base.x,idle.base.y,idle.base.z,.15f,.05f,.15f,.02f);
+   color(.26f,.30f,.38f);cylinder(idle.base,idle.shoulder,.036f,14);
+  }
+  return;
+ }
+ Plane p=m->plane;float w=p.width,h=p.height;bool active=s->keyboard_focus==m->surface,cluster=i==CD_CLUSTER_SLOT;
+ if(!cluster)draw_monitor_manipulator(s,i,p,m->reveal,active);
  plane_begin(p);
  if(!cluster){
-  /* Hardware belongs to the named car part, not a generic floor stand. */
-  MonitorMount mount=monitor_mount(i);color(.24,.28,.35);
-  if(mount==MOUNT_DASH_SLIDE){
-   for(int side=-1;side<=1;side+=2){cylinder(v3(side*w*.32,-h/2,-.075),v3(side*w*.32,-h/2-.58,-.075),.028,12);color(.40,.43,.50);box(side*w*.32,-h/2-.58,-.075,.15,.045,.16);color(.24,.28,.35);}
-  }else if(mount==MOUNT_DOOR_SLIDE){
-   float side=i==3?-1:1;cylinder(v3(side*w*.43,0,-.08),v3(side*(w*.5+.42),0,-.08),.045,14);box(side*(w*.5+.42),0,-.08,.12,.34,.18);
-  }else if(mount==MOUNT_ROOF_FLIP){
-   cylinder(v3(-w*.34,h/2+.08,-.07),v3(w*.34,h/2+.08,-.07),.045,16);cylinder(v3(0,h/2+.08,-.07),v3(0,h/2+.43,-.07),.035,12);
-  }
+  float nr,ng,nb;neon(s,&nr,&ng,&nb);
+  float ar=active?.35f:nr*.85f,ag=active?.92f:ng*.85f,ab=active?.74f:nb*.85f;
   color(.30,.35,.43);rbox(0,.075,-.056,w+.12,h+.25,.10,.065);
   color(.018,.027,.038);rbox(0,.075,-.003,w+.086,h+.219,.038,.055);
+  /* 4 articulated mechanical bezel claw jaws + 2 lateral stabilizer clamps
+   * wrapping from the rear spider struts onto the front bezel face (z=+.032). */
+  for(int side=-1;side<=1;side+=2){
+   float cx=side*w*.38f,ty=h*.5f+.20f,by=-h*.5f-.05f,sx=side*(w*.5f+.062f);
+   /* Top & bottom bezel claw knuckles + front clamping fingers */
+   color(.38f,.43f,.53f);rbox(cx,ty,-.010f,.13f,.055f,.095f,.014f);
+   color(.20f,.24f,.32f);box(cx,ty-.022f,.032f,.11f,.032f,.022f);
+   glow_line(v3(cx-.038f,ty-.018f,.044f),v3(cx+.038f,ty-.018f,.044f),.0035f,ar,ag,ab);
+   color(.38f,.43f,.53f);rbox(cx,by,-.010f,.13f,.055f,.095f,.014f);
+   color(.20f,.24f,.32f);box(cx,by+.022f,.032f,.11f,.032f,.022f);
+   glow_line(v3(cx-.038f,by+.018f,.044f),v3(cx+.038f,by+.018f,.044f),.0035f,ar,ag,ab);
+   /* Lateral vise clamp gripping the left/right bezel edge */
+   color(.34f,.39f,.49f);rbox(sx,.05f,-.012f,.055f,.18f,.095f,.014f);
+   color(.20f,.24f,.32f);box(sx-side*.020f,.05f,.032f,.032f,.14f,.022f);
+   glow_line(v3(sx-side*.016f,-.005f,.044f),v3(sx-side*.016f,.105f,.044f),.0035f,ar,ag,ab);
+  }
   glDisable(GL_LIGHTING);color(.010,.016,.026);quad(-w/2,-h/2,w,h,.019);glEnable(GL_LIGHTING);
-  float nr,ng,nb;neon(s,&nr,&ng,&nb);
   if(active)glow_line(v3(-w/2,-h/2-.022,.025),v3(w/2,-h/2-.022,.025),.004,.35,.92,.74);else glow_line(v3(-w/2,-h/2-.022,.025),v3(w/2,-h/2-.022,.025),.003,nr*.65,ng*.7,nb*.7);
   ui_monitor_label(s,i);texture(m->label,-w/2,h/2+.011,w,.137,.024);
  }
@@ -489,9 +567,9 @@ void scene_wheel_motion(Server *s,int x,int y,uint32_t time){
 void scene_focus_monitor(Server *s,int slot,bool zoom){
  s->camera_mode=VEHICLE_CAMERA_DRIVER;
  if(slot<0||slot>=CD_MAX_MONITORS)return;Plane p=monitor_plane(slot);float desired=atan2f(-p.center.x,s->eye.z-p.center.z)/RAD;
- while(desired-s->yaw>180)desired-=360;while(desired-s->yaw<-180)desired+=360;s->target_yaw=desired;float dx=p.center.x-s->eye.x,dz=p.center.z-s->eye.z;s->target_pitch=atan2f(p.center.y-s->eye.y,sqrtf(dx*dx+dz*dz))/RAD;s->target_fov=zoom?32:65;s->focus_view=zoom;
+ while(desired-s->yaw>180)desired-=360;while(desired-s->yaw<-180)desired+=360;s->target_yaw=desired;float dx=p.center.x-s->eye.x,dz=p.center.z-s->eye.z;s->target_pitch=atan2f(p.center.y-s->eye.y,sqrtf(dx*dx+dz*dz))/RAD;s->target_fov=zoom?32:(s->base_fov>0?s->base_fov:65);s->focus_view=zoom;
 }
-void scene_reset_camera(Server *s){s->camera_mode=VEHICLE_CAMERA_DRIVER;s->target_yaw=roundf(s->yaw/360)*360;s->target_pitch=-6;s->target_fov=65;s->focus_view=false;}
+void scene_reset_camera(Server *s){s->camera_mode=VEHICLE_CAMERA_DRIVER;s->target_yaw=roundf(s->yaw/360)*360;s->target_pitch=-6;s->target_fov=s->base_fov>0?s->base_fov:65;s->focus_view=false;}
 void scene_save_screenshot(Server *s,const char *path){
  int w=s->width,h=s->height;uint8_t *pixels=malloc((size_t)w*h*4);if(!pixels)return;glReadPixels(0,0,w,h,GL_BGRA,GL_UNSIGNED_BYTE,pixels);
  uint8_t *flipped=malloc((size_t)w*h*4);

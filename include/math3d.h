@@ -16,8 +16,15 @@ Vec3 rotate_z(Vec3 v,float deg);
 Vec3 camera_ray(float x,float y,int w,int h,float fov,float yaw,float pitch);
 bool plane_hit(Plane p,Vec3 origin,Vec3 ray,float *u,float *v,float *distance,bool clip);
 typedef enum {MOUNT_WINDSHIELD,MOUNT_DASH_SLIDE,MOUNT_DOOR_SLIDE,MOUNT_ROOF_FLIP,MOUNT_REAR_FIXED,MOUNT_CLUSTER} MonitorMount;
+typedef struct {
+ Vec3 base,shoulder,elbow,wrist;
+ Vec3 piston_base,piston_rod;
+ Vec3 claws[4];
+ float upper_len,fore_len;
+} MonitorManipulator;
 Plane monitor_plane(int index); /* fully deployed transform */
 Plane monitor_plane_at(int index,float reveal); /* shared by drawing and picking */
+MonitorManipulator monitor_manipulator_at(int index,float reveal);
 MonitorMount monitor_mount(int index);
 const char *monitor_mount_name(int index);
 float clampf(float v,float lo,float hi);
