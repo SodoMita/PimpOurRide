@@ -40,6 +40,7 @@
  */
 #define _GNU_SOURCE
 #include "cdconfig.h"
+#include "i18n.h"
 #include "math3d.h"
 #include "xdg-shell-client.h"
 #include <cairo/cairo.h>
@@ -92,7 +93,9 @@ typedef struct {
     double min, max, step;
     const char *fmt;            /* value formatting ("%.2f", "%d") */
     const char *def;            /* default, string form (reset + fallback) */
-    const char *enums[6];       /* K_ENUM labels */
+    /* K_ENUM labels. 8 rather than the historical 6 so the language row can
+     * offer "auto" plus up to seven installed catalogs; see gui_load_languages. */
+    const char *enums[8];
     int enum_count;
     bool enum_is_string;        /* store label itself instead of the index */
     bool restart;               /* chip: needs app restart to take effect */
@@ -128,7 +131,11 @@ static const Def G3_DEFS[] = {
 };
 #define N_G3_DEFS ((int)(sizeof(G3_DEFS) / sizeof(G3_DEFS[0])))
 
-static const Def CD_DEFS[] = {
+/* Row 0 is filled in at runtime by gui_load_languages(): its choices are the
+ * catalogs actually installed, which is not knowable at compile time. */
+#define CD_LANGUAGE_ROW 0
+static Def CD_DEFS[] = {
+    { "Interface", "ui", "language", "Interface language", K_ENUM, 0, 0, 1, NULL, "auto", {0}, 0, true, false },
     { "Display", "display", "width", "Framebuffer width", K_INT, 640, 3840, 10, "%.0f", "1600", {0}, 0, false, true },
     { "Display", "display", "height", "Framebuffer height", K_INT, 400, 2160, 10, "%.0f", "1000", {0}, 0, false, true },
     { "Display", "display", "fps", "Frame cap (fps)", K_INT, 10, 120, 1, "%.0f", "60", {0}, 0, false, false },
@@ -218,6 +225,8 @@ typedef struct {
 
 typedef struct {
     /* model */
+    char root[4096];            /* install root: catalogs live in assets/locale */
+    char language_applied[32];  /* [ui] language currently loaded */
     CdConfig *store[2];
     char path[2][4096];
     bool save_pending[2];
@@ -258,6 +267,7 @@ typedef struct {
 } Gui;
 
 static CdConfig *store_of(Gui *g, int file) { return g->store[file]; }
+static void gui_sync_language(Gui *g);
 
 static void touch_file(Gui *g, int file) {
     g->save_pending[file] = true;
@@ -275,7 +285,7 @@ static void flush_saves(Gui *g, bool force) {
             saved = true;
         } else {
             snprintf(g->saved_note, sizeof(g->saved_note),
-                     "SAVE FAILED: %s", g->path[f]);
+                     tr("SAVE FAILED: %s"), g->path[f]);
         }
     }
     if (saved) {
@@ -283,7 +293,7 @@ static void flush_saves(Gui *g, bool force) {
         struct tm tmv;
         localtime_r(&t, &tmv);
         snprintf(g->saved_note, sizeof(g->saved_note),
-                 "Saved %02d:%02d:%02d - running apps apply edits live",
+                 tr("Saved %02d:%02d:%02d - running apps apply edits live"),
                  tmv.tm_hour, tmv.tm_min, tmv.tm_sec);
         g->draw_dirty = true;
     }
@@ -367,7 +377,7 @@ static bool num_commit(Gui *g) {
     long v;
     if (!num_value_valid(g, &v)) {
         snprintf(g->saved_note, sizeof(g->saved_note),
-                 "Enter a whole number from %.0f to %.0f", d->min, d->max);
+                 tr("Enter a whole number from %.0f to %.0f"), d->min, d->max);
         g->draw_dirty = true;
         return false;
     }
@@ -1093,7 +1103,7 @@ static void draw_checkbox(cairo_t *c, double x, double y, bool on) {
 }
 static void draw_restart_chip(cairo_t *c, double x, double y) {
     fga(c, .45, .30, .10, .9); rr(c, x, y - 11, 58, 15, 4); cairo_fill(c);
-    font(c, 8.5, true, false); fg(c, 1, .80, .45); txt(c, x + 6, y, "RESTART");
+    font(c, 8.5, true, false); fg(c, 1, .80, .45); txt(c, x + 6, y, tr("RESTART"));
 }
 
 /* One slider track+knob; returns nothing, registers the hitbox. */
@@ -1121,7 +1131,7 @@ static void draw_schema_tab(Gui *g, cairo_t *c, int file, const Def *defs, int n
             last_group = d->group;
             y += 12;
             font(c, 12, true, false); fg(c, .45, .85, .95);
-            txt(c, 28, y + 12, d->group);
+            txt(c, 28, y + 12, tr(d->group));
             fga(c, .25, .35, .50, .6); cairo_set_line_width(c, 1);
             cairo_move_to(c, 28, y + 20); cairo_line_to(c, 952, y + 20); cairo_stroke(c);
             y += 30;
@@ -1134,8 +1144,12 @@ static void draw_schema_tab(Gui *g, cairo_t *c, int file, const Def *defs, int n
             /* row background on hover-ish alternation */
             if (i % 2 == 0) { fga(c, 1, 1, 1, .022); rr(c, 18, ry - 4, 944, row_h, 6); cairo_fill(c); }
             font(c, 14.5, false, false); fg(c, .82, .88, .96);
-            txt_fit(c, 28, ry + 20, 285, d->label);
-            if (d->restart) draw_restart_chip(c, 28 + txt_w(c, d->label) + 10, ry + 20);
+            /* Translate at draw time, never in the table: d->sec/d->key are
+             * config keys, and when enum_is_string the *stored* value is the
+             * English label (def_get_enum compares against it verbatim). */
+            const char *label = tr(d->label);
+            txt_fit(c, 28, ry + 20, 285, label);
+            if (d->restart) draw_restart_chip(c, 28 + txt_w(c, label) + 10, ry + 20);
             double vx = 340, vw = 420; /* control lane */
             char val[64];
             switch (d->kind) {
@@ -1143,7 +1157,7 @@ static void draw_schema_tab(Gui *g, cairo_t *c, int file, const Def *defs, int n
                 bool on = def_get_bool(g, file, d);
                 draw_checkbox(c, vx, ry + 4, on);
                 font(c, 13, false, false); fg(c, .65, .74, .88);
-                txt(c, vx + 30, ry + 19, on ? "On" : "Off");
+                txt(c, vx + 30, ry + 19, on ? tr("On") : tr("Off"));
                 add_box(g, H_TOGGLE, file, i, 0, vx - 4, ry, 90, 28);
                 break;
             }
@@ -1176,7 +1190,7 @@ static void draw_schema_tab(Gui *g, cairo_t *c, int file, const Def *defs, int n
                     }
                     font(c, 12, false, true); fg(c, invalid ? 1 : .52, invalid ? .55 : .66, invalid ? .48 : .82);
                     char range[64];
-                    snprintf(range, sizeof(range), "%.0f-%.0f  (type exact value)", d->min, d->max);
+                    snprintf(range, sizeof(range), tr("%.0f-%.0f  (type exact value)"), d->min, d->max);
                     txt(c, vx + 194, ry + 19, range);
                     add_box(g, H_NUM_FIELD, file, i, 0, vx, ry, 180, 30);
                 } else {
@@ -1194,7 +1208,7 @@ static void draw_schema_tab(Gui *g, cairo_t *c, int file, const Def *defs, int n
                 fg(c, .55, .70, .90); txt(c, vx, ry + 20, "<");
                 fg(c, .55, .70, .90); txt(c, vx + 190, ry + 20, ">");
                 font(c, 14, false, false); fg(c, .85, .93, 1.0);
-                txt_fit(c, vx + 28, ry + 19, 155, d->enums[idx]);
+                txt_fit(c, vx + 28, ry + 19, 155, tr(d->enums[idx]));
                 add_box(g, H_ENUM_DEC, file, i, 0, vx - 6, ry, 30, 28);
                 add_box(g, H_ENUM_INC, file, i, 0, vx + 182, ry, 30, 28);
                 break;
@@ -1216,7 +1230,7 @@ static void draw_schema_tab(Gui *g, cairo_t *c, int file, const Def *defs, int n
                 font(c, 13, false, true); fg(c, .8, .88, .98); txt(c, vx + 64, ry + 19, hex);
                 font(c, 11, false, false); fg(c, .5, .62, .8);
                 bool open = g->exp_color_file == file && g->exp_color_idx == i;
-                txt(c, vx + 138, ry + 18, open ? "(tap to close)" : "(tap to edit)");
+                txt(c, vx + 138, ry + 18, open ? tr("(tap to close)") : tr("(tap to edit)"));
                 add_box(g, H_COLOR, file, i, 0, vx, ry, 240, 28);
                 if (open) {
                     static const char *ch_name[3] = { "R", "G", "B" };
@@ -1304,25 +1318,25 @@ static void draw_apps_tab(Gui *g, cairo_t *c, double top, double bottom) {
         if (en) fg(c, .88, .93, 1); else fg(c, .45, .52, .65);
         const char *nm = (g->field_app == i) ? g->fields[FLD_NAME].buf
                                              : app_str(g, i, "name", APP_DEFS[i].def_name);
-        txt_fit(c, lx + 52, ry + 22, lw - 105, nm);
+        txt_fit(c, lx + 52, ry + 22, lw - 105, tr(nm));
         font(c, 10.5, false, false); fg(c, .50, .62, .80);
         char detail[192];
         int act = app_action(g, i);
-        if (act == ACT_NEON) snprintf(detail, sizeof(detail), "Built-in / underglow");
-        else if (act == ACT_COCKPIT) snprintf(detail, sizeof(detail), "Built-in / driver view");
+        if (act == ACT_NEON) snprintf(detail, sizeof(detail), "%s", tr("Built-in / underglow"));
+        else if (act == ACT_COCKPIT) snprintf(detail, sizeof(detail), "%s", tr("Built-in / driver view"));
         else {
             const char *id = app_str(g, i, "app_id", APP_DEFS[i].def_app_id);
-            snprintf(detail, sizeof(detail), "App / %s", *id ? id : APP_DEFS[i].sec);
+            snprintf(detail, sizeof(detail), tr("App / %s"), *id ? id : APP_DEFS[i].sec);
         }
         txt_fit(c, lx + 52, ry + 39, lw - 62, detail);
-        if (!en) { font(c, 9.5, true, false); fg(c, .75, .55, .35); txt_r(c, lx + lw - 8, ry + 20, "OFF"); }
+        if (!en) { font(c, 9.5, true, false); fg(c, .75, .55, .35); txt_r(c, lx + lw - 8, ry + 20, tr("OFF")); }
         add_box(g, H_APP_ROW, i, 0, 0, lx, ry, lw, 50);
     }
     /* reset entry button (under the list) */
     double by = bottom - 52;
     fga(c, .16, .22, .34, 1); rr(c, lx, by, lw, 32, 7); cairo_fill(c);
     font(c, 12.5, false, false); fg(c, .80, .88, .98);
-    txt(c, lx + 14, by + 21, "Reset selected entry to defaults");
+    txt(c, lx + 14, by + 21, tr("Reset selected entry to defaults"));
     add_box(g, H_RESET_ENTRY, 0, 0, 0, lx, by, lw, 32);
 
     /* --- right: editor form */
@@ -1336,41 +1350,48 @@ static void draw_apps_tab(Gui *g, cairo_t *c, double top, double bottom) {
     cairo_set_line_width(c, 1.2); fg(c, .35, .62, .85); rr(c, fx, y, fw, 46, 8); cairo_stroke(c);
     draw_glyph(c, app_icon(g, g->sel_app), fx + 12, y + 10, 0.85);
     font(c, 10.5, true, false); fg(c, .58, .74, .94);
-    txt(c, fx + 54, y + 17, "ASSIGNED TO THIS ICON");
+    txt(c, fx + 54, y + 17, tr("ASSIGNED TO THIS ICON"));
     font(c, 15, true, false); fg(c, .90, .95, 1);
-    const char *assigned = act == ACT_NEON ? "Built-in - Cycle underglow" :
-                           act == ACT_COCKPIT ? "Built-in - Driver view" : g->fields[FLD_NAME].buf;
+    /* Read-only summaries (this line and the slot list above) translate the
+     * label, because built-in defaults are our own English strings. The
+     * editable text fields deliberately do NOT: they show the bytes actually
+     * stored in the config file, so typing in them can never write a
+     * translated label back into the user's settings. A name the user invented
+     * is not in the catalog and therefore passes through unchanged. */
+    const char *assigned = act == ACT_NEON ? tr("Built-in - Cycle underglow") :
+                           act == ACT_COCKPIT ? tr("Built-in - Driver view")
+                                              : tr(g->fields[FLD_NAME].buf);
     txt_fit(c, fx + 54, y + 38, fw - 220, assigned);
     font(c, 13.5, true, false); fg(c, .55, .90, 1);
-    txt_r(c, fx + fw - 16, y + 29, "Choose app  >");
+    txt_r(c, fx + fw - 16, y + 29, tr("Choose app  >"));
     add_box(g, H_CHOOSE_APP, g->sel_app, 0, 0, fx, y, fw, 46);
     y += 58;
-    draw_field(g, c, FLD_NAME, fx, y, fw, "NAME (button label)", NULL); y += 62;
-    draw_field(g, c, FLD_SUB, fx, y, fw, "DESCRIPTION (small second line)", NULL); y += 62;
+    draw_field(g, c, FLD_NAME, fx, y, fw, tr("NAME (button label)"), NULL); y += 62;
+    draw_field(g, c, FLD_SUB, fx, y, fw, tr("DESCRIPTION (small second line)"), NULL); y += 62;
     if (act == ACT_APP) {
         const char *envv = d->env_name ? getenv(d->env_name) : NULL;
         char hint[256];
         if (envv)
-            snprintf(hint, sizeof(hint), "WARNING: $%s is set in this environment - compositor uses it instead.", d->env_name);
+            snprintf(hint, sizeof(hint), tr("WARNING: $%s is set in this environment - compositor uses it instead."), d->env_name);
         else
-            snprintf(hint, sizeof(hint), "%s", "Shell command. %root% expands to the ChromeDrive install directory.");
-        draw_field(g, c, FLD_EXEC, fx, y, fw, "COMMAND (exec)", hint); y += 76;
-        draw_field(g, c, FLD_APPID, fx, y, fw, "APP ID MATCH (focus instead of relaunch)",
-                   "Substring of the window's app_id, e.g. org.kde.dolphin. Empty = always launch new.");
+            snprintf(hint, sizeof(hint), "%s", tr("Shell command. %root% expands to the ChromeDrive install directory."));
+        draw_field(g, c, FLD_EXEC, fx, y, fw, tr("COMMAND (exec)"), hint); y += 76;
+        draw_field(g, c, FLD_APPID, fx, y, fw, tr("APP ID MATCH (focus instead of relaunch)"),
+                   tr("Substring of the window's app_id, e.g. org.kde.dolphin. Empty means always launch new."));
         y += 76;
     } else {
         font(c, 12.5, false, false); fg(c, .60, .72, .92);
-        txt_fit(c, fx, y + 12, fw, action_desc(act));
+        txt_fit(c, fx, y + 12, fw, tr(action_desc(act)));
         y += 40;
     }
     /* icon cycler */
-    font(c, 11, true, false); fg(c, .55, .68, .88); txt(c, fx, y, "ICON");
+    font(c, 11, true, false); fg(c, .55, .68, .88); txt(c, fx, y, tr("ICON"));
     int icon = app_icon(g, g->sel_app);
     font(c, 17, true, false); fg(c, .55, .70, .90);
     txt(c, fx, y + 30, "<"); txt(c, fx + 170, y + 30, ">");
     draw_glyph(c, icon, fx + 34, y + 10, 0.9);
     font(c, 13.5, false, false); fg(c, .85, .92, 1);
-    txt(c, fx + 78, y + 29, ICON_NAMES[icon]);
+    txt(c, fx + 78, y + 29, tr(ICON_NAMES[icon]));
     add_box(g, H_ICON_DEC, 0, 0, 0, fx - 6, y + 6, 32, 32);
     add_box(g, H_ICON_INC, 0, 0, 0, fx + 162, y + 6, 32, 32);
     y += 58;
@@ -1378,12 +1399,12 @@ static void draw_apps_tab(Gui *g, cairo_t *c, double top, double bottom) {
     bool en = cd_config_get_bool(st, d->sec, "enabled", true);
     draw_checkbox(c, fx, y, en);
     font(c, 13.5, false, false); fg(c, .82, .89, .97);
-    txt(c, fx + 30, y + 15, "Enabled (button responds to clicks)");
+    txt(c, fx + 30, y + 15, tr("Enabled (button responds to clicks)"));
     add_box(g, H_APP_ENABLED, 0, 0, 0, fx - 4, y - 4, 380, 28);
     if (act == ACT_APP) {
         bool as = cd_config_get_bool(st, d->sec, "autostart", d->def_autostart);
         draw_checkbox(c, fx + 400, y, as);
-        txt(c, fx + 430, y + 15, "Autostart (--demo set)");
+        txt(c, fx + 430, y + 15, tr("Autostart (--demo set)"));
         add_box(g, H_APP_AUTOSTART, 0, 0, 0, fx + 396, y - 4, 280, 28);
     }
     g->content_h = bottom - top;
@@ -1405,10 +1426,10 @@ static void draw_picker(Gui *g, cairo_t *c) {
 
     font(c, 10.5, true, true); fg(c, .55, .72, .95);
     char head[96];
-    snprintf(head, sizeof(head), "LAUNCH CONTROL / SLOT %d OF 6", g->picker_slot + 1);
+    snprintf(head, sizeof(head), tr("LAUNCH CONTROL / SLOT %d OF 6"), g->picker_slot + 1);
     txt(c, x + 20, y + 24, head);
     font(c, 19, true, false); fg(c, .92, .96, 1);
-    txt(c, x + 20, y + 50, "Choose an app for this icon");
+    txt(c, x + 20, y + 50, tr("Choose an app for this icon"));
     font(c, 18, true, false); fg(c, .65, .76, .92); txt_r(c, x + w - 18, y + 34, "x");
     add_box(g, H_PICKER_CLOSE, 0, 0, 0, x + w - 44, y + 8, 36, 36);
 
@@ -1418,13 +1439,13 @@ static void draw_picker(Gui *g, cairo_t *c) {
     cairo_set_line_width(c, 1.3); fg(c, .30, .55, .82); rr(c, x + 18, sy, w - 36, 34, 7); cairo_stroke(c);
     font(c, 13, false, false);
     if (*g->picker_filter) { fg(c, .90, .95, 1); txt(c, x + 32, sy + 22, g->picker_filter); }
-    else { fg(c, .42, .54, .74); txt(c, x + 32, sy + 22, "Type to filter all installed apps..."); }
+    else { fg(c, .42, .54, .74); txt(c, x + 32, sy + 22, tr("Type to filter all installed apps...")); }
 
     int count = picker_count(g);
     double ly = y + 114, row_h = 31;
     if (!count) {
         font(c, 14, false, false); fg(c, .55, .65, .82);
-        txt(c, x + 24, ly + 28, "No installed app matches that filter.");
+        txt(c, x + 24, ly + 28, tr("No installed app matches that filter."));
     }
     for (int row = 0; row < PICKER_VISIBLE; row++) {
         int ordinal = g->picker_scroll + row;
@@ -1439,9 +1460,9 @@ static void draw_picker(Gui *g, cairo_t *c) {
         }
         draw_glyph(c, ch->icon, x + 20, ry + 5, 0.72);
         font(c, 13.5, true, false); fg(c, .90, .94, 1);
-        txt_fit(c, x + 58, ry + 21, w - 255, ch->name);
+        txt_fit(c, x + 58, ry + 21, w - 255, tr(ch->name));
         font(c, 10.5, false, true); fg(c, .50, .64, .84);
-        const char *side = ch->kind == CHOICE_APP ? ch->app_id : "built-in";
+        const char *side = ch->kind == CHOICE_APP ? ch->app_id : tr("built-in");
         txt_r(c, x + w - 48, ry + 20, side);
         if (choice_is_current(g, g->picker_slot, ch)) {
             font(c, 13, true, false); fg(c, .45, .95, .70);
@@ -1475,6 +1496,8 @@ static void draw_picker(Gui *g, cairo_t *c) {
 }
 
 static void draw_ui(Gui *g, cairo_t *c) {
+    /* Picking a language in the schema tab re-labels this very frame. */
+    gui_sync_language(g);
     g->box_count = 0;
     /* background */
     cairo_pattern_t *grad = cairo_pattern_create_linear(0, 0, 0, 625);
@@ -1485,22 +1508,22 @@ static void draw_ui(Gui *g, cairo_t *c) {
 
     /* header: title + tabs */
     font(c, 19, true, false); fg(c, .92, .95, 1);
-    txt(c, 22, 35, "ChromeDrive Settings");
+    txt(c, 22, 35, tr("ChromeDrive Settings"));
     static const char *TAB_NAMES[3] = { "Launch Menu", "Garage3D", "Compositor" };
     double tx = 352;
     for (int i = 0; i < 3; i++) {
         font(c, 14.5, i == g->tab, false);
-        double tw = txt_w(c, TAB_NAMES[i]) + 36;
+        double tw = txt_w(c, tr(TAB_NAMES[i])) + 36;
         if (i == g->tab) { fga(c, .18, .35, .55, .95); rr(c, tx, 12, tw, 34, 8); cairo_fill(c); }
         fg(c, i == g->tab ? .95 : .62, i == g->tab ? .98 : .72, 1);
-        txt(c, tx + 18, 35, TAB_NAMES[i]);
+        txt(c, tx + 18, 35, tr(TAB_NAMES[i]));
         add_box(g, H_TAB, i, 0, 0, tx, 10, tw, 38);
         tx += tw + 10;
     }
     if (g->tab != TAB_APPS) {
         fga(c, .16, .22, .34, 1); rr(c, 806, 12, 172, 34, 8); cairo_fill(c);
         font(c, 12, false, false); fg(c, .80, .88, .98);
-        txt(c, 822, 34, "Reset tab to defaults");
+        txt(c, 822, 34, tr("Reset tab to defaults"));
         add_box(g, H_RESET_TAB, 0, 0, 0, 806, 12, 172, 34);
     }
 
@@ -1514,12 +1537,12 @@ static void draw_ui(Gui *g, cairo_t *c) {
     font(c, 10.5, false, true); fg(c, .48, .60, .78);
     txt_fit(c, 22, 599, 560, g->tab == TAB_G3 ? g->path[FILE_G3] : g->path[FILE_CD]);
     font(c, 11, false, false);
-    if (g->save_pending[0] || g->save_pending[1]) { fg(c, .95, .80, .45); txt_r(c, 978, 599, "Saving..."); }
+    if (g->save_pending[0] || g->save_pending[1]) { fg(c, .95, .80, .45); txt_r(c, 978, 599, tr("Saving...")); }
     else { fg(c, .45, .85, .65); txt_r(c, 978, 599, g->saved_note); }
     font(c, 10.5, false, false); fg(c, .40, .50, .68);
     txt(c, 22, 617, g->tab == TAB_APPS
-        ? "Right-click a slot (or Choose app) to assign an installed app; changes relabel Launch Control live."
-        : "Drag sliders / tap toggles, or click the VNC port and type - files save automatically.");
+        ? tr("Right-click a slot (or Choose app) to assign an installed app; changes relabel Launch Control live.")
+        : tr("Drag sliders / tap toggles, or click the VNC port and type - files save automatically."));
     draw_picker(g, c);
 }
 
@@ -1910,6 +1933,62 @@ static void gui_key(Gui *g, xkb_keysym_t sym, const char *utf8, int utf8_len) {
 
 /* ------------------------------------------------------------- GUI create */
 
+/* The settings client is <root>/bin/chromedrive-config, so the install root
+ * is two directories up - the same convention src/main.c uses via
+ * /proc/self/exe, repeated here because this binary never links chrome.h. */
+static void gui_resolve_root(Gui *g) {
+    ssize_t n = readlink("/proc/self/exe", g->root, sizeof(g->root) - 1);
+    if (n <= 0) { g->root[0] = 0; return; }
+    g->root[n] = 0;
+    char *slash = strrchr(g->root, '/');
+    if (slash) *slash = 0;              /* strip the binary name */
+    slash = strrchr(g->root, '/');
+    if (slash) *slash = 0;              /* strip bin/ */
+}
+
+/* Backing store for the language row's labels: Def keeps bare pointers, so
+ * these have to outlive the table. */
+static char language_tags[8][32];
+
+/* Choice 0 is "auto" (follow LC_ALL/LC_MESSAGES/LANG); the rest are the
+ * catalogs i18n_languages() found on disk, English first then alphabetical. */
+static void gui_load_languages(Gui *g) {
+    Def *d = &CD_DEFS[CD_LANGUAGE_ROW];
+    int n = 0;
+    snprintf(language_tags[n], sizeof language_tags[0], "auto");
+    d->enums[n] = language_tags[n];
+    n++;
+    char list[256];
+    i18n_languages(list, sizeof list, g->root);
+    for (const char *p = list; *p && n < 8; ) {
+        const char *comma = strchr(p, ',');
+        size_t len = comma ? (size_t)(comma - p) : strlen(p);
+        if (len && len < sizeof language_tags[0]) {
+            memcpy(language_tags[n], p, len);
+            language_tags[n][len] = 0;
+            d->enums[n] = language_tags[n];
+            n++;
+        }
+        p += len + (comma ? 1 : 0);
+    }
+    d->enum_count = n;
+    d->max = (double)(n - 1);
+    d->min = 0;
+}
+
+/* The GUI edits the config file live and the compositor reloads it, but this
+ * process has to relabel itself too. Cheap enough to poll once a frame: it is
+ * one string compare. */
+static void gui_sync_language(Gui *g) {
+    const char *lang_env = getenv("CHROMEDRIVE_LANG");
+    const char *want = (lang_env && *lang_env) ? lang_env
+                       : cd_config_get_string(g->store[FILE_CD], "ui", "language", "auto");
+    if (!strcmp(want, g->language_applied)) return;
+    snprintf(g->language_applied, sizeof g->language_applied, "%s", want);
+    i18n_set_language(g->root, want);
+    g->draw_dirty = true;
+}
+
 static bool gui_init(Gui *g, const char *config_dir) {
     memset(g, 0, sizeof(*g));
     g->focus = -1;
@@ -1926,9 +2005,20 @@ static bool gui_init(Gui *g, const char *config_dir) {
     g->store[FILE_CD] = cd_config_load(g->path[FILE_CD]);
     g->store[FILE_G3] = cd_config_load(g->path[FILE_G3]);
     if (!g->store[FILE_CD] || !g->store[FILE_G3]) return false;
+    /* Language before any text is built: gui_load_languages() needs the root,
+     * and the status note below is drawn through tr(). */
+    gui_resolve_root(g);
+    /* $CHROMEDRIVE_LANG beats the config file, matching the compositor's
+     * apply_language() and the CHROMEDRIVE_* override convention. */
+    const char *lang_env = getenv("CHROMEDRIVE_LANG");
+    snprintf(g->language_applied, sizeof g->language_applied, "%s",
+             (lang_env && *lang_env) ? lang_env
+                                     : cd_config_get_string(g->store[FILE_CD], "ui", "language", "auto"));
+    i18n_set_language(g->root, g->language_applied);
+    gui_load_languages(g);
     snprintf(g->saved_note, sizeof(g->saved_note), "%s",
              file_exists(g->path[FILE_CD]) || file_exists(g->path[FILE_G3])
-                 ? "Settings loaded" : "Defaults (files created on first edit)");
+                 ? tr("Settings loaded") : tr("Defaults (files created on first edit)"));
     g->measure_surf = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, 4, 4);
     g->measure = cairo_create(g->measure_surf);
     g->num_file = -1;

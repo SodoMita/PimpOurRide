@@ -211,6 +211,9 @@ fps = 60              # 1..120 frame cap
 fov = 65              # 1..100 driver FOV; background scroll clamps to 1..75
 fullscreen = false    # --windowed only      (restart)
 
+[ui]
+language = auto       # auto | en | ru | any tag with an installed catalog (live)
+
 [cockpit]
 neon = 0              # 0 Ultraviolet, 1 Ice Blue, 2 Acid Lime
 hud = true            # HUD overlay visible
@@ -307,11 +310,67 @@ fan_speed = 1.0
 balls = true
 ```
 
+## Interface language
+
+`[ui] language` selects the language of ChromeDrive's **own** chrome: the HUD,
+the Driver's Manual, Launch Control labels, the transient notices, and the
+settings GUI itself. It does not touch the locale of the Wayland clients you
+run inside the cockpit — a compositor is not responsible for their
+translations, and trying to be is how you get a half-translated desktop.
+
+```sh
+# the same thing from a shell, no config edit needed
+CHROMEDRIVE_LANG=ru ./bin/chromedrive
+```
+
+`auto` follows `LC_ALL`, then `LC_MESSAGES`, then `LANG`; `C`, `POSIX` and an
+unset locale all mean English. The GUI offers `auto` plus every language it
+finds an installed catalog for, and switching applies immediately — the
+compositor rebuilds the textures it baked text into, and the settings window
+relabels itself on the next frame.
+
+Catalogs are plain UTF-8 text at `assets/locale/<tag>.lang`, looked up in
+this order (first hit wins, no merging):
+
+1. `$CHROMEDRIVE_LOCALE_DIR`
+2. `$XDG_CONFIG_HOME/chromedrive/locale` (your overrides)
+3. `$XDG_DATA_HOME/chromedrive/locale`
+4. `<install root>/assets/locale` (shipped)
+
+The format is the same INI shape as the config files, keyed by the **English
+source string** (the gettext model) rather than by invented identifiers:
+
+```ini
+# assets/locale/ru.lang
+Launch Control = Пусковая панель
+Window width = Ширина окна
+```
+
+Two consequences worth knowing:
+
+- **English always works.** A missing catalog, a missing key, or a typo in a
+  language tag falls back to the source string, so a partial translation is a
+  normal, shippable state — never a screen full of blanks or key names.
+- **Rewording an English string silently drops its translation.** That is the
+  price of using readable text as the key. `tests/test_i18n.c` guards against
+  it: `make test` fails if any key in the shipped catalog no longer appears
+  verbatim in `src/` or `clients/`. Keys may not contain `=` (it separates key
+  from value) and are matched exactly including case and spacing, so keep the
+  doubled spaces that align the HUD's columns.
+
+To add a language, copy `assets/locale/ru.lang`, translate the right-hand
+side, and reload — no build step, no extraction tool, no code change.
+
 ## Implementation notes
 
 - `include/cdconfig.h` + `src/cdconfig.c`: the generic string-typed INI
   store (load/atomic-save/typed getters). Used by the compositor and the
   GUI. `tests/test_config.c` covers round-trips incl. unknown keys.
+- `include/i18n.h` + `src/i18n.c`: the runtime translator (catalog parsing,
+  language resolution, search order). Deliberately standalone like
+  `cdconfig.h`, so the settings GUI links it without dragging in GL.
+  `tests/test_i18n.c` covers parsing/escapes/search order/hot reload and
+  includes the catalog-drift guard described above.
 - Garage3D needs no store (it never writes): `clients/garage3d/src/config.c`
   is a typed loader for the same format, with every value range-clamped —
   it must stay standalone, hence the deliberate small duplication.

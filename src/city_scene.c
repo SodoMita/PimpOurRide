@@ -1,5 +1,6 @@
 #include "chrome.h"
 #include "city.h"
+#include "i18n.h"
 #include <math.h>
 #include <string.h>
 
@@ -42,7 +43,7 @@ static GLuint city_sign_texture(const char *name,int index){
  cairo_set_source_rgb(c,accents[index][0],accents[index][1],accents[index][2]);cairo_set_line_width(c,7);cairo_rectangle(c,7,7,1010,178);cairo_stroke(c);
  cairo_select_font_face(c,"DejaVu Sans",CAIRO_FONT_SLANT_NORMAL,CAIRO_FONT_WEIGHT_BOLD);cairo_set_font_size(c,58);
  cairo_text_extents_t ex;cairo_text_extents(c,name,&ex);cairo_move_to(c,(1024-ex.width)/2,92);cairo_show_text(c,name);
- cairo_set_font_size(c,25);cairo_set_source_rgb(c,.62,.72,.82);const char *sub="AUTONOMOUS HOVER SERVICE  /  DRIVE THROUGH";cairo_text_extents(c,sub,&ex);cairo_move_to(c,(1024-ex.width)/2,145);cairo_show_text(c,sub);
+ cairo_set_font_size(c,25);cairo_set_source_rgb(c,.62,.72,.82);const char *sub=tr("AUTONOMOUS HOVER SERVICE  /  DRIVE THROUGH");cairo_text_extents(c,sub,&ex);cairo_move_to(c,(1024-ex.width)/2,145);cairo_show_text(c,sub);
  GLuint tex=ui_texture(im,0);cairo_destroy(c);cairo_surface_destroy(im);return tex;
 }
 
