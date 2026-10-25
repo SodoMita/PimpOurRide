@@ -216,6 +216,50 @@ static void test_evdev_touch_id_pool(void){
   int id_after_reset = evdev_util_touch_id_alloc(); CHECK(id_after_reset == 0);
 }
 
+static void test_evdev_vt_shortcut(void){
+ EvdevVtShortcut state={0};
+ static const uint16_t keys[12]={KEY_F1,KEY_F2,KEY_F3,KEY_F4,KEY_F5,KEY_F6,
+  KEY_F7,KEY_F8,KEY_F9,KEY_F10,KEY_F11,KEY_F12};
+ for(int i=0;i<12;i++){
+  uint16_t code=keys[i];int vt=i+1;
+  CHECK(evdev_vt_shortcut(&state,code,1,true,true)==vt);
+  CHECK(evdev_vt_shortcut(&state,code,2,true,true)==-1); /* repeat */
+  CHECK(evdev_vt_shortcut(&state,code,0,false,false)==-1);
+  CHECK(evdev_vt_shortcut(&state,code,0,true,true)==0);
+ }
+ /* The numeric gap between F10 and F11 contains ordinary keys, not VTs. */
+ for(int code=KEY_F10+1;code<KEY_F11;code++)
+  CHECK(evdev_vt_shortcut(&state,(uint16_t)code,1,true,true)==0);
+ /* SDL/VNC share Server.keys but cannot set this per-evdev modifier mask. */
+ EvdevVtShortcut physical={0};
+ CHECK(evdev_vt_shortcut(&physical,KEY_F1,1,
+  evdev_vt_shortcut_ctrl(&physical),evdev_vt_shortcut_alt(&physical))==0);
+ evdev_vt_shortcut_update_modifiers(&physical,KEY_LEFTCTRL,1);
+ evdev_vt_shortcut_update_modifiers(&physical,KEY_RIGHTALT,1);
+ CHECK(evdev_vt_shortcut_ctrl(&physical)&&evdev_vt_shortcut_alt(&physical));
+ CHECK(evdev_vt_shortcut(&physical,KEY_F1,1,
+  evdev_vt_shortcut_ctrl(&physical),evdev_vt_shortcut_alt(&physical))==1);
+ CHECK(evdev_vt_shortcut(&physical,KEY_F1,0,false,false)==-1);
+ evdev_vt_shortcut_update_modifiers(&physical,KEY_LEFTCTRL,0);
+ CHECK(!evdev_vt_shortcut_ctrl(&physical)&&evdev_vt_shortcut_alt(&physical));
+ evdev_vt_shortcut_update_modifiers(&physical,KEY_RIGHTALT,0);
+ CHECK(!evdev_vt_shortcut_alt(&physical));
+ evdev_vt_shortcut_update_modifiers(&physical,KEY_LEFTCTRL,1);
+ evdev_vt_shortcut_reset(&physical);
+ CHECK(!evdev_vt_shortcut_ctrl(&physical)&&physical.consumed_mask==0);
+ CHECK(evdev_vt_shortcut(&state,KEY_F1,1,true,false)==0);
+ CHECK(evdev_vt_shortcut(&state,KEY_F1,1,false,true)==0);
+ CHECK(evdev_vt_shortcut(&state,KEY_A,1,true,true)==0);
+ /* Simultaneous function keys have independent consumed releases. */
+ CHECK(evdev_vt_shortcut(&state,KEY_F3,1,true,true)==3);
+ CHECK(evdev_vt_shortcut(&state,KEY_F4,1,true,true)==4);
+ CHECK(evdev_vt_shortcut(&state,KEY_F3,0,false,false)==-1);
+ CHECK(evdev_vt_shortcut(&state,KEY_F4,0,false,false)==-1);
+ CHECK(evdev_vt_shortcut(&state,KEY_F2,1,true,true)==2);
+ evdev_vt_shortcut_reset(&state);
+ CHECK(evdev_vt_shortcut(&state,KEY_F2,0,false,false)==0);
+}
+
 static void test_evdev_async_queue(void){
  CdEvdevQueue q;
  CHECK(cd_evdev_queue_init(&q));
@@ -257,6 +301,7 @@ int main(void){
   test_mode_parse();
   test_evdev_scale_abs();
   test_evdev_touch_id_pool();
+  test_evdev_vt_shortcut();
   test_evdev_async_queue();
   if(failures)return 1;
   puts("PASS: fbdev formats/geometry/modes + evdev abs/touch ids + async queue ordering and overflow barrier");

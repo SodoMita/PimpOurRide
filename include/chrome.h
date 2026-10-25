@@ -3,6 +3,7 @@
 #define _GNU_SOURCE
 #include <stdbool.h>
 #include <stdint.h>
+#include <signal.h>
 #include <stdio.h>
 #include <sys/types.h>
 #include <wayland-server-core.h>
@@ -18,6 +19,7 @@
 #include "math3d.h"
 #include "vehicle.h"
 #include "telemetry.h"
+#include "evdev_util.h"
 /* Cockpit backdrop (src/scene.c environment()), selectable in
  * chromedrive.conf / the config GUI: the real 3D garage (default), the
  * original flat garage.webp poster, or nothing at all. */
@@ -28,6 +30,10 @@
  * renderer; DRM uses a GBM window surface/default framebuffer with explicit
  * KMS page flips; WINDOWED is the nested SDL2/GLX development window. */
 typedef enum { CD_BACKEND_HEADLESS=0,CD_BACKEND_WINDOWED=1,CD_BACKEND_FBDEV=2,CD_BACKEND_DRM=3 } Backend;
+/* DRM presentation result: interrupted is distinct from a skipped frame so
+ * main can service a VT release outside the page-flip wait and withhold the
+ * frame callback until a frame is actually presented. */
+typedef enum { CD_PRESENT_OK=0,CD_PRESENT_SKIPPED=1,CD_PRESENT_INTERRUPTED=2 } PresentResult;
 #define CD_APP_BAYS 8
 #define CD_CLUSTER_SLOT 8
 #define CD_MAX_MONITORS 9 /* eight app mounts + one fixed instrument cluster */
@@ -166,6 +172,7 @@ SdlTouchFinger sdl_touch[CD_MAX_TOUCH_POINTS];int sdl_touch_chrome_id;
  int vnc_prev_mask,vnc_prev_x,vnc_prev_y;              /* RFB pointer edge-detection state (no separate down/up events in the protocol) */
  char fbdev_path[256];bool fbdev_vsync,fbdev_pan,fbdev_vnc_mirror,fbdev_modeset,fbdev_evdev,fbdev_grab_input;int fbdev_mode_width,fbdev_mode_height,fbdev_mode_bpp;void *fbdev_state;char fbdev_input_devices[8][256];int fbdev_input_device_count;void *evdev_state;
  char drm_path[256];int drm_mode_width,drm_mode_height;void *drm_state;
+ void *vt_state; /* backend_vt.c: managed VT signalfd/mode state for DRM */
  bool dmabuf_supported;int dmabuf_format_count;DmabufFormat dmabuf_formats[CD_DMABUF_MAX_FORMATS];
  int width,height,fps_limit,theme,hover_button,hover_close,active_slot;
  int bg_mode; /* CD_BG_*: which environment() backdrop to draw */
@@ -325,12 +332,34 @@ void backend_fbdev_shutdown(Server *s);
 /* backend_drm.c: direct GBM/EGL output with DRM/KMS modesetting + page flips. */
 bool backend_drm_init(Server *s);
 void backend_drm_poll(Server *s);
-void backend_drm_present(Server *s);
+PresentResult backend_drm_present(Server *s);
+bool backend_drm_release_for_vt(Server *s);
+bool backend_drm_acquire_after_vt(Server *s);
 void backend_drm_shutdown(Server *s);
+/* backend_vt.c: managed Linux VT switching for direct DRM output. Signals are
+ * blocked process-wide and handled through a signalfd on the main thread. */
+typedef enum { CD_VT_SIGNAL_NONE=0,CD_VT_SIGNAL_RELEASE=1,CD_VT_SIGNAL_ACQUIRE=2 } CdVtSignal;
+void backend_vt_block_signals(void);
+bool backend_vt_child_mask(sigset_t *mask);
+bool backend_vt_init(Server *s);
+void backend_vt_shutdown(Server *s);
+CdVtSignal backend_vt_poll(Server *s);
+void backend_vt_service(Server *s);
+int backend_vt_fd(Server *s);
+int backend_vt_wait(Server *s,int timeout_ms);
+bool backend_vt_managed(Server *s);
+bool backend_vt_is_suspended(Server *s);
+bool backend_vt_needs_resume(Server *s);
+bool backend_vt_request(Server *s,int vt);
+bool backend_vt_ack_release(Server *s);
+bool backend_vt_ack_acquire(Server *s);
+void backend_vt_mark_resumed(Server *s);
 /* backend_evdev.c: asynchronous raw evdev input for direct-display backends. */
 bool backend_evdev_init(Server *s);
 void backend_evdev_poll(Server *s);
 void backend_evdev_shutdown(Server *s);
+void backend_evdev_suspend(Server *s);
+bool backend_evdev_resume(Server *s);
 
 #define EVDEV_MAX_DEVICES 8
 #define EVDEV_MAX_SLOTS 16
@@ -374,6 +403,7 @@ typedef struct {
     uint32_t sent_button_mask;
     bool btn_left, btn_right, btn_middle, btn_side, btn_extra;
     bool middle_look_held;
+    EvdevVtShortcut vt_shortcut;
 } EvdevDevice;
 typedef struct {
     EvdevDevice devices[EVDEV_MAX_DEVICES];
@@ -382,6 +412,7 @@ typedef struct {
     char explicit_paths[EVDEV_MAX_DEVICES][256];
     int explicit_count;
     bool evdev_enabled;
+    bool suspended; /* worker stopped for a VT switch; fds stay open */
     void *async_state; /* backend_evdev.c: epoll worker + bounded main-thread queue */
 } EvdevState;
 #endif

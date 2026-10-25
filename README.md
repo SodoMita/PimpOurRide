@@ -71,7 +71,13 @@ as aliases):
   This path needs DRM-master/KMS access and a GBM `XRGB8888` EGL configuration;
   it does not silently fall back to fbdev. Local input is the same asynchronous
   evdev path as fbdev (`--no-evdev`, `--input-device`, and `--grab-input` are
-  generic aliases for the corresponding fbdev-named options).
+  generic aliases for the corresponding fbdev-named options). On a controlling
+  Linux VT, local-evdev **Ctrl+Alt+F1…F12** switches VTs: ChromeDrive releases
+  held input and evdev grabs, drains/retires scanout, drops DRM master, and
+  pauses Wayland/physics/rendering until it reacquires master on return. SDL
+  and VNC keys never switch the host VT. Without a managed controlling VT,
+  DRM still runs but downgrades `--grab-input` with a warning rather than
+  risking console lockout.
 - **`--windowed`: a real SDL2/GLX window on an X server**, kept only as a
   local dev/debug path with eyes on a real display. `zwp_linux_dmabuf_v1` is
   **not** advertised here — see "GPU / dma-buf" below for why.
@@ -90,7 +96,8 @@ as aliases):
   “Garage3D” below.
 - **Limitations in this build**: no layer-shell or Xwayland. DRM/KMS currently
   drives one connected connector/CRTC with primary-framebuffer page flips, not
-  an atomic multi-plane/output manager or a VT-session broker. fbdev remains a
+  an atomic multi-plane/output manager. VT support manages only the process's
+  controlling Linux VT; it is not a logind/libseat session broker. fbdev remains a
   CPU-readback/blit path even though it can modeset and accept local input.
   There are eight general app mounts plus one dedicated instrument-cluster
   output; buffers capped at 16 MiB/64 MiB total per surface for safety; single
@@ -534,11 +541,13 @@ tools/viewer/                 static noVNC remote desktop + safe hold-to-drive c
   rescans. Non-direct
   multitouch devices (touchpads) are treated as pointer-only; raw touchpad
   motion is not translated to `wl_touch`. `wl_touch` is advertised only when
-  a direct-touch device is present at startup. Grab via `--fbdev-grab-input`
-  warns about VT lockout; ungrabbed keys can still reach the VT console. A
-  getty/fbcon on the same VT can still fight over the console; run it on a
-  dedicated VT or redirect console output. VT/fbcon mode is still unmanaged
-  (no `KD_GRAPHICS`).
+  a direct-touch device is present at startup. DRM's managed VT path handles
+  Ctrl+Alt+F1…F12 and suspend/resume as described above; fbdev VT switching is
+  still unmanaged, and its `--fbdev-grab-input` option therefore retains the
+  VT-lockout warning. A getty/fbcon on the same VT can still fight over the
+  console; run direct output on a dedicated VT or redirect console output.
+  Neither direct backend changes the console's KD mode (`KD_GRAPHICS` is not
+  requested).
 - No layer-shell (so panels/launchers built for wlroots-style shells won't run).
 - dma-buf import works on the EGL backends (`--headless`, `--fbdev`, and
   `--drm`); not on `--windowed` (GLX) — by design, see "GPU / dma-buf" above.

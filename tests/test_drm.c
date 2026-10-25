@@ -92,6 +92,7 @@ static struct {
  bool have_crtc,have_second_connector;
 
  bool fail_set_master;
+ bool fail_drop_master;
  bool fail_get_resources;
  bool fail_get_connector;
  bool fail_get_encoder;
@@ -153,6 +154,10 @@ static struct {
  bool evdev_alloc_state;
  EvdevState evdev;
 
+ bool vt_managed,vt_suspended,vt_ready;
+ int vt_fd,vt_init_calls,vt_shutdown_calls;
+ int vt_state;
+
  int poll_calls;
  int poll_timeouts;
  int poll_errors;
@@ -193,6 +198,8 @@ static void reset_world(void) {
  W.evdev_init_result=true;
  W.evdev_alloc_state=true;
  W.evdev.device_count=1;
+ W.vt_managed=true;
+ W.vt_fd=-1;
 
  W.resources.count_connectors=1;
  W.resources.connectors=W.connectors;
@@ -348,6 +355,7 @@ int drmDropMaster(int fd) {
  W.drop_master_calls++;
  if(fd!=W.master_fd)violation("drmDropMaster on wrong fd");
  if(!W.master_active)violation("drmDropMaster without master");
+ if(W.fail_drop_master){errno=EIO;return -1;}
  W.master_active=false;
  return 0;
 }
@@ -746,7 +754,13 @@ int poll(struct pollfd *fds,nfds_t nfds,int timeout) {
  W.poll_calls++;
  if(W.poll_fail){W.poll_errors++;errno=EIO;return -1;}
  if(!fds||nfds<1){W.poll_errors++;errno=EINVAL;return -1;}
- fds[0].revents=0;
+ for(nfds_t i=0;i<nfds;i++)fds[i].revents=0;
+ /* VT activity wins a race with a queued flip so tests can prove that the
+  * wait returns for main-thread release handling instead of consuming DRM. */
+ if(W.vt_ready){
+  if(nfds<2){violation("VT readiness without its signalfd in poll");errno=EINVAL;return -1;}
+  fds[1].revents=POLLIN;return 1;
+ }
  if(W.poll_bad_revents){fds[0].revents=POLLERR;W.poll_errors++;return 1;}
  if(W.event_count>0){fds[0].revents=POLLIN;return 1;}
  W.poll_timeouts++;
@@ -770,6 +784,28 @@ void backend_evdev_shutdown(Server *s) {
  if(s->evdev_state==&W.evdev)s->evdev_state=NULL;
 }
 
+bool backend_vt_init(Server *s) {
+ W.vt_init_calls++;
+ s->vt_state=&W.vt_state;
+ return true;
+}
+void backend_vt_shutdown(Server *s) {
+ W.vt_shutdown_calls++;
+ s->vt_state=NULL;
+}
+int backend_vt_fd(Server *s) {
+ (void)s;
+ return W.vt_managed?W.vt_fd:-1;
+}
+bool backend_vt_managed(Server *s) {
+ (void)s;
+ return W.vt_managed;
+}
+bool backend_vt_is_suspended(Server *s) {
+ (void)s;
+ return W.vt_managed&&W.vt_suspended;
+}
+
 static bool init_ok(Server *s,const char *path) {
  init_server(s,path);
  bool ok=backend_drm_init(s);
@@ -777,7 +813,7 @@ static bool init_ok(Server *s,const char *path) {
  return ok;
 }
 
-static void check_all_clean(Server *s,bool master_expected) {
+static void check_all_clean(Server *s,int drop_expected) {
  CHECK(W.violations==0);
  CHECK(W.fb_count==0);
  CHECK(active_locked_bos()==0);
@@ -789,11 +825,13 @@ static void check_all_clean(Server *s,bool master_expected) {
  CHECK(W.max_locked_bos<=2);
  CHECK(W.add_fb_over_bound==0);
  CHECK(s->drm_state==NULL);
+ CHECK(s->vt_state==NULL);
+ CHECK(W.vt_init_calls==W.vt_shutdown_calls);
  CHECK(s->egl_display==EGL_NO_DISPLAY);
  CHECK(s->egl_context==EGL_NO_CONTEXT);
  CHECK(s->target_fbo==0);
  CHECK(!W.master_active);
- CHECK(W.drop_master_calls==(master_expected?1:0));
+ CHECK(W.drop_master_calls==drop_expected);
  CHECK(fd_is_closed(W.master_fd));
 }
 
@@ -1026,6 +1064,129 @@ static void test_pending_flip_timeout_recovery(void) {
 
  backend_drm_shutdown(&s);
  check_all_clean(&s,true);
+ unlink(path);
+}
+
+static void test_vt_release_acquire_lifecycle(void) {
+ reset_world();
+ char path[64];make_temp_card(path,sizeof(path));
+ Server s;CHECK(init_ok(&s,path));
+ CHECK(backend_drm_present(&s)==CD_PRESENT_OK);
+ CHECK(backend_drm_present(&s)==CD_PRESENT_OK);
+ int flips=W.page_flip_calls,swaps=W.egl_swap_calls;
+
+ CHECK(backend_drm_release_for_vt(&s));
+ W.vt_suspended=true;
+ CHECK(W.drop_master_calls==1);
+ CHECK(!W.master_active);
+ CHECK(W.fb_count==0);
+ CHECK(active_locked_bos()==0);
+ /* The two presents above produce initial SetCrtc + VT disable. */
+ CHECK(W.set_crtc_calls==2);
+ CHECK(W.crtc_calls[1].buffer_id==0);
+ CHECK(W.crtc_calls[1].connector_count==0);
+ CHECK(!W.crtc_calls[1].has_mode);
+ CHECK(backend_drm_present(&s)==CD_PRESENT_SKIPPED);
+ CHECK(W.egl_swap_calls==swaps);
+
+ W.fail_set_master=true;
+ CHECK(!backend_drm_acquire_after_vt(&s));
+ CHECK(W.set_master_calls==2);
+ CHECK(backend_drm_present(&s)==CD_PRESENT_SKIPPED);
+ W.fail_set_master=false;
+ CHECK(backend_drm_acquire_after_vt(&s));
+ W.vt_suspended=false;
+ CHECK(W.master_active);
+ CHECK(W.set_master_calls==3);
+ CHECK(backend_drm_present(&s)==CD_PRESENT_OK);
+ CHECK(W.egl_swap_calls==swaps+1);
+ CHECK(W.set_crtc_calls==3); /* fresh initial modeset after resume */
+ CHECK(W.page_flip_calls==flips);
+ CHECK(W.crtc_calls[2].buffer_id!=0);
+ CHECK(W.crtc_calls[2].connector_count==1);
+ CHECK(backend_drm_present(&s)==CD_PRESENT_OK);
+ CHECK(W.page_flip_calls==flips+1);
+ backend_drm_shutdown(&s);
+ check_all_clean(&s,2); /* VT release + final active shutdown */
+ unlink(path);
+}
+
+static void test_vt_flip_interruption_and_drain(void) {
+ reset_world();
+ char path[64];make_temp_card(path,sizeof(path));
+ Server s;CHECK(init_ok(&s,path));
+ CHECK(backend_drm_present(&s)==CD_PRESENT_OK);
+ W.auto_complete_flip=false;W.vt_fd=55;W.vt_ready=true;
+ CHECK(backend_drm_present(&s)==CD_PRESENT_INTERRUPTED);
+ CHECK(W.page_flip_calls==1);
+ CHECK(W.fb_count==2);
+ CHECK(active_locked_bos()==2);
+ int swaps=W.egl_swap_calls,adds=W.add_fb_calls;
+ /* A second pre-swap wait is also interrupted and cannot lock a third BO. */
+ CHECK(backend_drm_present(&s)==CD_PRESENT_INTERRUPTED);
+ CHECK(W.egl_swap_calls==swaps);
+ CHECK(W.add_fb_calls==adds);
+ CHECK(W.fb_count==2);
+ W.vt_ready=false;
+ enqueue_flip_event(W.last_flip_user_data);
+ CHECK(backend_drm_release_for_vt(&s));
+ W.vt_suspended=true;
+ CHECK(W.event_count==0);
+ CHECK(W.fb_count==0);
+ CHECK(active_locked_bos()==0);
+ int polls=W.poll_calls,crtcs=W.set_crtc_calls;
+ backend_drm_shutdown(&s);
+ CHECK(W.poll_calls==polls); /* inactive shutdown does not wait for a flip */
+ CHECK(W.set_crtc_calls==crtcs); /* and never restores the old CRTC */
+ check_all_clean(&s,1);
+ unlink(path);
+}
+
+static void test_vt_failed_retire_shutdown(void) {
+ reset_world();
+ char path[64];make_temp_card(path,sizeof(path));
+ Server s;CHECK(init_ok(&s,path));
+ CHECK(backend_drm_present(&s)==CD_PRESENT_OK);
+ W.fail_set_crtc=true;
+ CHECK(!backend_drm_release_for_vt(&s));
+ W.vt_suspended=true;
+ CHECK(W.fb_count==1); /* possibly scanned-out BO is retained for cleanup */
+ CHECK(active_locked_bos()==1);
+ int crtcs=W.set_crtc_calls;
+ backend_drm_shutdown(&s);
+ CHECK(W.set_crtc_calls==crtcs);
+ check_all_clean(&s,1);
+ unlink(path);
+}
+
+static void test_vt_failed_drain_shutdown(void) {
+ reset_world();
+ char path[64];make_temp_card(path,sizeof(path));
+ Server s;CHECK(init_ok(&s,path));
+ CHECK(backend_drm_present(&s)==CD_PRESENT_OK);
+ W.auto_complete_flip=false;
+ CHECK(backend_drm_present(&s)==CD_PRESENT_INTERRUPTED);
+ CHECK(W.fb_count==2);
+ CHECK(!backend_drm_release_for_vt(&s));
+ W.vt_suspended=true;
+ CHECK(W.fb_count==2);
+ CHECK(active_locked_bos()==2);
+ int polls=W.poll_calls;
+ backend_drm_shutdown(&s);
+ CHECK(W.poll_calls==polls);
+ check_all_clean(&s,1);
+ unlink(path);
+}
+
+static void test_unmanaged_vt_downgrades_grab(void) {
+ reset_world();W.vt_managed=false;
+ char path[64];make_temp_card(path,sizeof(path));
+ Server s;init_server(&s,path);s.fbdev_grab_input=true;
+ CHECK(backend_drm_init(&s));
+ CHECK(!s.fbdev_grab_input);
+ CHECK(backend_vt_fd(&s)==-1);
+ backend_drm_shutdown(&s);
+ check_all_clean(&s,1);
  unlink(path);
 }
 
@@ -1412,6 +1573,11 @@ int main(void) {
  test_cloned_connector_restore();
  test_cloned_connector_restore_fallback();
  test_pending_flip_timeout_recovery();
+ test_vt_release_acquire_lifecycle();
+ test_vt_flip_interruption_and_drain();
+ test_vt_failed_retire_shutdown();
+ test_vt_failed_drain_shutdown();
+ test_unmanaged_vt_downgrades_grab();
  test_shutdown_with_pending_flip();
  test_addfb_failure();
  test_setcrtc_failure();

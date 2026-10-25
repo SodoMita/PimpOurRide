@@ -362,7 +362,7 @@ fbdev_vsync = true         # best-effort FBIO_WAITFORVSYNC (restart; file-only)
 fbdev_pan = true           # use FBIOPAN_DISPLAY only if yres_virtual has >=2 pages (restart; file-only)
 fbdev_vnc_mirror = false   # opt-in loopback-only RFB mirror/control for fbdev (restart; file-only)
 fbdev_evdev = true         # enable asynchronous local evdev input for fbdev and DRM (restart; file-only)
-fbdev_grab_input = false   # grab evdev devices via EVIOCGRAB (restart; file-only; warns about VT lockout)
+fbdev_grab_input = false   # grab evdev devices (restart; file-only; DRM needs managed VT or downgrades; fbdev warns)
 fbdev_input_devices =      # comma/whitespace-separated explicit device paths (max 8); replaces auto-enumeration (restart; file-only)
 vnc_port = 5900       # headless VNC or fbdev mirror, 1..65535; GUI typed field 1024..65535 (restart)
 demo = false          # launch autostart apps (restart)
@@ -393,6 +393,22 @@ fallback. Use `--drm [DEVICE]`, `--drm-device PATH`, or `--drm-mode WxH` on the
 command line. Actual scanout requires KMS hardware and appropriate seat/udev
 access.
 
+When started on a controlling Linux VT, DRM uses `VT_PROCESS` plus a main-thread
+`signalfd` handshake. **Ctrl+Alt+F1…F12** from the physical evdev keyboard asks
+the kernel to activate that VT; SDL and VNC input cannot activate host VTs.
+Before acknowledging release, ChromeDrive stops the input worker, releases all
+held input and `EVIOCGRAB` grabs, drains the old page flip, disables/retires
+scanout, and drops DRM master. While inactive it pauses Wayland dispatch,
+physics, GL rendering and frame callbacks. On return it acknowledges
+acquisition, reacquires master (retrying if the previous master is still
+leaving), discards stale evdev bytes, restarts input, and performs a fresh
+initial modeset. A failed scanout drain enters cleanup instead of resuming
+stale buffers. If `/dev/tty` is absent or is not a VT, managed switching is
+unavailable but DRM continues; in that case `fbdev_grab_input = true` is
+downgraded with a warning so the kernel's console chord is not grabbed away.
+This is controlling-VT management only, not logind/libseat integration, and it
+does not set `KD_GRAPHICS`.
+
 `backend = fbdev` adopts the mode already programmed on the framebuffer
 (`var.xres`/`var.yres`) by default; `display.width/height` are ignored with a
 warning because the default behavior does not call `FBIOPUT_VSCREENINFO`. With
@@ -408,8 +424,10 @@ enabled by default for both direct backends (`fbdev_evdev = true`); set
 kernel timestamps; only the compositor thread dispatches them to Wayland and
 vehicle state. The bounded queue has a safe release barrier on overflow, and
 device loss cannot leave driving controls latched.
-`fbdev_grab_input = true` opts in to `EVIOCGRAB` (warns about VT/console
-lockout; ungrabbed keys can still reach the VT console). `fbdev_input_devices`
+`fbdev_grab_input = true` opts in to `EVIOCGRAB`. fbdev VT switching remains
+unmanaged, so this retains a VT/console lockout warning there; DRM instead uses
+the managed lifecycle above or downgrades the grab when no controlling VT is
+available. `fbdev_input_devices`
 accepts a comma/whitespace-separated list of explicit `/dev/input/event*` paths
 (max 8); when set it replaces auto-enumeration of `/dev/input/event*`.
 Enumeration is startup-only; no hotplug rescans. Non-direct multitouch devices
