@@ -64,8 +64,10 @@ as aliases):
 - **`--drm [DEVICE]`: direct DRM/KMS + GBM/EGL scanout** (`/dev/dri/card0` by
   default). It selects a connected connector and compatible CRTC, retains the
   current valid mode or chooses the preferred mode, and presents with
-  event-driven KMS page flips—no CPU readback/blit. `--drm-mode WIDTHxHEIGHT`
-  requires an exact advertised mode. The previous CRTC is restored on exit.
+  event-driven KMS page flips and modifier-aware framebuffer registration—no
+  CPU readback/blit. `--drm-mode WIDTHxHEIGHT` requires an exact advertised
+  mode. The previous CRTC and its original connected/cloned connector set are
+  restored on exit when still available.
   This path needs DRM-master/KMS access and a GBM `XRGB8888` EGL configuration;
   it does not silently fall back to fbdev. Local input is the same asynchronous
   evdev path as fbdev (`--no-evdev`, `--input-device`, and `--grab-input` are
@@ -129,9 +131,10 @@ The compositor's own rendering also goes through this same EGL/GL stack, so on
 a host with a real GPU driver it will render on the GPU automatically (no
 code change needed); here it falls back to Mesa's llvmpipe software
 rasterizer because that's all the sandbox exposes. For the same reason, the
-DRM/KMS backend can be build-tested and its no-device/error cleanup tested here,
-but real GBM scanout, page-flip timing, and CRTC restoration must be verified on
-the target KMS hardware.
+DRM/KMS backend can be build-tested and exercised through fake-KMS lifecycle,
+modifier, failure, and restoration tests here, but real GBM scanout, driver
+modifier compatibility, page-flip timing, and physical CRTC restoration must be
+verified on the target KMS hardware.
 
 ## Build
 
@@ -508,6 +511,7 @@ tests/test_city.c             infinite determinism, district/road coverage, clea
 tests/test_telemetry.c        shared cluster telemetry and seqlock tests
 tests/test_keymap.c           RFB typing/WASD/function-key mapping regressions
 tests/test_fbdev.c            fbdev format/geometry tests + evdev helpers and async queue/overflow tests
+tests/test_drm.c              fake-KMS/GBM/EGL lifecycle, modifier, flip-failure and restore tests
 tests/protocol_probe.c        end-to-end Wayland protocol conformance test (incl. dma-buf)
 tools/run-web.sh              one-command native backend + browser bridge
 tools/viewer/                 static noVNC remote desktop + safe hold-to-drive controls

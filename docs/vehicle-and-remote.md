@@ -403,17 +403,21 @@ color+depth renderbuffer FBO is the output; there is no window surface and
 therefore no `eglSwapBuffers` in this path.
 
 The DRM backend instead selects `EGL_PLATFORM_GBM_KHR`, matches an EGL config
-to `GBM_FORMAT_XRGB8888`, and makes a GBM window surface current. Its default
-framebuffer is the scene destination (`target_fbo = 0`). After
-`eglSwapBuffers`, it registers the locked GBM buffer as a KMS framebuffer and
-uses `drmModeSetCrtc` for the first frame and `DRM_MODE_PAGE_FLIP_EVENT`
+to `GBM_FORMAT_XRGB8888` with 24-bit depth and 8-bit stencil for direct/fallback
+3D rendering, and makes a GBM window surface current. Its default framebuffer
+is the scene destination (`target_fbo = 0`). After `eglSwapBuffers`, it
+registers the locked GBM buffer as a KMS framebuffer with its real plane offset
+and modifier (legacy linear registration remains a fallback) and uses
+`drmModeSetCrtc` for the first frame and `DRM_MODE_PAGE_FLIP_EVENT`
 thereafter. At most the current and pending buffers stay locked; the previous
 buffer is released only after its flip-completion event. `backend_drm_present`
 waits for that event before returning, preserving the main loop's rule that
 Wayland `wl_callback.done` follows actual presentation rather than submission.
-This sandbox has no `/dev/dri`, so only compilation and missing/invalid-device
-cleanup are testable here; connector selection, real scanout, flip cadence, and
-CRTC restoration require a target-hardware run.
+This sandbox has no `/dev/dri`, so real GBM scanout, driver modifier
+compatibility, flip cadence, and physical CRTC restoration require a
+target-hardware run. Deterministic fake-KMS tests cover connector selection,
+buffer/event control flow, and restoration/failure cleanup without claiming
+physical scanout.
 
 Backend initialization precedes Wayland server dispatch. This ordering matters
 because a client commit can upload `wl_shm` pixels with `glTexImage2D`, and a
@@ -467,6 +471,13 @@ bottom-up row flips, independent strides/padding, geometry validation, and page
 offsets without opening `/dev/fb0` (so `make test` also runs in CI/sandboxes),
 plus `evdev_util` absolute scaling/touch-id pool and the asynchronous queue's
 FIFO ordering, stable device IDs, overflow blocking, and post-reset resume.
+`tests/test_drm.c` compiles the real DRM backend against deterministic fake
+KMS/GBM/EGL entry points. It exercises initial modesetting, completed and
+pending page flips, bounded buffer/FB lifetimes, linear and non-linear modifier
+registration, required depth/stencil EGL attributes, cloned-connector CRTC
+restoration plus stale-clone fallback, evdev ownership, and injected
+init/event/FB/CRTC/flip failures.
+It needs no DRM device and does not claim physical scanout validation.
 `tests/test_keymap.c` pins the exact RFB/X11-to-evdev table, including the
 non-contiguous letter codes needed by WASD. `tests/test_math.c` covers all nine
 output transforms plus stowed/mid-travel/deployed picking, and

@@ -875,7 +875,14 @@ int main(int argc,char **argv){
  }
  if(!backend_ok){fprintf(stderr,"Backend init failed (%s)\n",backend_label(s.backend));SDL_Quit();return 1;}
  dmabuf_probe(&s);
- if(!server_init(&s,socket_name)){fprintf(stderr,"Could not start Wayland server: %s\n",strerror(errno));server_finish(&s);SDL_Quit();return 1;}
+ if(!server_init(&s,socket_name)){
+  fprintf(stderr,"Could not start Wayland server: %s\n",strerror(errno));
+  /* The direct-input worker may already be running even though no frame was
+   * dispatched. Stop it before partial Wayland/xkb teardown, as on normal exit,
+   * then drop the still-current presentation backend after server_finish. */
+  if(s.evdev_state)backend_evdev_shutdown(&s);
+  server_finish(&s);backend_shutdown(&s);SDL_Quit();return 1;
+ }
  telemetry_init(&s);
  /* Only after opening the host window/backend do we replace WAYLAND_DISPLAY. */
  /* Built-in menu defaults (%root% templates - the same strings the config
