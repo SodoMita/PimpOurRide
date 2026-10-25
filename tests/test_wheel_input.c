@@ -14,17 +14,18 @@ static void expect_axis(float drag,float horizontal,float vertical){
 }
 int main(void){
  expect_axis(0.0f,0,0);
- expect_axis(0.25f,0,-0.25f/28.0f);      /* no 28-pixel detent threshold */
- expect_axis(27.75f,0,-27.75f/28.0f);    /* fractional below old detent */
- expect_axis(84.0f,0,-3);                /* high-speed samples stay linear */
- expect_axis(-56.0f,0,2);                /* left: vertical up */
- expect_axis(-0.25f,0,0.25f/28.0f);      /* immediately reversible */
- expect_axis(1.0f/1024.0f,0,-1.0f/(1024.0f*28.0f)); /* beyond 8-bit resolution */
+ expect_axis(0.25f,-0.25f/28.0f,0);      /* horizontal; no detent threshold */
+ expect_axis(27.75f,-27.75f/28.0f,0);    /* fractional below old detent */
+ expect_axis(84.0f,-3,0);                /* high-speed samples stay linear */
+ expect_axis(-56.0f,2,0);                /* left: negative client horizontal */
+ expect_axis(-0.25f,0.25f/28.0f,0);      /* immediately reversible */
+ expect_axis(1.0f/1024.0f,-1.0f/(1024.0f*28.0f),0); /* beyond 8-bit resolution */
 
  float sum=0.0f;
  const float sequence[]={0.125f,3.5f,19.25f,-11.0f,-11.875f};
  for(unsigned i=0;i<sizeof(sequence)/sizeof(sequence[0]);i++){
-  float h,v;wheel_client_axis(sequence[i],&h,&v);sum+=v;
+  float h,v;wheel_client_axis(sequence[i],&h,&v);sum+=h;
+  if(v!=0.0f){fprintf(stderr,"FAIL vertical axis must stay silent\n");failures++;}
  }
  if(fabsf(sum)>0.000001f){
   fprintf(stderr,"FAIL reversible analog sum %.9f\n",sum);failures++;
@@ -50,6 +51,6 @@ int main(void){
   fprintf(stderr,"FAIL scroll reversal: steps %d, remainder %.12f\n",steps,pending);failures++;
  }
  if(failures)return 1;
- puts("PASS: steering-wheel analog fractions, high resolution, direction and reversible client scrolling");
+ puts("PASS: horizontal steering-wheel analog fractions, vertical-axis silence, high resolution and reversible client scrolling");
  return 0;
 }

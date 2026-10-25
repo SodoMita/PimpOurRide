@@ -6,10 +6,12 @@ void wheel_client_axis(float drag_dx, float *horizontal, float *vertical)
  /* Preserve the previous 28-pixel sensitivity as a scale, not a threshold.
   * Wayland's 24.8 fixed-point axis values retain these fractions, so even a
   * tiny drag produces a distinct analog value rather than waiting for a
-  * detent. The continuous sender negates deltas: right = down, left = up. */
+  * detent. This is deliberately the HORIZONTAL axis: the continuous sender
+  * negates deltas, so right = positive/right and left = negative/left at the
+  * client. Vertical output remains exactly zero on the physical-wheel path. */
  const float pixels_per_axis_step=28.0f;
- *horizontal=0.0f;
- *vertical=-drag_dx/pixels_per_axis_step;
+ *horizontal=-drag_dx/pixels_per_axis_step;
+ *vertical=0.0f;
 }
 
 int wheel_client_scroll_steps(double *pending, double axis_value)

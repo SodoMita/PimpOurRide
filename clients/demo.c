@@ -177,12 +177,16 @@ static void pointer_button(void *data,struct wl_pointer *p,uint32_t serial,uint3
  else if(a->mode==1){if(x>620&&x<701&&y>399&&y<466)a->playing=!a->playing;else if(x>566&&x<618&&y>400&&y<455){a->track=(a->track+3)%4;a->progress=0;}else if(x>705&&x<756&&y>400&&y<455){a->track=(a->track+1)%4;a->progress=0;}else if(x>420&&x<904&&y>339&&y<371)a->progress=(x-420)/484*195;a->dirty=true;}
 }
 static void pointer_axis(void *data,struct wl_pointer *p,uint32_t time,uint32_t axis,wl_fixed_t value){
- App *a=data;if(a->mode!=0||axis!=WL_POINTER_AXIS_VERTICAL_SCROLL)return;
+ App *a=data;if(a->mode!=0)return;
+ /* The physical 3D wheel is a HORIZONTAL continuous controller. Files also
+  * accepts ordinary vertical wheel/touchpad scrolling; presentation-level row
+  * quantization happens only after the analog protocol events arrive. */
+ bool wheel_horizontal=axis==WL_POINTER_AXIS_HORIZONTAL_SCROLL&&a->axis_source==WL_POINTER_AXIS_SOURCE_CONTINUOUS;
+ if(axis!=WL_POINTER_AXIS_VERTICAL_SCROLL&&!wheel_horizontal)return;
  double amount=wl_fixed_to_double(value);int old=a->scroll;
  if(a->axis_source==WL_POINTER_AXIS_SOURCE_CONTINUOUS){
-  /* Row-based Files drawing quantizes only its own presentation, after the
-   * analog events arrive. The shared helper preserves fractional remainder
-   * and exact forward/reverse symmetry. */
+  /* The shared helper preserves fractional remainder and exact
+   * forward/reverse symmetry. */
   int steps=wheel_client_scroll_steps(&a->scroll_axis,amount);
   if(!steps)return;a->scroll+=steps*3;
  }else{a->scroll_axis=0;a->scroll+=amount>0?3:-3;}

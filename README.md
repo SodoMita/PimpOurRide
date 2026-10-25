@@ -245,8 +245,9 @@ DC/DC converter, contactor box, low-voltage battery, cooling loop, and four
 hover pods. A single heave spring/damper replaces wheel simulation by design.
 
 In **client mode** (the default), dragging the 3D steering wheel sends
-continuous analog vertical `wl_pointer.axis` input to the focused app (no
-stepped `axis_discrete` clicks), and W/A/S/D remain app keys. In **drive mode**,
+continuous analog **horizontal** `wl_pointer.axis` input to the focused app
+(no stepped `axis_discrete` clicks and no vertical-axis events), and W/A/S/D
+remain app keys. In **drive mode**,
 W/up accelerates, S/down brakes then reverses,
 A/D/left/right steer, Space brakes, and dragging the wheel steers directly.
 Client mode applies a parking brake. The web viewer includes hold-to-drive
@@ -315,7 +316,7 @@ reverse proxy and firewall before exposing them to an untrusted network.
 | F9 | Switch between driver and passenger seats |
 | F10 | Recover the car pose, disengage autopilot and close the doors (battery and odometer are preserved) |
 | W/A/S/D or arrows, Space | Drive mode: throttle/steer/reverse and regenerative brake |
-| Left-drag steering wheel | Client mode: analog continuous scroll in focused app; drive mode: steer |
+| Left-drag steering wheel | Client mode: horizontal analog continuous axis in focused app; drive mode: steer |
 | F11 | `--windowed` only: toggle fullscreen |
 | F12 | Save a screenshot to `screenshots/` |
 | Ctrl+Alt+Enter | Open a new terminal (even if slot 1 was reassigned) |
