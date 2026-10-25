@@ -89,7 +89,7 @@ typedef struct { Plane plane;Surface *surface;GLuint label;char label_text[300];
  * of the three; slots 5/6 merely default to the built-ins. */
 enum { CD_BUTTON_APP=0, CD_BUTTON_NEON=1, CD_BUTTON_COCKPIT=2 };
 typedef struct { Plane plane;char name[48],sub[64];int action,icon;bool enabled;GLuint texture; } DashButton;
-typedef enum {HIT_NONE,HIT_APP,HIT_BUTTON,HIT_CLOSE,HIT_COG,HIT_WHEEL,HIT_FRAME,HIT_HANDLES_BUTTON,HIT_ARRANGE_HANDLE} HitKind;
+typedef enum {HIT_NONE,HIT_APP,HIT_BUTTON,HIT_CLOSE,HIT_COG,HIT_QUIT,HIT_WHEEL,HIT_FRAME,HIT_HANDLES_BUTTON,HIT_ARRANGE_HANDLE} HitKind;
 /* Arrange gizmo handles, in a monitor's local plane coordinates. Resize
  * IDs are ordered clockwise from north-west so scene.c/main.c can share
  * the same geometry table without another mapping layer. */
@@ -127,6 +127,10 @@ SdlTouchFinger sdl_touch[CD_MAX_TOUCH_POINTS];int sdl_touch_chrome_id;
   * bin/chromedrive-config. Picked by ray against cog's plane + radial test,
   * like the buttons. */
  Plane cog;bool cog_hover,wheel_hover;float cog_angle;double cog_spin_until;
+ /* Red EXIT button on the same sloped dash as the cog. The first click
+  * only arms it (quit_armed_until) so an accidental hit cannot end a session;
+  * a second click within that window quits. Meta+Shift+Q bypasses the guard. */
+ Plane quit_button;bool quit_hover;double quit_armed_until;
  DataSource *selection;
  /* Backend: exactly one of these is used, chosen at startup. */
  Backend backend;
@@ -169,7 +173,7 @@ SdlTouchFinger sdl_touch[CD_MAX_TOUCH_POINTS];int sdl_touch_chrome_id;
  VehicleCameraMode camera_mode;
  VehicleSeat camera_seat;
  bool drive_forward,drive_reverse,drive_left,drive_right,drive_brake;
- bool door_shortcut_down,autopilot_shortcut_down;
+ bool door_shortcut_down,autopilot_shortcut_down,quit_shortcut_down;
  bool wheel_drag;
  float wheel_steer,wheel_client_angle,wheel_axis_accum,wheel_last_x,wheel_last_y;
  double time,dt,fps,start_time,last_ui_time,last_windshield_time,notice_until;
@@ -249,6 +253,7 @@ void ui_draw_overlay(Server *s);
 void app_launch(Server *s,int action,bool force_new);
 void app_open_settings(Server *s);
 void app_open_settings_slot(Server *s,int slot,bool choose_app);
+void app_request_quit(Server *s,bool via_hotkey);
 void app_exec(Server *s,const char *command);
 void app_notice(Server *s,const char *fmt,...);
 bool app_global_key(Server *s,uint32_t evdev,bool down);
