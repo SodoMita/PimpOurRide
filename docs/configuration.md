@@ -184,7 +184,8 @@ and a later config edit hot-reloads `[cockpit] hud` back over the runtime choice
 ### What's live vs restart
 
 - **Compositor, live:** `display.fps`, `display.fov`, `display.render_to_texture`,
-  `display.render_scale`, `display.render_upscale`, `display.render_downscale`, `cockpit.*`
+  `display.render_scale`, `display.render_upscale`, `display.render_downscale`,
+  `display.post_shader`, `cockpit.*`
   (neon/hud/background), all `[app.*]` menu keys.
   **Restart:** `display.width/height/fullscreen`, and every `session.*` key,
   including `backend`, `headless` (legacy), `fbdev_device`, `fbdev_vsync`,
@@ -212,20 +213,27 @@ resolution so their text stays sharp. That pass runs **only when
 `render_to_texture` is enabled and the
 effective scaled size differs from the output**; at the default
 `render_scale = 1`, or with `render_to_texture = false`, rendering stays on
-the direct-to-output path and the sampling keys have no effect.
+the direct-to-output path and the sampling keys have no effect. The one
+exception is an active `display.post_shader`, which needs an offscreen image
+and therefore forces the RTT path even at scale 1 (see below).
 `render_upscale` maps to `GL_TEXTURE_MAG_FILTER`; `render_downscale`
 maps to `GL_TEXTURE_MIN_FILTER`, so you can pick a different sampler for
-magnifying and minifying. Values below 1 render fewer pixels (useful for slow
+magnifying and minifying. The default `linear_mipmap_linear` is trilinear
+filtering and generates mipmaps each frame, which generally gives the cleanest
+supersampled downscale. Values below 1 render fewer pixels (useful for slow
 software GPUs); values above 1 supersample. Mipmap downscale tokens generate
 mipmaps each frame; the others do not. `render_downscale = ssim` is the
 exception: it is not a GL filter at all. It selects an SSIM-guided resolve
 (a port of igv's SSimDownscaler, LGPL-3.0-or-later; this is our own GLSL for
 the compositor, not an mpv hook) only when both scaled dimensions are larger
-than the output and neither ratio exceeds 8x. It costs four extra fullscreen
-passes and three RGBA16F intermediates, so it is intended for
-`render_scale > 1` supersampling, not for low-resolution rendering; when
-upscaling, or beyond 8x, the configured `render_min_filter` fallback is used.
-Compile/allocation failure warns once and disables SSIM for that session.
+than the output and neither ratio exceeds 8x. It is **experimental**: it costs
+four extra fullscreen passes and three RGBA16F intermediates, so in field use
+it is usually slower than plain trilinear SSAA and is not generally a better
+choice; trilinear (`linear_mipmap_linear`) is the recommended default. SSIM is
+intended for `render_scale > 1` supersampling, not for low-resolution
+rendering; when upscaling, or beyond 8x, the configured `render_min_filter`
+fallback is used. Compile/allocation failure warns once and disables SSIM for
+that session.
 
 The configured scale is accepted from `0.001` through `100` inclusive. The
 effective allocation is clamped to the driver's `GL_MAX_TEXTURE_SIZE` and
@@ -237,6 +245,45 @@ out-of-range values (and unknown filter names) are warned about and ignored,
 keeping the previous/default setting. Pointer picking still uses output
 window coordinates, and F12/`--screenshot` capture the final output at the
 configured output size after the blit.
+
+### Post shader
+
+`display.post_shader` is a filesystem path to a **fragment-only GLSL 1.20**
+shader applied to the 3D world only, after the legacy/SSIM resolve and before
+the native-resolution HUD. It is set in the config file only: the settings GUI
+has no free-text field for it this round. Empty or missing means off.
+
+The compositor supplies the vertex shader (the same quad used by the SSIM
+resolve) and these uniforms:
+
+- `sampler2D u_src` — the world image, already at output size.
+- `vec2 u_size` — output size in pixels.
+- `float u_time` — seconds since startup (`Server.time`).
+
+`gl_TexCoord[0].xy` carries the UV and the shader writes `gl_FragColor`. If the
+file has no `#version` line, `#version 120` is prepended; if it has one, the
+file is used as-is. Files larger than 256 KiB are rejected. The program is
+loaded/compiled lazily on the render thread when the path changes. On an open,
+compile or link failure the compositor logs one clear warning (including the
+GL info log for compile/link errors) and renders exactly as it would without
+the setting: no black screen. The same failing path is not retried until the
+config path changes.
+
+An active post shader forces the offscreen RTT path even at `render_scale = 1`
+(and even if `render_to_texture = false`), because it needs an output-size
+source image. This bypasses the historical direct path and its windowed-mode
+MSAA only while the shader is loaded; once it is off or failed, behavior is
+identical to the direct path again. With `render_scale > 1` the world is
+rendered at the scaled size, resolved (legacy filter or SSIM) into an
+output-size RGBA8 temporary, then the user program draws that temporary into
+the real output.
+
+`shaders/khronos-pbr-neutral.frag` is a runnable example implementing Khronos
+PBR Neutral tone mapping (KhronosGroup/ToneMapping, Apache-2.0). Because
+ChromeDrive's world is already display-referred LDR rather than scene-linear
+HDR, it acts there as a gentle highlight rolloff and framework demo, not as a
+full HDR tone mapper. Point the key at either a relative path (resolved from
+the working directory) or an absolute path.
 
 ## Full schema
 
@@ -251,7 +298,8 @@ fov = 65              # 1..100 driver FOV; background scroll clamps to 1..75
 render_to_texture = true # gate for the scaled 3D pass; HUD stays native (live)
 render_scale = 1      # 0.001..100, 1 = 100%; typed field in GUI (live)
 render_upscale = linear   # nearest | linear (live)
-render_downscale = linear # nearest | linear | ssim | *_mipmap_nearest | *_mipmap_linear (live)
+render_downscale = linear_mipmap_linear # nearest | linear | ssim | *_mipmap_nearest | *_mipmap_linear (live)
+post_shader =         # GLSL 1.20 fragment file for the 3D world; empty = off (live)
 fullscreen = false    # --windowed only      (restart)
 
 [ui]

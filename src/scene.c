@@ -1,6 +1,7 @@
 #include "chrome.h"
 #include "vehicle_seat.h"
 #include "wheel_input.h"
+#include <errno.h>
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>
@@ -886,13 +887,127 @@ static void rtt_ssim_disable(Server *s,const char *why){
   fprintf(stderr,"[rtt] ssim disabled for this session (%s); using %s sampling\n",why,rtt_filter_name(s->render_min_filter,false));
  s->rtt_ssim_failed=true;
 }
+/* Runtime fullscreen post shader (display.post_shader). The config layer only
+ * copies a path and raises post_dirty; everything GL happens here because
+ * scene_rtt_begin runs with the frame's context current. A fragment-only
+ * GLSL 1.20 program is paired with the SSIM quad's vertex shader and receives
+ * u_src/u_size/u_time. Loading is lazy and keyed to the path: after a failure
+ * the same path is not retried until it changes. */
+#define POST_SHADER_MAX_BYTES (256*1024)
+static char *rtt_post_read(const char *path){
+ FILE *f=fopen(path,"rb");
+ if(!f){fprintf(stderr,"[post] cannot open '%s': %s; rendering without post\n",path,strerror(errno));return NULL;}
+ if(fseek(f,0,SEEK_END)!=0||ftell(f)<0){
+  fprintf(stderr,"[post] cannot size '%s'; rendering without post\n",path);fclose(f);return NULL;
+ }
+ long size=ftell(f);
+ if(size>POST_SHADER_MAX_BYTES){
+  fprintf(stderr,"[post] '%s' is %ld bytes (limit %d); rendering without post\n",path,size,POST_SHADER_MAX_BYTES);
+  fclose(f);return NULL;
+ }
+ if(fseek(f,0,SEEK_SET)!=0){
+  fprintf(stderr,"[post] cannot seek '%s'; rendering without post\n",path);fclose(f);return NULL;
+ }
+ char *buf=malloc((size_t)size+1);
+ if(!buf){fprintf(stderr,"[post] out of memory reading '%s'; rendering without post\n",path);fclose(f);return NULL;}
+ size_t got=fread(buf,1,(size_t)size,f);
+ fclose(f);
+ if(got!=(size_t)size){
+  fprintf(stderr,"[post] short read on '%s'; rendering without post\n",path);free(buf);return NULL;
+ }
+ buf[got]='\0';
+ return buf;
+}
+static GLuint rtt_post_link(const char *path,const char *fs_src){
+ GLuint vs=glCreateShader(GL_VERTEX_SHADER),fs=glCreateShader(GL_FRAGMENT_SHADER);
+ if(!vs||!fs){if(vs)glDeleteShader(vs);if(fs)glDeleteShader(fs);return 0;}
+ GLint ok=0;char log[4096];const char *src=ssim_vertex_src;
+ glShaderSource(vs,1,&src,NULL);glCompileShader(vs);glGetShaderiv(vs,GL_COMPILE_STATUS,&ok);
+ if(!ok){log[0]='\0';glGetShaderInfoLog(vs,(GLsizei)sizeof(log),NULL,log);
+  fprintf(stderr,"[post] '%s' vertex compile failed: %s\n",path,log);glDeleteShader(vs);glDeleteShader(fs);return 0;}
+ src=fs_src;glShaderSource(fs,1,&src,NULL);glCompileShader(fs);glGetShaderiv(fs,GL_COMPILE_STATUS,&ok);
+ if(!ok){log[0]='\0';glGetShaderInfoLog(fs,(GLsizei)sizeof(log),NULL,log);
+  fprintf(stderr,"[post] '%s' fragment compile failed: %s\n",path,log);glDeleteShader(vs);glDeleteShader(fs);return 0;}
+ GLuint prog=glCreateProgram();
+ if(!prog){glDeleteShader(vs);glDeleteShader(fs);return 0;}
+ glAttachShader(prog,vs);glAttachShader(prog,fs);glLinkProgram(prog);
+ glGetProgramiv(prog,GL_LINK_STATUS,&ok);
+ if(!ok){log[0]='\0';glGetProgramInfoLog(prog,(GLsizei)sizeof(log),NULL,log);
+  fprintf(stderr,"[post] '%s' link failed: %s\n",path,log);glDeleteProgram(prog);prog=0;}
+ glDeleteShader(vs);glDeleteShader(fs);
+ return prog;
+}
+static void rtt_post_release_temp(Server *s){
+ if(s->post_temp_tex)glDeleteTextures(1,&s->post_temp_tex);
+ if(s->post_temp_fbo)glDeleteFramebuffers(1,&s->post_temp_fbo);
+ s->post_temp_tex=s->post_temp_fbo=0;s->post_temp_w=s->post_temp_h=0;
+}
+static void rtt_post_release_program(Server *s){
+ if(s->post_prog)glDeleteProgram(s->post_prog);
+ s->post_prog=0;
+}
+static void rtt_post_ensure(Server *s){
+ if(!s->post_shader_path[0]){
+  if(s->post_prog)rtt_post_release_program(s);
+  s->post_ready=false;s->post_failed=false;s->post_dirty=false;
+  return;
+ }
+ if(!s->post_dirty&&(s->post_ready||s->post_failed))return;
+ s->post_dirty=false;
+ if(s->post_prog)rtt_post_release_program(s);
+ s->post_ready=false;s->post_failed=false;
+ char *raw=rtt_post_read(s->post_shader_path);
+ if(!raw){s->post_failed=true;return;}
+ char *full=raw;bool allocated=false;
+ if(!strstr(raw,"#version")){
+  const char *prefix="#version 120\n";size_t p=strlen(prefix),n=strlen(raw);
+  full=malloc(p+n+1);
+  if(!full){fprintf(stderr,"[post] out of memory preparing '%s'; rendering without post\n",s->post_shader_path);free(raw);s->post_failed=true;return;}
+  memcpy(full,prefix,p);memcpy(full+p,raw,n+1);allocated=true;
+ }
+ GLuint prog=rtt_post_link(s->post_shader_path,full);
+ if(allocated)free(full);
+ free(raw);
+ if(!prog){s->post_failed=true;return;}
+ s->post_prog=prog;s->post_ready=true;
+ fprintf(stderr,"[post] loaded '%s'\n",s->post_shader_path);
+}
+static bool rtt_post_target(Server *s,int w,int h){
+ if(s->post_temp_tex&&s->post_temp_fbo&&s->post_temp_w==w&&s->post_temp_h==h)return true;
+ rtt_post_release_temp(s);
+ GLint prev_tex=0,prev_fbo=0;
+ glGetIntegerv(GL_TEXTURE_BINDING_2D,&prev_tex);
+ glGetIntegerv(GL_FRAMEBUFFER_BINDING,&prev_fbo);
+ while(glGetError()!=GL_NO_ERROR){}
+ GLuint tex=0,fbo=0;
+ glGenTextures(1,&tex);glBindTexture(GL_TEXTURE_2D,tex);
+ glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_WRAP_S,GL_CLAMP_TO_EDGE);glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_WRAP_T,GL_CLAMP_TO_EDGE);
+ glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MAG_FILTER,GL_LINEAR);glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MIN_FILTER,GL_LINEAR);
+ glTexImage2D(GL_TEXTURE_2D,0,GL_RGBA8,w,h,0,GL_RGBA,GL_UNSIGNED_BYTE,NULL);
+ glGenFramebuffers(1,&fbo);
+ if(tex&&fbo){
+  glBindFramebuffer(GL_FRAMEBUFFER,fbo);
+  glFramebufferTexture2D(GL_FRAMEBUFFER,GL_COLOR_ATTACHMENT0,GL_TEXTURE_2D,tex,0);
+ }
+ GLenum status=fbo?glCheckFramebufferStatus(GL_FRAMEBUFFER):GL_FRAMEBUFFER_UNSUPPORTED;
+ GLenum err=glGetError();
+ glBindTexture(GL_TEXTURE_2D,(GLuint)prev_tex);glBindFramebuffer(GL_FRAMEBUFFER,(GLuint)prev_fbo);
+ if(!tex||!fbo||status!=GL_FRAMEBUFFER_COMPLETE||err!=GL_NO_ERROR){
+  if(tex)glDeleteTextures(1,&tex);if(fbo)glDeleteFramebuffers(1,&fbo);
+  return false;
+ }
+ s->post_temp_tex=tex;s->post_temp_fbo=fbo;s->post_temp_w=w;s->post_temp_h=h;
+ return true;
+}
 static void rtt_release(Server *s){
  if(s->rtt_color_tex)glDeleteTextures(1,&s->rtt_color_tex);
  if(s->rtt_depth_rb)glDeleteRenderbuffers(1,&s->rtt_depth_rb);
  if(s->rtt_fbo)glDeleteFramebuffers(1,&s->rtt_fbo);
  s->rtt_color_tex=s->rtt_depth_rb=s->rtt_fbo=0;
+ s->rtt_width=s->rtt_height=0;
  s->render_width=s->render_height=0;
  rtt_ssim_release_targets(s);
+ rtt_post_release_temp(s);
 }
 static bool rtt_ssim_target(GLuint *tex,GLuint *fbo,int w,int h){
  *tex=*fbo=0;
@@ -935,7 +1050,62 @@ static void rtt_ssim_quad(void){
  glTexCoord2f(1,1);glVertex2f(1,1);glTexCoord2f(0,1);glVertex2f(-1,1);
  glEnd();
 }
-static bool rtt_ssim_resolve(Server *s){
+static bool rtt_post_apply(Server *s,GLuint src,int ow,int oh){
+ if(!s->post_prog||!s->post_ready)return false;
+ GLint prev_prog=0,prev_active=GL_TEXTURE0,prev_tex=0,prev_mm=GL_MODELVIEW,prev_fbo=0,prev_view[4]={0,0,ow,oh};
+ GLint src_min=GL_LINEAR,src_mag=GL_LINEAR;
+ GLfloat color[4]={1,1,1,1};
+ GLboolean depth=glIsEnabled(GL_DEPTH_TEST),light=glIsEnabled(GL_LIGHTING),blend=glIsEnabled(GL_BLEND);
+ GLboolean tex2d=glIsEnabled(GL_TEXTURE_2D),stencil=glIsEnabled(GL_STENCIL_TEST),fog=glIsEnabled(GL_FOG),cull=glIsEnabled(GL_CULL_FACE);
+ glGetIntegerv(GL_CURRENT_PROGRAM,&prev_prog);
+ glGetIntegerv(GL_ACTIVE_TEXTURE,&prev_active);
+ glGetIntegerv(GL_MATRIX_MODE,&prev_mm);
+ glGetIntegerv(GL_FRAMEBUFFER_BINDING,&prev_fbo);
+ glGetIntegerv(GL_VIEWPORT,prev_view);
+ glActiveTexture(GL_TEXTURE0);glGetIntegerv(GL_TEXTURE_BINDING_2D,&prev_tex);
+ glBindTexture(GL_TEXTURE_2D,src);
+ glGetTexParameteriv(GL_TEXTURE_2D,GL_TEXTURE_MIN_FILTER,&src_min);
+ glGetTexParameteriv(GL_TEXTURE_2D,GL_TEXTURE_MAG_FILTER,&src_mag);
+ glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MIN_FILTER,GL_LINEAR);
+ glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MAG_FILTER,GL_LINEAR);
+ glGetFloatv(GL_CURRENT_COLOR,color);
+ glMatrixMode(GL_PROJECTION);glPushMatrix();glLoadIdentity();
+ glMatrixMode(GL_MODELVIEW);glPushMatrix();glLoadIdentity();
+ glDisable(GL_DEPTH_TEST);glDisable(GL_LIGHTING);glDisable(GL_BLEND);glDisable(GL_STENCIL_TEST);
+ glDisable(GL_FOG);glDisable(GL_CULL_FACE);glEnable(GL_TEXTURE_2D);
+ glColor4f(1,1,1,1);
+ glActiveTexture(GL_TEXTURE0);glBindTexture(GL_TEXTURE_2D,src);
+ glUseProgram(s->post_prog);
+ glUniform1i(glGetUniformLocation(s->post_prog,"u_src"),0);
+ glUniform2f(glGetUniformLocation(s->post_prog,"u_size"),(GLfloat)ow,(GLfloat)oh);
+ glUniform1f(glGetUniformLocation(s->post_prog,"u_time"),(GLfloat)s->time);
+ glBindFramebuffer(GL_FRAMEBUFFER,s->target_fbo);glViewport(0,0,ow,oh);
+ rtt_ssim_quad();
+ bool ok=true;GLenum err=glGetError();
+ if(err!=GL_NO_ERROR){while(glGetError()!=GL_NO_ERROR){}ok=false;
+  fprintf(stderr,"[post] draw failed (GL error 0x%x); rendering without post\n",err);}
+ glUseProgram((GLuint)prev_prog);
+ glMatrixMode(GL_MODELVIEW);glPopMatrix();
+ glMatrixMode(GL_PROJECTION);glPopMatrix();
+ glMatrixMode((GLenum)prev_mm);
+ if(depth)glEnable(GL_DEPTH_TEST);else glDisable(GL_DEPTH_TEST);
+ if(light)glEnable(GL_LIGHTING);else glDisable(GL_LIGHTING);
+ if(blend)glEnable(GL_BLEND);else glDisable(GL_BLEND);
+ if(tex2d)glEnable(GL_TEXTURE_2D);else glDisable(GL_TEXTURE_2D);
+ if(stencil)glEnable(GL_STENCIL_TEST);else glDisable(GL_STENCIL_TEST);
+ if(fog)glEnable(GL_FOG);else glDisable(GL_FOG);
+ if(cull)glEnable(GL_CULL_FACE);else glDisable(GL_CULL_FACE);
+ glActiveTexture(GL_TEXTURE0);glBindTexture(GL_TEXTURE_2D,src);
+ glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MIN_FILTER,src_min);
+ glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MAG_FILTER,src_mag);
+ glBindTexture(GL_TEXTURE_2D,(GLuint)prev_tex);
+ glActiveTexture((GLenum)prev_active);
+ glColor4f(color[0],color[1],color[2],color[3]);
+ glBindFramebuffer(GL_FRAMEBUFFER,(GLuint)prev_fbo);
+ glViewport(prev_view[0],prev_view[1],prev_view[2],prev_view[3]);
+ return ok;
+}
+static bool rtt_ssim_resolve(Server *s,GLuint dest){
  int sw=s->rtt_width,sh=s->rtt_height,ow=s->width,oh=s->height;
  bool ok=false;
  GLint prev_prog=0,prev_active=GL_TEXTURE0,prev_tex0=0,prev_tex1=0,prev_mm=GL_MODELVIEW;
@@ -1000,7 +1170,7 @@ static bool rtt_ssim_resolve(Server *s){
  glUniform1i(glGetUniformLocation(s->ssim_prog_final,"u_mr"),0);
  glUniform1i(glGetUniformLocation(s->ssim_prog_final,"u_src"),1);
  glUniform2f(glGetUniformLocation(s->ssim_prog_final,"u_out_size"),(GLfloat)ow,(GLfloat)oh);
- glBindFramebuffer(GL_FRAMEBUFFER,s->target_fbo);glViewport(0,0,ow,oh);
+ glBindFramebuffer(GL_FRAMEBUFFER,dest);glViewport(0,0,ow,oh);
  rtt_ssim_quad();
  {
   GLenum err=glGetError();
@@ -1032,14 +1202,23 @@ restore:
  return ok;
 }
 bool scene_rtt_begin(Server *s){
- if(!s->render_to_texture){s->render_width=s->render_height=0;return false;}
+ rtt_post_ensure(s);
+ bool post=s->post_ready;
+ /* An active post shader needs an offscreen source even at scale 1, so it
+  * bypasses the historical direct/windowed-MSAA path while it is active
+  * (this also lets it run with render_to_texture off). When the shader is
+  * missing, failed, or cleared, the old direct path is restored exactly. */
+ if(!s->render_to_texture&&!post){s->render_width=s->render_height=0;return false;}
  int max=rtt_max_dim();double fw=(double)s->width*s->render_scale,fh=(double)s->height*s->render_scale;
  double limit=fmax(1.0,(double)max),factor=1.0;
  if(fw>limit)factor=fmin(factor,limit/fw);
  if(fh>limit)factor=fmin(factor,limit/fh);
  int w=(int)floor(fw*factor+.5),h=(int)floor(fh*factor+.5);
  if(w<1)w=1;if(h<1)h=1;if(w>max)w=max;if(h>max)h=max;
- if(w==s->width&&h==s->height){s->render_width=s->render_height=0;return false;}
+ if(!post&&w==s->width&&h==s->height){
+  if(s->rtt_fbo)rtt_release(s);
+  s->render_width=s->render_height=0;return false;
+ }
  GLuint mag=s->render_mag_filter,min=s->render_min_filter;
  if(w==s->rtt_width&&h==s->rtt_height&&mag==s->rtt_mag_filter&&min==s->rtt_min_filter&&
     s->rtt_ssim==s->render_downscale_ssim){
@@ -1082,25 +1261,13 @@ bool scene_rtt_begin(Server *s){
  glBindFramebuffer(GL_FRAMEBUFFER,s->rtt_fbo);glViewport(0,0,w,h);
  return true;
 }
-void scene_rtt_end(Server *s){
- if(!s->rtt_fbo){glBindFramebuffer(GL_FRAMEBUFFER,s->target_fbo);glViewport(0,0,s->width,s->height);return;}
- if(s->render_downscale_ssim&&!s->rtt_ssim_failed&&
-    s->rtt_width>s->width&&s->rtt_height>s->height){
-  if(!rtt_ssim_supported(s,s->rtt_width,s->rtt_height)){
-   if(!s->rtt_ssim_ratio_warned){
-    fprintf(stderr,"[rtt] ssim downscale %.2fx/%.2fx exceeds the 8x limit; using %s sampling\n",
-            (double)s->rtt_width/(double)s->width,(double)s->rtt_height/(double)s->height,
-            rtt_filter_name(s->render_min_filter,false));
-    s->rtt_ssim_ratio_warned=true;
-   }
-  }else if(rtt_ssim_resolve(s))return;
- }
+static void rtt_resolve_legacy(Server *s,GLuint dest,int dw,int dh){
  GLint prev_tex=0;GLfloat color[4];
  GLboolean depth=glIsEnabled(GL_DEPTH_TEST),light=glIsEnabled(GL_LIGHTING),blend=glIsEnabled(GL_BLEND);
  GLboolean tex2d=glIsEnabled(GL_TEXTURE_2D),stencil=glIsEnabled(GL_STENCIL_TEST),fog=glIsEnabled(GL_FOG),cull=glIsEnabled(GL_CULL_FACE);
  glGetIntegerv(GL_TEXTURE_BINDING_2D,&prev_tex);glGetFloatv(GL_CURRENT_COLOR,color);
  if(rtt_mipmapped(s->rtt_min_filter)){glBindTexture(GL_TEXTURE_2D,s->rtt_color_tex);glGenerateMipmap(GL_TEXTURE_2D);}
- glBindFramebuffer(GL_FRAMEBUFFER,s->target_fbo);glViewport(0,0,s->width,s->height);
+ glBindFramebuffer(GL_FRAMEBUFFER,dest);glViewport(0,0,dw,dh);
  glDisable(GL_DEPTH_TEST);glDisable(GL_LIGHTING);glDisable(GL_BLEND);glDisable(GL_STENCIL_TEST);glDisable(GL_FOG);glDisable(GL_CULL_FACE);
  glEnable(GL_TEXTURE_2D);glBindTexture(GL_TEXTURE_2D,s->rtt_color_tex);
  glMatrixMode(GL_PROJECTION);glPushMatrix();glLoadIdentity();glMatrixMode(GL_MODELVIEW);glPushMatrix();glLoadIdentity();
@@ -1118,7 +1285,42 @@ void scene_rtt_end(Server *s){
  if(fog)glEnable(GL_FOG);else glDisable(GL_FOG);
  if(cull)glEnable(GL_CULL_FACE);else glDisable(GL_CULL_FACE);
  glBindTexture(GL_TEXTURE_2D,(GLuint)prev_tex);glColor4f(color[0],color[1],color[2],color[3]);
- glBindFramebuffer(GL_FRAMEBUFFER,s->target_fbo);
+}
+void scene_rtt_end(Server *s){
+ if(!s->rtt_fbo){glBindFramebuffer(GL_FRAMEBUFFER,s->target_fbo);glViewport(0,0,s->width,s->height);return;}
+ /* Resolve into an output-size temporary when a post shader is active so the
+  * user program can sample the finished world image before the HUD pass.
+  * SSIM and the legacy filter both write to the same destination, so they
+  * compose without a second full-resolution intermediate. */
+ bool post=s->post_ready&&s->post_prog;
+ GLuint dest=s->target_fbo;bool post_dest=false;
+ if(post){
+  if(rtt_post_target(s,s->width,s->height)){dest=s->post_temp_fbo;post_dest=true;}
+  else{
+   fprintf(stderr,"[post] output-size framebuffer allocation failed; rendering without post\n");
+   s->post_ready=false;s->post_failed=true;post=false;
+  }
+ }
+ bool resolved=false;
+ if(s->render_downscale_ssim&&!s->rtt_ssim_failed&&
+    s->rtt_width>s->width&&s->rtt_height>s->height){
+  if(!rtt_ssim_supported(s,s->rtt_width,s->rtt_height)){
+   if(!s->rtt_ssim_ratio_warned){
+    fprintf(stderr,"[rtt] ssim downscale %.2fx/%.2fx exceeds the 8x limit; using %s sampling\n",
+            (double)s->rtt_width/(double)s->width,(double)s->rtt_height/(double)s->height,
+            rtt_filter_name(s->render_min_filter,false));
+    s->rtt_ssim_ratio_warned=true;
+   }
+  }else resolved=rtt_ssim_resolve(s,dest);
+ }
+ if(!resolved)rtt_resolve_legacy(s,dest,s->width,s->height);
+ if(post_dest){
+  if(!rtt_post_apply(s,s->post_temp_tex,s->width,s->height)){
+   s->post_ready=false;s->post_failed=true;
+   rtt_resolve_legacy(s,s->target_fbo,s->width,s->height);
+  }
+ }
+ glBindFramebuffer(GL_FRAMEBUFFER,s->target_fbo);glViewport(0,0,s->width,s->height);
 }
 void scene_render(Server *s){
  int rw=s->render_width>0?s->render_width:s->width,rh=s->render_height>0?s->render_height:s->height;
@@ -1296,4 +1498,5 @@ void scene_finish(Server *s){
  GLuint textures[]={s->garage_tex,s->carbon_tex,s->console_tex,s->hub_tex,s->hud_tex,s->windshield_tex,s->help_tex,s->plate_tex,s->handles_tex};glDeleteTextures(sizeof(textures)/sizeof(textures[0]),textures);for(int i=0;i<6;i++)glDeleteTextures(1,&s->buttons[i].texture);for(int i=0;i<CD_MAX_MONITORS;i++)glDeleteTextures(1,&s->monitors[i].label);
  rtt_release(s);
  rtt_ssim_release_programs(s);
+ rtt_post_release_program(s);
 }

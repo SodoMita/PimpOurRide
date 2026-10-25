@@ -157,6 +157,16 @@ SdlTouchFinger sdl_touch[CD_MAX_TOUCH_POINTS];int sdl_touch_chrome_id;
  int rtt_width,rtt_height;
  GLuint rtt_mag_filter,rtt_min_filter;
  int render_width,render_height;                       /* active 3D size; 0 = direct */
+ /* display.post_shader: a runtime fullscreen fragment shader applied to the
+  * 3D world only. apply_render_config copies the path and sets post_dirty;
+  * scene.c owns all loading/compiling, keyed off the path. Empty = off. */
+ char post_shader_path[1024];
+ bool post_dirty;                                      /* path changed; scene.c loads lazily with the GL context current */
+ bool post_ready;                                      /* program compiled for the current path */
+ bool post_failed;                                     /* current path failed; retry only when the path changes */
+ GLuint post_prog;
+ GLuint post_temp_tex,post_temp_fbo;                   /* output-size RGBA8 resolve destination while a post shader is active */
+ int post_temp_w,post_temp_h;
  /* Lazily compiled SSIM resolve programs and cached RGBA16F intermediates.
   * The cache is keyed by (rtt_width,rtt_height,output width,output height). */
  GLuint ssim_prog_l2,ssim_prog_mr,ssim_prog_final;
