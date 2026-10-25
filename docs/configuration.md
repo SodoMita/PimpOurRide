@@ -394,6 +394,63 @@ Two consequences worth knowing:
 To add a language, copy `assets/locale/ru.lang`, translate the right-hand
 side, and reload — no build step, no extraction tool, no code change.
 
+## Scripts and font coverage
+
+English and Russian work today. Anything beyond that needs one thing checked
+first, because it fails silently and looks like a rendering bug rather than a
+missing dependency.
+
+**The text path uses cairo's toy API** (`cairo_select_font_face` +
+`cairo_show_text`) with the family names `DejaVu Sans` / `DejaVu Sans Mono`.
+DejaVu covers Latin, Greek, Cyrillic — and nothing else. It has **no CJK, no
+Arabic, no Hebrew, no Thai, no Devanagari**.
+
+**The toy API does not fall back per glyph.** This was measured rather than
+assumed: rendering `启动面板` with `DejaVu Sans` produces ink coverage
+*byte-identical* to rendering it with a deliberately bogus family name
+(`No Such Family 12345` → 2.583% vs `DejaVu Sans` → 2.583%), i.e. tofu boxes,
+while `Noto Sans CJK SC` gives 5.774%. So a CJK catalog loaded today renders a
+screen of empty boxes, not Chinese. Evidence:
+`evidence/cjk-font-fallback-probe.webp`.
+
+Therefore, before shipping any non-European catalog:
+
+1. **CJK needs an explicit family.** The intended fix is a catalog header
+   directive — `@font = Noto Sans CJK SC` (`@monofont = Noto Sans Mono CJK
+   SC`) — read at load and passed to `cairo_select_font_face` instead of the
+   hardcoded DejaVu names. One family per catalog is sufficient, and Noto Sans
+   CJK carries Latin and digits too, so mixed chrome still renders. That
+   directive does **not** exist yet; a CJK `.lang` file will render as tofu
+   until it does.
+2. **Add a startup probe.** Render one representative codepoint from the
+   catalog and compare it against a known-missing one; if they match, log
+   loudly and stay on English. Silent tofu across an entire HUD is the worst
+   possible failure mode, and this is cheap to prevent.
+3. **Do not ship Arabic, Hebrew, Indic or Thai catalogs yet.** The toy API does
+   no contextual shaping and no bidi: Arabic would render as isolated,
+   disconnected letterforms in the wrong visual order — unreadable, and worse
+   than not offering the language. `asyncinput`-style completeness aside, this
+   needs a real shaping engine (Pango) before those scripts are honest to
+   claim. Document any limitation explicitly rather than shipping a catalog
+   that looks broken.
+4. **CJK does not need shaping**, so a CJK catalog plus the `@font` directive is
+   genuinely sufficient — no Pango required.
+
+Two related rules are enforced in code and in `AGENTS.md`:
+
+- **Never truncate translated text with a printf precision.** `%.62s` and
+  `%.*s` count *bytes* and split multi-byte characters. Already reachable with
+  Russian, certain with CJK. `i18n_utf8_truncate()` in `include/i18n.h` is the
+  replacement.
+- **Never translate a format string instead of its arguments.** `tr("%s")`
+  with the real sentence passed as an argument translates nothing. Pass `"%s"`
+  as a literal and wrap the argument in `tr()`.
+
+DejaVu's metrics differ substantially from Noto CJK (taller ascent/descent), so
+baked layouts that assume DejaVu baselines will sit low and reflow once a CJK
+family is in use. Compute bake geometry from `cairo_font_extents` rather than
+hardcoded offsets when the `@font` directive lands.
+
 ## Implementation notes
 
 - `include/cdconfig.h` + `src/cdconfig.c`: the generic string-typed INI

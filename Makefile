@@ -32,8 +32,8 @@ $(GEN)/linux-dmabuf-client.h: | $(GEN)
 	wayland-scanner client-header $(PROTO_DIR)/stable/linux-dmabuf/linux-dmabuf-v1.xml $@
 $(BIN)/chromedrive: $(SOURCES) include/chrome.h include/math3d.h include/vehicle.h include/city.h include/vehicle_seat.h include/wheel_input.h include/telemetry.h include/cdconfig.h include/i18n.h include/fbdev_pixfmt.h $(HEADERS) $(PROTOCOLS) | $(BIN)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(SOURCES) $(PROTOCOLS) -o $@ $(LDLIBS)
-$(BIN)/chromedrive-demo: clients/demo.c src/wheel_input.c include/telemetry.h include/wheel_input.h $(GEN)/xdg-shell-client.h $(GEN)/xdg-shell-protocol.c | $(BIN)
-	$(CC) -Iinclude -I$(GEN) $(CFLAGS) $(shell pkg-config --cflags wayland-client cairo xkbcommon) clients/demo.c src/wheel_input.c $(GEN)/xdg-shell-protocol.c -o $@ $(shell pkg-config --libs wayland-client cairo xkbcommon) -lm
+$(BIN)/chromedrive-demo: clients/demo.c src/i18n.c src/wheel_input.c include/telemetry.h include/i18n.h include/wheel_input.h $(GEN)/xdg-shell-client.h $(GEN)/xdg-shell-protocol.c | $(BIN)
+	$(CC) -Iinclude -I$(GEN) $(CFLAGS) $(shell pkg-config --cflags wayland-client cairo xkbcommon) clients/demo.c src/i18n.c src/wheel_input.c $(GEN)/xdg-shell-protocol.c -o $@ $(shell pkg-config --libs wayland-client cairo xkbcommon) -lm
 # Settings GUI (launch-menu editor + all config): wl_shm/cairo client like
 # the demo, linking the same INI store the compositor reads. No new deps
 # beyond what the compositor already needs (libwebp included), so it is

@@ -247,14 +247,14 @@ void app_exec(Server *s,const char *command){
  if(err){app_notice(s,tr("Launch failed: %s"),strerror(err));fprintf(stderr,"[launch] %s: %s\n",command,strerror(err));return;}
  s->children[s->child_count++]=pid;fprintf(stderr,"[launch] pid=%d %s\n",(int)pid,command);app_notice(s,tr("Connecting a new native Wayland client..."));
 }
-static void action_cycle_neon(Server *s){s->theme=(s->theme+1)%3;s->rebuild_scene=true;app_notice(s,tr("Underglow / %s"),s->theme==0?"ULTRAVIOLET":s->theme==1?"ICE BLUE":"ACID LIME");}
+static void action_cycle_neon(Server *s){s->theme=(s->theme+1)%3;s->rebuild_scene=true;app_notice(s,tr("Underglow / %s"),s->theme==0?tr("ULTRAVIOLET"):s->theme==1?tr("ICE BLUE"):tr("ACID LIME"));}
 static void action_driver_view(Server *s){scene_reset_camera(s);app_notice(s,tr("Selected seat view restored"));}
 void app_launch(Server *s,int action,bool force_new){
  if(action<0||action>=6)return;
- if(!s->buttons[action].enabled){app_notice(s,tr("%s is disabled in the menu configuration"),s->buttons[action].name);return;}
+ if(!s->buttons[action].enabled){app_notice(s,tr("%s is disabled in the menu configuration"),tr(s->buttons[action].name));return;}
  if(s->buttons[action].action==CD_BUTTON_NEON){action_cycle_neon(s);return;}
  if(s->buttons[action].action==CD_BUTTON_COCKPIT){action_driver_view(s);return;}
- if(!s->launch_commands[action]||!*s->launch_commands[action]){app_notice(s,tr("No app assigned to %s - right-click it to choose one"),s->buttons[action].name);return;}
+ if(!s->launch_commands[action]||!*s->launch_commands[action]){app_notice(s,tr("No app assigned to %s - right-click it to choose one"),tr(s->buttons[action].name));return;}
  if(!force_new&&*s->app_ids[action]){for(int i=0;i<CD_MAX_MONITORS;i++){Surface *p=s->monitors[i].surface;if(p&&strstr(p->app_id,s->app_ids[action])){server_focus(s,p);scene_focus_monitor(s,i,true);return;}}}
  app_exec(s,s->launch_commands[action]);
 }
@@ -376,9 +376,9 @@ static void arrange_toggle(Server *s){
 static const char *arrange_handle_name(int handle){
  switch(handle){
  case CD_HANDLE_MOVE:return "move in plane";
- case CD_HANDLE_AXIS_X:return "move along X";
- case CD_HANDLE_AXIS_Y:return "move along Y";
- case CD_HANDLE_AXIS_Z:return "move along Z/depth";
+ case CD_HANDLE_AXIS_X:return tr("move along X");
+ case CD_HANDLE_AXIS_Y:return tr("move along Y");
+ case CD_HANDLE_AXIS_Z:return tr("move along Z/depth");
  case CD_HANDLE_ROTATE_YAW:return "rotate yaw";
  case CD_HANDLE_ROTATE_PITCH:return "rotate pitch";
  case CD_HANDLE_ROTATE_ROLL:return "rotate roll";

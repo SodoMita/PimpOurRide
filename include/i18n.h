@@ -89,6 +89,23 @@ const char *i18n_catalog_path(void);
  * `english` unchanged when no catalog is loaded or the key is absent. */
 const char *tr(const char *english);
 
+/* UTF-8-safe byte truncation. Copies the longest prefix of `src` that is both
+ * a whole number of UTF-8 codepoints and at most `max_bytes` bytes long, into
+ * `dst` (`cap` bytes, always NUL-terminated). Returns bytes copied.
+ *
+ * Use this instead of a printf "%.Ns" precision or "%.*s" on any text that can
+ * be a translation. Those count BYTES, so they cut multi-byte characters in
+ * half and produce mojibake - already reachable with Russian, and certain with
+ * CJK. Truncating a cache key is fine; truncating what the user reads is not. */
+size_t i18n_utf8_truncate(char *dst, size_t cap, const char *src, size_t max_bytes);
+
+/* Install root derived from the running binary (<root>/bin/<prog>): the same
+ * two-directories-up rule src/main.c uses for assets, factored out so the
+ * settings GUI and the demo clients can find <root>/assets/locale without
+ * copying the logic. Writes "" and returns false if /proc/self/exe is
+ * unavailable. */
+bool i18n_root_from_exe(char *buf, size_t size);
+
 /* Comma-separated list of languages available to a UI picker, English first:
  * "en,ru,de". Scans the four search directories above for *.lang. `root` is
  * the install root (NULL allowed). Returns the number of tags written, and

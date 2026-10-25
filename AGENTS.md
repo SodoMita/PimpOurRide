@@ -92,6 +92,22 @@ The rule is the same shape as the PNG ban: there is exactly one right way.
 - Keys are matched exactly: same case, same spacing (the HUD aligns columns
   with doubled spaces), and **no `=` in a key** — it separates key from value
   in the catalog format.
+- **Never truncate translated text with a printf precision.** `%.62s` / `%.*s`
+  count bytes and split multi-byte characters (already reachable in Russian,
+  guaranteed in CJK). Use `i18n_utf8_truncate()` from `include/i18n.h`.
+- **Never translate a format string instead of its argument.** `tr("%s")` with
+  the sentence passed as an argument translates nothing; write `"%s"` as a
+  literal and wrap the argument in `tr()`. Same for ternaries inside a
+  `snprintf`: translate each branch, not the outer `%s`.
+- Window titles of **our own** clients (`clients/demo.c`,
+  `clients/config.c`) are chrome and go through `tr()` at the point they are
+  set. A third-party client's `xdg_toplevel` title belongs to that app — the
+  compositor must never translate it.
+- **Font coverage is a real constraint, not a detail.** The text path is
+  cairo's toy API with DejaVu, which has no CJK/Arabic/Indic/Thai coverage and
+  does *no* per-glyph fallback (measured: CJK ink in DejaVu is byte-identical
+  to a bogus family name). See "Scripts and font coverage" in
+  `docs/configuration.md` before adding a catalog for a new script.
 - Bake-time, not frame-time: textures with text in them are built once. If
   you add a new baked-with-text texture, add it to `ui_refresh_text()` in
   `src/ui.c` or it will keep the old language until restart.
