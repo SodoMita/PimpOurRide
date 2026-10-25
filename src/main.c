@@ -1,5 +1,6 @@
 #include "chrome.h"
 #include "cdconfig.h"
+#include "fbdev_pixfmt.h"
 #include <errno.h>
 #include <linux/input-event-codes.h>
 #include <math.h>
@@ -21,7 +22,7 @@ void app_release_input(Server *s,uint32_t time){
  /* Drive keys are compositor-local and therefore are not present in the
   * Wayland seat's s->keys[] bitmap. Both sets must be released on focus loss,
   * otherwise switching windows could leave a client key or motor latched. */
- server_release_keys(s,time);clear_drive_controls(s);s->door_shortcut_down=false;s->autopilot_shortcut_down=false;scene_wheel_cancel(s);
+ server_touch_cancel(s);server_release_keys(s,time);clear_drive_controls(s);s->door_shortcut_down=false;s->autopilot_shortcut_down=false;scene_wheel_cancel(s);
 }
 /* ---- persistent configuration (chromedrive.conf, edited by the GUI) ----
  * Precedence: built-in defaults < config file < command line. The file is
@@ -34,20 +35,63 @@ void app_release_input(Server *s,uint32_t time){
 static char config_path[4096];
 static time_t config_mtime_seen;
 static bool config_enabled=true;
-static void apply_config(Server *s,const CdConfig *cfg,bool startup,const char **socket_out){
- if(startup){
-  long w=cd_config_get_int(cfg,"display","width",s->width),h=cd_config_get_int(cfg,"display","height",s->height);
-  if(w>=640&&w<=7680&&h>=400&&h<=4320){s->width=(int)w;s->height=(int)h;}
-  else if(cd_config_has(cfg,"display","width")||cd_config_has(cfg,"display","height"))fprintf(stderr,"[config] ignoring out-of-range display size\n");
-  s->fullscreen=cd_config_get_bool(cfg,"display","fullscreen",s->fullscreen);
-  s->headless=cd_config_get_bool(cfg,"session","headless",s->headless);
-  long port=cd_config_get_int(cfg,"session","vnc_port",s->vnc_port);
-  if(port>=1&&port<=65535)s->vnc_port=(int)port;else if(cd_config_has(cfg,"session","vnc_port"))fprintf(stderr,"[config] ignoring bad vnc_port\n");
-  s->demo=cd_config_get_bool(cfg,"session","demo",s->demo);
-  static char socket_buf[128];
-  const char *sock=cd_config_get_string(cfg,"session","socket","");
-  if(socket_out&&sock&&*sock){snprintf(socket_buf,sizeof(socket_buf),"%s",sock);*socket_out=socket_buf;}
+static bool parse_backend(const char *name,Backend *out){
+ if(!strcmp(name,"headless")){*out=CD_BACKEND_HEADLESS;return true;}
+ if(!strcmp(name,"windowed")){*out=CD_BACKEND_WINDOWED;return true;}
+ if(!strcmp(name,"fbdev")){*out=CD_BACKEND_FBDEV;return true;}
+ return false;
+}
+static bool set_fbdev_path(Server *s,const char *path){
+ if(snprintf(s->fbdev_path,sizeof(s->fbdev_path),"%s",path)>=(int)sizeof(s->fbdev_path)){
+  fprintf(stderr,"Framebuffer device path too long\n");return false;
  }
+ return true;
+}
+static void apply_config(Server *s,const CdConfig *cfg,bool startup,const char **socket_out){
+  if(startup){
+   long w=cd_config_get_int(cfg,"display","width",s->width),h=cd_config_get_int(cfg,"display","height",s->height);
+   if(w>=640&&w<=7680&&h>=400&&h<=4320){s->width=(int)w;s->height=(int)h;}
+   else if(cd_config_has(cfg,"display","width")||cd_config_has(cfg,"display","height"))fprintf(stderr,"[config] ignoring out-of-range display size\n");
+   s->fullscreen=cd_config_get_bool(cfg,"display","fullscreen",s->fullscreen);
+   const char *backend=cd_config_get_string(cfg,"session","backend",NULL);
+   if(backend){
+    Backend parsed;
+    if(parse_backend(backend,&parsed))s->backend=parsed;
+    else fprintf(stderr,"[config] unknown session.backend '%s' (want headless|windowed|fbdev)\n",backend);
+   }else s->backend=cd_config_get_bool(cfg,"session","headless",s->backend==CD_BACKEND_HEADLESS)?CD_BACKEND_HEADLESS:CD_BACKEND_WINDOWED;
+   const char *dev=cd_config_get_string(cfg,"session","fbdev_device",NULL);
+   if(dev){
+    if(!*dev)s->fbdev_path[0]=0;
+    else{char tmp[sizeof s->fbdev_path];
+     if(snprintf(tmp,sizeof(tmp),"%s",dev)>=(int)sizeof(tmp))fprintf(stderr,"[config] session.fbdev_device path too long; using the previous value\n");
+     else snprintf(s->fbdev_path,sizeof(s->fbdev_path),"%s",tmp);}
+   }
+   s->fbdev_vsync=cd_config_get_bool(cfg,"session","fbdev_vsync",s->fbdev_vsync);
+   s->fbdev_pan=cd_config_get_bool(cfg,"session","fbdev_pan",s->fbdev_pan);
+   s->fbdev_vnc_mirror=cd_config_get_bool(cfg,"session","fbdev_vnc_mirror",s->fbdev_vnc_mirror);
+   s->fbdev_evdev=cd_config_get_bool(cfg,"session","fbdev_evdev",s->fbdev_evdev);
+   s->fbdev_grab_input=cd_config_get_bool(cfg,"session","fbdev_grab_input",s->fbdev_grab_input);
+   const char *input_devs=cd_config_get_string(cfg,"session","fbdev_input_devices",NULL);
+   if(input_devs){
+    char *copy=strdup(input_devs);
+    if(copy){
+     char *tok=strtok(copy," ,\t\n");
+     s->fbdev_input_device_count=0;
+     while(tok && s->fbdev_input_device_count<8){
+      snprintf(s->fbdev_input_devices[s->fbdev_input_device_count],sizeof(s->fbdev_input_devices[0]),"%s",tok);
+      s->fbdev_input_device_count++;
+      tok=strtok(NULL," ,\t\n");
+     }
+     free(copy);
+    }
+   }
+   long port=cd_config_get_int(cfg,"session","vnc_port",s->vnc_port);
+   if(port>=1&&port<=65535)s->vnc_port=(int)port;else if(cd_config_has(cfg,"session","vnc_port"))fprintf(stderr,"[config] ignoring bad vnc_port\n");
+   s->demo=cd_config_get_bool(cfg,"session","demo",s->demo);
+   static char socket_buf[128];
+   const char *sock=cd_config_get_string(cfg,"session","socket","");
+   if(socket_out&&sock&&*sock){snprintf(socket_buf,sizeof(socket_buf),"%s",sock);*socket_out=socket_buf;}
+  }
  s->fps_limit=(int)clampf((float)cd_config_get_int(cfg,"display","fps",s->fps_limit),1,120);
  s->target_fov=clampf((float)cd_config_get_double(cfg,"display","fov",s->target_fov),CD_DRIVER_FOV_MIN,CD_DRIVER_FOV_MAX);
  if(startup)s->fov=s->target_fov;
@@ -250,6 +294,7 @@ static void arrange_toggle(Server *s){
  if(s->held_buttons>0||s->frame_dragging){app_notice(s,"Arrange: release the pointer button first");return;}
  int slot=arrange_find_slot(s);
  if(slot<0){app_notice(s,"Arrange: no window is open");return;}
+ server_touch_cancel(s); /* Arrange is modal: do not leave app contacts live */
  s->arrange_mode=true;s->arrange_dragging=false;s->arrange_drag_button=0;s->arrange_handle=CD_HANDLE_NONE;s->arrange_handles=false;
  arrange_set_target(s,slot,true);
 }
@@ -283,6 +328,7 @@ static bool arrange_handles_button(Server *s,int slot){
  bool same=arrange_valid(s)&&s->arrange_slot==slot;
  if(!s->arrange_mode){
   if(s->held_buttons>0||s->frame_dragging){app_notice(s,"Arrange: release the pointer button first");return false;}
+  server_touch_cancel(s); /* Arrange is modal: do not leave app contacts live */
   s->arrange_mode=true;
  }
  if(!arrange_set_target(s,slot,false))return false;
@@ -448,7 +494,7 @@ void app_frame_pointer_motion(Server *s,int x,int y){
  scene_monitor_translate(s,slot,dx*meters_per_pixel,-dy*meters_per_pixel,0);
 }
 static void next_monitor(Server *s){for(int d=1;d<=CD_MAX_MONITORS;d++){int i=(s->active_slot+d)%CD_MAX_MONITORS;if(s->monitors[i].surface){server_focus(s,s->monitors[i].surface);scene_focus_monitor(s,i,s->focus_view);return;}}}
-/* Compositor-level hotkeys, shared by both input backends (SDL and headless/VNC).
+/* Compositor-level hotkeys, shared by every backend/input path (SDL, RFB/VNC).
  * Keyed on evdev codes + the live s->keys[] modifier bitmap (already updated by
  * server_key() for prior events in the same stream), so it works identically
  * whether the raw event came from an SDL_Keycode+scancode or an X11 keysym. */
@@ -566,15 +612,44 @@ bool app_global_key(Server *s,uint32_t evdev,bool down){
  case KEY_F10:
   vehicle_reset_pose(&s->vehicle);clear_drive_controls(s);scene_wheel_cancel(s);
   app_notice(s,"Vehicle recovered to the garage start pose");break;
- case KEY_F11:if(!s->headless&&s->window){s->fullscreen=!s->fullscreen;SDL_SetWindowFullscreen(s->window,s->fullscreen?SDL_WINDOW_FULLSCREEN_DESKTOP:0);}break;
+ case KEY_F11:if(s->backend==CD_BACKEND_WINDOWED&&s->window){s->fullscreen=!s->fullscreen;SDL_SetWindowFullscreen(s->window,s->fullscreen?SDL_WINDOW_FULLSCREEN_DESKTOP:0);}break;
  case KEY_F12:snprintf(s->screenshot_path,sizeof(s->screenshot_path),"%.4000s/screenshots/cockpit-%llu.webp",s->root,(unsigned long long)SDL_GetTicks64());s->screenshot_requested=true;break;
  default:break;
  }
  return true;
 }
-static void usage(const char *name){printf("ChromeDrive " CD_VERSION " — native, first-person Wayland cockpit\n\nUsage: %s [options]\n  --demo                Start the configured autostart Wayland clients\n  --socket NAME         Wayland socket (default: automatic)\n  --exec COMMAND        Launch an extra Wayland client (repeatable)\n  --size WIDTHxHEIGHT   Framebuffer/host window size (default 1600x1000)\n  --fps N               Frame cap, 1..120 (default 60)\n  --headless            Run with no X server: surfaceless EGL + built-in VNC server (default)\n  --windowed            Dev/debug mode: open a real SDL2/GLX window on an X server instead\n  --vnc-port N          VNC port for --headless mode (default 5900)\n  --fullscreen          --windowed only: start fullscreen, F11 to leave\n  --exit-after SECONDS   Useful for automated checks\n  --screenshot PATH     Capture a WebP after 3 seconds\n  --config PATH         Config file (default: ~/.config/chromedrive/chromedrive.conf)\n  --no-config           Ignore the config file entirely\n  --help                Show this help\n\nF1 help | F2 selected seat | F3 focus/next | F4 neon | F6 arrange | Meta+O doors\nF7 client/drive input | F8 driver/exterior/systems | F9 switch seat | F10 recover car\nF5 is unbound for browser/client restart or reload\nDrive: WASD/arrows + Space + drag wheel\nMiddle-drag/VNC-drag to look | Drag a titlebar to move | HANDLES shows the Arrange gizmo\nArrange: Tab next window, Esc/F6 exit | Ctrl+Alt+Enter new terminal\n",name);}
+static const char *backend_label(Backend backend){
+ switch(backend){
+ case CD_BACKEND_HEADLESS:return "headless/EGL/VNC";
+ case CD_BACKEND_WINDOWED:return "windowed/SDL/GLX";
+ case CD_BACKEND_FBDEV:return "fbdev";
+ default:return "unknown";
+ }
+}
+static void backend_poll(Server *s){
+ switch(s->backend){
+ case CD_BACKEND_HEADLESS:backend_headless_poll(s);break;
+ case CD_BACKEND_WINDOWED:backend_sdl_poll(s);break;
+ case CD_BACKEND_FBDEV:backend_fbdev_poll(s);break;
+ }
+}
+static void backend_present(Server *s){
+ switch(s->backend){
+ case CD_BACKEND_HEADLESS:backend_headless_present(s);break;
+ case CD_BACKEND_WINDOWED:backend_sdl_present(s);break;
+ case CD_BACKEND_FBDEV:backend_fbdev_present(s);break;
+ }
+}
+static void backend_shutdown(Server *s){
+ switch(s->backend){
+ case CD_BACKEND_HEADLESS:backend_headless_shutdown(s);break;
+ case CD_BACKEND_WINDOWED:backend_sdl_shutdown(s);break;
+ case CD_BACKEND_FBDEV:backend_fbdev_shutdown(s);break;
+ }
+}
+static void usage(const char *name){printf("ChromeDrive " CD_VERSION " \xe2\x80\x94 native, first-person Wayland cockpit\n\nUsage: %s [options]\n  --demo                Start the configured autostart Wayland clients\n  --socket NAME         Wayland socket (default: automatic)\n  --exec COMMAND        Launch an extra Wayland client (repeatable)\n  --size WIDTHxHEIGHT   Framebuffer/host window size (default 1600x1000)\n  --fps N               Frame cap, 1..120 (default 60)\n  --backend MODE        headless (default) | windowed | fbdev\n  --headless            Alias for --backend headless: surfaceless EGL + built-in VNC\n  --windowed            Alias for --backend windowed: SDL2/GLX dev window on X\n  --fbdev [DEVICE]      Direct Linux framebuffer output (default /dev/fb0)\n  --fbdev-device PATH   Framebuffer device for --backend fbdev\n  --fbdev-modeset       Select fbdev backend and request modeset to configured render size\n  --fbdev-mode WxH[@BPP] Select fbdev backend, imply modeset, set size/BPP (BPP in 16,24,32)\n  --no-fbdev-vsync      Do not wait for FBIO_WAITFORVSYNC\n  --no-fbdev-pan        Do not use FBIOPAN_DISPLAY double buffering\n  --fbdev-vnc-mirror    Loopback-only RFB input/output companion for fbdev\n  --vnc-mirror          Alias for --fbdev-vnc-mirror\n  --fbdev-evdev         Enable local evdev input for fbdev (default: on)\n  --no-fbdev-evdev      Disable local evdev input for fbdev\n  --fbdev-grab-input    Grab evdev devices (EVIOCGRAB; warns about VT lockout)\n  --fbdev-input-device PATH Restrict evdev to explicit device (repeatable, max 8)\n  --vnc-port N          VNC port for headless or the fbdev mirror (default 5900)\n  --fullscreen          --windowed only: start fullscreen, F11 to leave\n  --exit-after SECONDS   Useful for automated checks\n  --screenshot PATH     Capture a WebP after 3 seconds\n  --config PATH         Config file (default: ~/.config/chromedrive/chromedrive.conf)\n  --no-config           Ignore the config file entirely\n  --help                Show this help\n\nfbdev adopts the current kernel framebuffer mode by default (no modesetting);\nwith --fbdev-modeset or --fbdev-mode it requests a modeset via FBIOPUT_VSCREENINFO.\nThe original mode is restored on exit. Local evdev input (keyboard/mouse/touchscreen)\nis enabled by default for fbdev; use --no-fbdev-evdev to disable. Explicit devices\nvia --fbdev-input-device replace auto-enumeration. Startup-only enumeration; no hotplug.\n\nF1 help | F2 selected seat | F3 focus/next | F4 neon | F6 arrange | Meta+O doors\nF7 client/drive input | F8 driver/exterior/systems | F9 switch seat | F10 recover car\nF5 is unbound for browser/client restart or reload\nDrive: WASD/arrows + Space + drag wheel\nMiddle-drag/VNC-drag to look | Drag a titlebar to move | HANDLES shows the Arrange gizmo\nArrange: Tab next window, Esc/F6 exit | Ctrl+Alt+Enter new terminal\n",name);}
 int main(int argc,char **argv){
- Server s={.width=1600,.height=1000,.fps_limit=60,.running=true,.hud_visible=true,.hover_button=-1,.hover_close=-1,.keymap_fd=-1,.arrange_slot=-1,.frame_drag_slot=-1,.fov=65,.target_fov=65,.headless=true,.vnc_port=5900,.telemetry_fd=-1};
+  Server s={.width=1600,.height=1000,.fps_limit=60,.running=true,.hud_visible=true,.hover_button=-1,.hover_close=-1,.keymap_fd=-1,.arrange_slot=-1,.frame_drag_slot=-1,.fov=65,.target_fov=65,.backend=CD_BACKEND_HEADLESS,.fbdev_vsync=true,.fbdev_pan=true,.fbdev_evdev=true,.fbdev_grab_input=false,.vnc_port=5900,.telemetry_fd=-1,.fbdev_modeset=false,.fbdev_mode_width=0,.fbdev_mode_height=0,.fbdev_mode_bpp=0,.fbdev_input_device_count=0};
  vehicle_init(&s.vehicle);
  const char *socket_name=NULL;double exit_after=0;bool auto_screenshot=false;
  /* Config pre-scan: --config/--no-config must be known before the file is
@@ -592,9 +667,29 @@ int main(int argc,char **argv){
   else if(!strcmp(argv[i],"--no-config")){/* consumed by the pre-scan */}
   else if(!strcmp(argv[i],"--demo"))s.demo=true;
   else if(!strcmp(argv[i],"--fullscreen"))s.fullscreen=true;
-  else if(!strcmp(argv[i],"--headless"))s.headless=true;
-  else if(!strcmp(argv[i],"--windowed"))s.headless=false;
-  else if(!strcmp(argv[i],"--vnc-port")&&i+1<argc)s.vnc_port=atoi(argv[++i]);
+  else if(!strcmp(argv[i],"--backend")&&i+1<argc){if(!parse_backend(argv[++i],&s.backend)){fprintf(stderr,"Invalid backend '%s' (want headless|windowed|fbdev)\n",argv[i]);return 2;}}
+  else if(!strcmp(argv[i],"--headless"))s.backend=CD_BACKEND_HEADLESS;
+  else if(!strcmp(argv[i],"--windowed"))s.backend=CD_BACKEND_WINDOWED;
+  else if(!strcmp(argv[i],"--fbdev")){s.backend=CD_BACKEND_FBDEV;if(i+1<argc&&argv[i+1][0]!='-'&&!set_fbdev_path(&s,argv[++i]))return 2;}
+  else if(!strcmp(argv[i],"--fbdev-device")&&i+1<argc){s.backend=CD_BACKEND_FBDEV;if(!set_fbdev_path(&s,argv[++i]))return 2;}
+else if(!strcmp(argv[i],"--no-fbdev-vsync"))s.fbdev_vsync=false;
+   else if(!strcmp(argv[i],"--no-fbdev-pan"))s.fbdev_pan=false;
+   else if(!strcmp(argv[i],"--no-fbdev-evdev"))s.fbdev_evdev=false;
+   else if(!strcmp(argv[i],"--fbdev-grab-input"))s.fbdev_grab_input=true;
+   else if(!strcmp(argv[i],"--fbdev-input-device")&&i+1<argc){
+    if(s.fbdev_input_device_count<8){
+     snprintf(s.fbdev_input_devices[s.fbdev_input_device_count],sizeof(s.fbdev_input_devices[0]),"%s",argv[++i]);
+     s.fbdev_input_device_count++;
+    }else fprintf(stderr,"[cli] too many --fbdev-input-device (max 8)\n");
+   }
+ else if(!strcmp(argv[i],"--fbdev-vnc-mirror")||!strcmp(argv[i],"--vnc-mirror"))s.fbdev_vnc_mirror=true;
+    else if(!strcmp(argv[i],"--fbdev-modeset")){s.fbdev_modeset=true;s.backend=CD_BACKEND_FBDEV;}
+   else if(!strcmp(argv[i],"--fbdev-mode")&&i+1<argc){
+    int mw,mh,mbpp;
+    if(!cd_fb_mode_parse(argv[++i],&mw,&mh,&mbpp)){fprintf(stderr,"Invalid fbdev mode '%s' (use WIDTHxHEIGHT[@BPP])\n",argv[i]);return 2;}
+    s.fbdev_mode_width=mw;s.fbdev_mode_height=mh;s.fbdev_mode_bpp=mbpp;s.fbdev_modeset=true;s.backend=CD_BACKEND_FBDEV;
+   }
+   else if(!strcmp(argv[i],"--vnc-port")&&i+1<argc){int p=atoi(argv[++i]);if(p<1||p>65535){fprintf(stderr,"Invalid VNC port\n");return 2;}s.vnc_port=p;}
   else if(!strcmp(argv[i],"--socket")&&i+1<argc)socket_name=argv[++i];
   else if(!strcmp(argv[i],"--exec")&&i+1<argc&&s.exec_count<16)s.exec_commands[s.exec_count++]=argv[++i];
   else if(!strcmp(argv[i],"--size")&&i+1<argc){if(sscanf(argv[++i],"%dx%d",&s.width,&s.height)!=2||s.width<640||s.height<400||s.width>7680||s.height>4320){fprintf(stderr,"Invalid window size\n");return 2;}}
@@ -603,13 +698,20 @@ int main(int argc,char **argv){
   else if(!strcmp(argv[i],"--screenshot")&&i+1<argc){snprintf(s.screenshot_path,sizeof(s.screenshot_path),"%s",argv[++i]);auto_screenshot=true;}
   else{fprintf(stderr,"Unknown or incomplete option: %s\n",argv[i]);usage(argv[0]);return 2;}
  }
+ if(s.backend==CD_BACKEND_FBDEV&&s.fullscreen){fprintf(stderr,"[fbdev] --fullscreen has no meaning for direct framebuffer output; ignoring\n");s.fullscreen=false;}
+ if(s.backend!=CD_BACKEND_FBDEV&&s.fbdev_vnc_mirror)fprintf(stderr,"[vnc] --fbdev-vnc-mirror only applies to the fbdev backend; ignoring\n");
  s.mouse_x=s.width/2;s.mouse_y=s.height/2; /* start the cursor centered, not pinned to the top-left corner at (0,0) */
  ssize_t n=readlink("/proc/self/exe",s.root,sizeof(s.root)-1);if(n<0)return 1;s.root[n]=0;char *slash=strrchr(s.root,'/');if(slash)*slash=0;slash=strrchr(s.root,'/');if(slash)*slash=0;
  if(!getenv("XDG_RUNTIME_DIR")){snprintf(s.runtime,sizeof(s.runtime),"/tmp/chromedrive-%d",(int)getuid());if(mkdir(s.runtime,0700)<0&&errno!=EEXIST){perror("runtime directory");return 1;}struct stat st;if(stat(s.runtime,&st)<0||st.st_uid!=getuid()||(st.st_mode&0077)){fprintf(stderr,"Runtime directory must be private and owned by you\n");return 1;}setenv("XDG_RUNTIME_DIR",s.runtime,1);}else snprintf(s.runtime,sizeof(s.runtime),"%s",getenv("XDG_RUNTIME_DIR"));
  signal(SIGINT,on_signal);signal(SIGTERM,on_signal);signal(SIGPIPE,SIG_IGN);
  if(SDL_Init(SDL_INIT_TIMER)<0){fprintf(stderr,"SDL: %s\n",SDL_GetError());return 1;} /* timer only: used for clock_now()/frame pacing in both backends */
- bool backend_ok=s.headless?backend_headless_init(&s):backend_sdl_init(&s);
- if(!backend_ok){fprintf(stderr,"Backend init failed (%s)\n",s.headless?"headless/EGL/VNC":"windowed/SDL/GLX");SDL_Quit();return 1;}
+ bool backend_ok=false;
+ switch(s.backend){
+ case CD_BACKEND_HEADLESS:backend_ok=backend_headless_init(&s);break;
+ case CD_BACKEND_WINDOWED:backend_ok=backend_sdl_init(&s);break;
+ case CD_BACKEND_FBDEV:backend_ok=backend_fbdev_init(&s);break;
+ }
+ if(!backend_ok){fprintf(stderr,"Backend init failed (%s)\n",backend_label(s.backend));SDL_Quit();return 1;}
  dmabuf_probe(&s);
  if(!server_init(&s,socket_name)){fprintf(stderr,"Could not start Wayland server: %s\n",strerror(errno));server_finish(&s);SDL_Quit();return 1;}
  telemetry_init(&s);
@@ -632,7 +734,7 @@ int main(int argc,char **argv){
  app_notice(&s,"Welcome to the driver's seat. F1 for controls.");
  while(s.running&&!interrupted){
   double frame_start=clock_now();s.time=frame_start-s.start_time;s.dt=frame_start-last;last=frame_start;
-  if(s.headless)backend_headless_poll(&s);else backend_sdl_poll(&s);
+  backend_poll(&s);
   config_poll(&s);
   server_dispatch(&s);
   int status;pid_t pid;while((pid=waitpid(-1,&status,WNOHANG))>0){for(int i=0;i<s.child_count;i++)if(s.children[i]==pid){s.children[i]=s.children[--s.child_count];break;}if(WIFEXITED(status)&&WEXITSTATUS(status)!=0){fprintf(stderr,"[launch] pid %d exited %d\n",(int)pid,WEXITSTATUS(status));app_notice(&s,"Client exited with status %d — see launch log",WEXITSTATUS(status));}}
@@ -661,7 +763,7 @@ int main(int argc,char **argv){
   glBindFramebuffer(GL_FRAMEBUFFER,s.target_fbo);
   ui_update(&s);scene_render(&s);ui_draw_overlay(&s);
   if(auto_screenshot&&s.time>3){s.screenshot_requested=true;auto_screenshot=false;}if(s.screenshot_requested){scene_save_screenshot(&s,s.screenshot_path);s.screenshot_requested=false;app_notice(&s,"Screenshot saved");}
-  if(s.headless)backend_headless_present(&s);else backend_sdl_present(&s);
+  backend_present(&s);
   /* Frame callback render loop pattern:
    * Only AFTER scene_render() and backend_*_present() have sampled the newly
    * committed Wayland textures and pushed the finished frame to RFB/SDL do we
@@ -675,6 +777,6 @@ int main(int argc,char **argv){
  }
  for(int i=0;i<s.child_count;i++)kill(-s.children[i],SIGTERM);
  telemetry_finish(&s);server_finish(&s);scene_finish(&s);
- if(s.headless)backend_headless_shutdown(&s);else backend_sdl_shutdown(&s);
+ backend_shutdown(&s);
  SDL_Quit();for(int i=0;i<6;i++)free(s.launch_commands[i]);return 0;
 }

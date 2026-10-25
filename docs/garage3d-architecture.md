@@ -438,16 +438,17 @@ proxy version actually has that request.
   1 finger = orbit, 2-finger centroid = pan, pinch log-ratio = zoom,
   double-tap = reset. On a 2→1 finger transition the remaining finger is
   re-baselined (the standard anti-jump). `cancel` drops all contacts.
-  **ChromeDrive caveat:** the *compositor* never advertises
-  `WL_SEAT_CAPABILITY_TOUCH` (`bind_seat` in `src/wayland.c` sends
-  pointer|keyboard only, `seat_touch` exists but stores no resources, and
-  neither the VNC nor SDL backend synthesises touch). So inside ChromeDrive
-  the client is driven by pointer/keyboard like every other app; on touch
-  compositors (phosh, sway, GNOME on a touchscreen) the full gesture set
-  works. Forwarding touch through ChromeDrive is future compositor work:
-  advertise the capability, keep a `wl_touch` resource list, route
-  `server_touch_*` through `scene_pick`'s monitor planes, and feed it from
-  `SDL_FINGERDOWN/MOTION/UP` in `backend_sdl.c` (VNC/RFB has no multitouch).
+  **ChromeDrive forwarding:** in `--windowed` mode the compositor now
+  advertises `WL_SEAT_CAPABILITY_TOUCH`, tracks `wl_touch` resources, and
+  routes `server_touch_down/motion/up/cancel` through `scene_pick` /
+  `scene_pick_surface`, so each contact keeps its implicit surface grab and
+  surface-local coordinates across the 3D monitor plane. `backend_sdl.c`
+  feeds those entry points from `SDL_FINGERDOWN/MOTION/UP`, suppresses SDL's
+  synthetic touch-generated mouse events, and gives pointer-only clients a
+  single-finger left-pointer fallback. The full gesture set therefore works
+  inside ChromeDrive on an SDL touchscreen host as well as on touch
+  compositors (phosh, sway, GNOME). Headless VNC/RFB remains single-pointer:
+  the protocol has no multitouch events for ChromeDrive to forward.
 
 ### 4.5 Configuration and hot-reload
 

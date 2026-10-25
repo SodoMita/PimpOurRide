@@ -517,6 +517,21 @@ void scene_render(Server *s){
  if(driver)draw_windshield_hud(s);
  vehicle_render_glass(s);glPopMatrix();
 }
+Hit scene_pick_surface(Server *s,Surface *surface,float x,float y){
+ Hit best={.kind=HIT_NONE,.distance=1e9f};
+ if(!surface||s->camera_mode!=VEHICLE_CAMERA_DRIVER)return best;
+ Surface *root=surface_root(surface);
+ if(!root||root->slot<0||root->slot>=CD_MAX_MONITORS||root->width<=0||root->height<=0)return best;
+ SceneCamera camera=scene_camera(s);Vec3 ray=vehicle_world_direction(&s->vehicle,scene_camera_ray(s,camera,x,y));
+ Plane p=s->monitors[root->slot].plane;float u,v,d;
+ if(!plane_hit(p,s->eye,ray,&u,&v,&d,false))return best;
+ float scale=fminf(p.width/root->width,p.height/root->height);
+ if(scale<=0)return best;
+ float sx=(u-.5f)*p.width/scale+root->width/2.f,sy=(v-.5f)*p.height/scale+root->height/2.f;
+ Surface *child=surface;
+ while(child&&child!=root){sx-=child->x;sy-=child->y;child=child->parent;}
+ return (Hit){.kind=HIT_APP,.surface=surface,.slot=root->slot,.x=sx,.y=sy,.distance=d};
+}
 Hit scene_pick(Server *s,float x,float y,bool grab){
  Hit best={.kind=HIT_NONE,.distance=1e9f};
  /* Exterior inspection views deliberately have no invisible cockpit hit
@@ -524,7 +539,7 @@ Hit scene_pick(Server *s,float x,float y,bool grab){
   * allowing all existing Plane/UV mathematics to remain unchanged and exact. */
  if(s->camera_mode!=VEHICLE_CAMERA_DRIVER)return best;
  SceneCamera camera=scene_camera(s);Vec3 ray=vehicle_world_direction(&s->vehicle,scene_camera_ray(s,camera,x,y));float u,v,d;
- if(grab&&s->pointer_grab){Surface *root=surface_root(s->pointer_grab);if(root&&root->slot>=0){Plane p=s->monitors[root->slot].plane;if(plane_hit(p,s->eye,ray,&u,&v,&d,false)){float scale=fminf(p.width/root->width,p.height/root->height);float sx=(u-.5f)*p.width/scale+root->width/2.f,sy=(v-.5f)*p.height/scale+root->height/2.f;Surface *child=s->pointer_grab;while(child!=root&&child){sx-=child->x;sy-=child->y;child=child->parent;}return (Hit){.kind=HIT_APP,.surface=s->pointer_grab,.slot=root->slot,.x=sx,.y=sy,.distance=d};}}return best;}
+ if(grab&&s->pointer_grab)return scene_pick_surface(s,s->pointer_grab,x,y);
  for(int i=0;i<CD_MAX_MONITORS;i++){Monitor *m=&s->monitors[i];if(!m->surface)continue;Plane p=m->plane;if(!plane_hit(p,s->eye,ray,&u,&v,&d,false)||d>=best.distance)continue;
   float lx=(u-.5f)*p.width,ly=(.5f-v)*p.height,k=monitor_iso_scale(p,i);
   if(i!=CD_CLUSTER_SLOT&&handles_button_at(p,k,lx,ly)){best=(Hit){.kind=HIT_HANDLES_BUTTON,.surface=m->surface,.slot=i,.x=lx,.y=ly,.distance=d};continue;}

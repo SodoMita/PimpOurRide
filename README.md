@@ -27,13 +27,15 @@ lives behind the steering wheel, with a transparent live HUD on the windshield.
 See [`docs/vehicle-and-remote.md`](docs/vehicle-and-remote.md).
 
 This is a real compositor: it implements `wl_compositor`, `wl_subcompositor`,
-`xdg-shell` (toplevels + popups), `wl_seat` (pointer + xkbcommon keyboard),
+`xdg-shell` (toplevels + popups), `wl_seat` (pointer + xkbcommon keyboard,
+plus SDL touchscreen `wl_touch` in `--windowed` mode),
 `wl_data_device_manager` (in-session clipboard), `zxdg_decoration_manager_v1`,
 `zwp_linux_dmabuf_v1` (GPU zero-copy buffer import), and one `wl_output`
 global per virtual monitor. Any well-behaved Wayland client can connect to it
 and will appear on its own screen.
 
-It runs two ways:
+It runs three ways (`--backend headless|windowed|fbdev`; the old flags remain
+as aliases):
 
 - **`--headless` (default): no X server, no window, anywhere.** The GL context
   is a surfaceless EGL context (no window system at all); a per-frame
@@ -41,6 +43,21 @@ It runs two ways:
   server, so the whole cockpit — compositor and every client window inside it
   — is visible over VNC. `tools/viewer` bridges that to a browser via
   websockify + noVNC.
+- **`--fbdev [DEVICE]`: direct Linux framebuffer output** (`/dev/fb0` by
+  default). It reuses the same surfaceless-EGL renderer, does one
+  `glReadPixels` per frame, and converts/blits that RGBA frame into the
+  framebuffer's current packed truecolor mode. This is **CPU readback/blit to
+  the kernel's existing fb mode, not DRM/KMS GPU scanout**. By default it
+  adopts the current kernel mode (phase 1 behavior). Opt-in modesetting via
+  `FBIOPUT_VSCREENINFO` is available with `--fbdev-modeset` (uses the
+  configured render size) or `--fbdev-mode WIDTHxHEIGHT[@BPP]` (explicit
+  size/BPP). The original mode is restored on exit. Local evdev input
+  (keyboard, mouse, touchscreen) is enabled by default for fbdev; use
+  `--no-fbdev-evdev` to disable. `--fbdev-grab-input` opts in to `EVIOCGRAB`
+  (warns about VT/console lockout). Explicit device restriction via
+  `--fbdev-input-device PATH` (repeatable, max 8). `--fbdev-vnc-mirror` adds
+  an explicit, loopback-only RFB control/output companion sharing the same
+  readback.
 - **`--windowed`: a real SDL2/GLX window on an X server**, kept only as a
   local dev/debug path with eyes on a real display. `zwp_linux_dmabuf_v1` is
   **not** advertised here — see "GPU / dma-buf" below for why.
@@ -51,17 +68,22 @@ It runs two ways:
   picking for buttons/screens, input routing to actual client processes, the
   terminal (`foot`) and the bundled demo modes (Files, Audio UI, host Meters,
   and the live EV instrument cluster — all genuine `wl_shm` clients speaking
-  real Wayland, source in `clients/demo.c`), the headless EGL+VNC pipeline, and the
+  real Wayland, source in `clients/demo.c`), the shared EGL renderer with its
+  headless EGL+VNC and fbdev readback/blit outputs, and the
   `zwp_linux_dmabuf_v1` GPU-import code path (real EGLImage calls — see
   caveat below). The garage beyond the windshield is real 3D geometry now,
   not the flat `assets/garage.webp` backdrop quad it used to be — see
   “Garage3D” below.
-- **Limitations in this build**: no layer-shell, Xwayland, or DRM/KMS backend
-  — it never owns real display hardware directly, it's always either nested
-  (`--windowed`) or headless-with-VNC-output (`--headless`); eight general app
-  mounts plus one dedicated instrument-cluster output; buffers capped at
-  16 MiB/64 MiB total per surface for safety;
-  single input seat, no touch/tablet.
+- **Limitations in this build**: no layer-shell, Xwayland, or DRM/KMS scanout
+  backend. Output is nested (`--windowed`), VNC-served (`--headless`), or
+  CPU-readback/blitted into an existing fbdev mode (`--fbdev`); it never owns
+  a DRM/KMS plane directly. fbdev phase 1 has no local evdev/keyboard/touch
+  input (use `--fbdev-vnc-mirror` for loopback RFB control), no modesetting,
+  and no GPU scanout. There are eight general app mounts plus one dedicated
+  instrument-cluster output; buffers capped at 16 MiB/64 MiB total per surface
+  for safety; single input seat and no tablet; touchscreen `wl_touch` is fed
+  by SDL finger events in `--windowed` mode, while headless/fbdev RFB remains
+  a single pointer because RFB has no multitouch events to forward.
 - The "Audio" app is explicitly a UI/interaction demo — it does not play audio.
   The fixed instrument cluster is a real Wayland client showing shared EV
   telemetry. The separately launched `telemetry` demo mode reads real
@@ -73,10 +95,13 @@ It runs two ways:
 dma-buf fd is imported with `eglCreateImageKHR(..., EGL_LINUX_DMA_BUF_EXT, ...)`
 and bound to a GL texture with `glEGLImageTargetTexture2DOES` — a genuine
 zero-copy GPU import, the same mechanism wlroots/Mutter/KWin use for
-GPU-accelerated clients (most browsers, Electron, `mpv --gpu`, etc). It's only
-advertised on the `--headless` EGL backend, because `EGLImage` does not
-interoperate with a GLX-created context, only with an EGL-created one — so
-`--windowed` (SDL2/GLX) intentionally never advertises it.
+GPU-accelerated clients (most browsers, Electron, `mpv --gpu`, etc). It is
+advertised on the EGL backends (`--headless` and `--fbdev`), because `EGLImage`
+does not interoperate with a GLX-created context, only with an EGL-created one
+— so `--windowed` (SDL2/GLX) intentionally never advertises it. On an fbdev
+appliance the EGL device may not be the same device that scans out the
+framebuffer, so this is real import negotiation, not a promise of zero-copy
+scanout.
 
 **Honesty check on this specific sandbox/build environment:** it has no
 `/dev/dri` and no `/dev/udmabuf`, so nothing running in it can actually
@@ -112,8 +137,12 @@ against a live `chromedrive` instance (see below).
 ## Run
 
 ```sh
-./bin/chromedrive --demo            # headless (default): EGL + embedded VNC server, no X at all
-./bin/chromedrive --demo --windowed # dev/debug: a real SDL2 window on an X server
+./bin/chromedrive --demo                 # headless (default): EGL + embedded VNC server, no X at all
+./bin/chromedrive --demo --windowed      # dev/debug: a real SDL2 window on an X server
+./bin/chromedrive --demo --fbdev         # direct /dev/fb0 output (current kernel mode)
+./bin/chromedrive --demo --fbdev /dev/fb1 --fbdev-vnc-mirror  # another fb + loopback RFB control
+./bin/chromedrive --demo --fbdev-modeset --size 1920x1080       # modeset to configured size
+./bin/chromedrive --demo --fbdev-mode 1280x720@32               # explicit modeset to 1280x720@32bpp
 ```
 
 Either way it launches a terminal, Files, and Audio demo as real Wayland
@@ -154,10 +183,15 @@ make -C clients/garage3d smoke                        # headless weston pixel ch
 Architecture, the full Wayland surface lifecycle, and the frame-callback
 render loop are documented in
 [`docs/garage3d-architecture.md`](docs/garage3d-architecture.md).
-Note the touch asymmetry: the *client* implements `wl_touch` fully, but the
-ChromeDrive *compositor* does not yet advertise or forward touch (its seat is
-pointer+keyboard), so gestures work on touch-capable host compositors, not
-yet through ChromeDrive itself.
+Touch now works through ChromeDrive itself in `--windowed` mode: the SDL
+backend advertises `WL_SEAT_CAPABILITY_TOUCH`, ray-picks each finger through
+the same 3D monitor planes as the pointer, and forwards up to 10 contacts
+with stable IDs and `wl_touch.frame` grouping to clients that bind
+`wl_touch`. Clients that only bind `wl_pointer` receive the first app finger
+as a single left-pointer press/drag/release. The headless and fbdev VNC paths
+are still pointer-only (RFB carries no multitouch), and fbdev has no local
+evdev input in phase 1, so Garage3D's pinch/pan gestures need `--windowed` on
+a touchscreen host or a touch-capable host compositor.
 
 ### Configuration: the launch-menu editor & settings GUI
 
@@ -215,7 +249,9 @@ complete control table: [`docs/vehicle-and-remote.md`](docs/vehicle-and-remote.m
 ### Watching the headless session (VNC / browser preview)
 
 `--headless` starts an RFB server on `--vnc-port` (default 5900) listening on
-all interfaces. Point any VNC client at it directly:
+all interfaces. `--fbdev --fbdev-vnc-mirror` starts the same RFB input/output
+companion but binds loopback only, because that mode is opt-in and RFB here has
+no authentication. Point any VNC client at the appropriate port directly:
 
 ```sh
 vncviewer HOST:5900
@@ -244,6 +280,8 @@ reverse proxy and firewall before exposing them to an untrusted network.
 | Input | Action |
 |---|---|
 | Middle-drag (mouse or VNC) | Look around (first-person) |
+| Touch an app screen (`--windowed`) | Send real multi-touch to apps that bind `wl_touch`; pointer-only apps receive the first finger as a left-pointer press/drag/release |
+| One finger on cockpit chrome (`--windowed`) | Tap/drag the picked dashboard button, cog, close target, frame, Arrange handle or steering wheel; drag empty cockpit to look around |
 | Click a screen | Focus it — keyboard/pointer now go to that app |
 | Drag a monitor titlebar/frame | Move that whole window/monitor in its plane (KWin-style) |
 | Click **HANDLES** on a titlebar | Enter Arrange for that window and show its move/rotate/scale/resize gizmo |
@@ -350,14 +388,19 @@ A neon crosshair reticle is drawn directly into every frame at the pointer
 position (brightening/widening over a clickable dashboard button) — there is
 no OS cursor to fall back on in `--headless` mode (no X, no window; a raw VNC
 client without cursor-shape-update support would otherwise show nothing), so
-the compositor draws its own, in both backends, for a consistent look.
+the compositor draws its own in every backend, including fbdev, for a
+consistent look.
 
 ### CLI flags
 
 `--demo`, `--socket NAME`, `--exec COMMAND` (repeatable), `--size WxH`,
-`--fps N`, `--headless` (default)/`--windowed`, `--vnc-port N`,
-`--fullscreen` (`--windowed` only), `--exit-after SECONDS`,
-`--screenshot PATH`.
+`--fps N`, `--backend headless|windowed|fbdev`, `--headless` (default)/
+`--windowed` aliases, `--fbdev [DEVICE]`, `--fbdev-device PATH`,
+`--fbdev-modeset`, `--fbdev-mode WxH[@BPP]`, `--no-fbdev-vsync`,
+`--no-fbdev-pan`, `--fbdev-vnc-mirror` (`--vnc-mirror` alias),
+`--fbdev-evdev`, `--no-fbdev-evdev`, `--fbdev-grab-input`,
+`--fbdev-input-device PATH`, `--vnc-port N`, `--fullscreen` (`--windowed` only),
+`--exit-after SECONDS`, `--screenshot PATH`.
 
 Launch commands for the dashboard buttons can be overridden with the
 `CHROMEDRIVE_TERMINAL`, `CHROMEDRIVE_FILES`, `CHROMEDRIVE_AUDIO`, and
@@ -379,7 +422,14 @@ src/scene.c                   OpenGL cockpit, monitors, Handles, picking, camera
 src/ui.c                      cairo textures: windshield HUD, chrome, labels
 src/main.c                    CLI parsing, event loop, process spawn (backend-agnostic)
 src/backend_sdl.c             --windowed: SDL2 window + GLX context + SDL input
-src/backend_headless.c        --headless (default): surfaceless EGL + embedded VNC + RFB input
+src/backend_egl.c             shared surfaceless EGL context + FBO renderer
+src/backend_vnc.c             embedded RFB server + RFB input (headless/fbdev mirror)
+src/backend_headless.c        --headless (default): shared EGL renderer + VNC presentation
+src/backend_fbdev.c           --fbdev: direct /dev/fb* output, pan/vsync best effort
+src/backend_evdev.c           --fbdev evdev: raw /dev/input/event* input (keyboard/mouse/touch)
+src/evdev_util.c              pure evdev helpers: abs scaling, touch-id pool
+src/fbdev_pixfmt.c            pure packed 16/24/32bpp conversion + fb geometry helpers
+include/fbdev_pixfmt.h         device-free fbdev format/geometry API (unit-tested)
 clients/demo.c                 native Wayland Files/Audio/host-Meters/EV-cluster modes
 clients/config.c               chromedrive-config: launch-menu editor + settings GUI
 clients/garage3d/              Garage3D: native Wayland + GLES 3.1 client (the garage in 3D)
@@ -392,6 +442,7 @@ tests/test_config.c           INI store round-trip tests
 tests/test_vehicle.c          spline, EV dynamics, transform and fixed-step tests
 tests/test_telemetry.c        shared cluster telemetry and seqlock tests
 tests/test_keymap.c           RFB typing/WASD/function-key mapping regressions
+tests/test_fbdev.c            pure fbdev pixel packing/flip/stride/geometry/page tests + evdev_util (abs scaling, touch-id pool)
 tests/protocol_probe.c        end-to-end Wayland protocol conformance test (incl. dma-buf)
 tools/run-web.sh              one-command native backend + browser bridge
 tools/viewer/                 static noVNC remote desktop + safe hold-to-drive controls
@@ -399,13 +450,29 @@ tools/viewer/                 static noVNC remote desktop + safe hold-to-drive c
 
 ## Known limitations / next steps
 
-- No DRM/KMS backend — always nested (`--windowed`) or VNC-served
-  (`--headless`), never boots real displays directly.
+- No DRM/KMS scanout backend. `--fbdev` is a real Linux framebuffer output but
+  it CPU-reads back the GL frame and blits it into the kernel's fb mode. By
+  default (phase 1 behavior) it adopts the current mode; with
+  `--fbdev-modeset` or `--fbdev-mode` it requests a modeset via
+  `FBIOPUT_VSCREENINFO` and restores the original mode on exit. The driver may
+  adjust timings or reject the request. It does not own a DRM plane or provide
+  GPU scanout. `--headless` and `--windowed` remain nested/VNC paths.
+- fbdev phase 2B adds raw evdev input (keyboard, relative/absolute pointer,
+  multitouch type B, single-touch) for local keyboard/mouse/touchscreen
+  control. Enumeration is startup-only; no hotplug rescans. Non-direct
+  multitouch devices (touchpads) are treated as pointer-only; raw touchpad
+  motion is not translated to `wl_touch`. `wl_touch` is advertised only when
+  a direct-touch device is present at startup. Grab via `--fbdev-grab-input`
+  warns about VT lockout; ungrabbed keys can still reach the VT console. A
+  getty/fbcon on the same VT can still fight over the console; run it on a
+  dedicated VT or redirect console output. VT/fbcon mode is still unmanaged
+  (no `KD_GRAPHICS`).
 - No layer-shell (so panels/launchers built for wlroots-style shells won't run).
-- dma-buf import only works on `--headless` (EGL); not on `--windowed` (GLX) —
-  by design, see "GPU / dma-buf" above.
-- Single input seat, no touch, no tablet *in the compositor* (the Garage3D
-  client implements `wl_touch` gestures, but ChromeDrive does not yet
-  advertise/forward touch to clients — see “Garage3D” above).
+- dma-buf import works on the EGL backends (`--headless` and `--fbdev`); not
+  on `--windowed` (GLX) — by design, see "GPU / dma-buf" above.
+- Single input seat and no tablet. Touchscreen `wl_touch` is available from
+  SDL finger events in `--windowed` mode (including Garage3D gestures);
+  headless/fbdev RFB remains a single-pointer protocol with no multitouch to
+  forward.
 - Eight app mounts plus one cluster output are fixed at compile time
   (`CD_APP_BAYS`, `CD_MAX_MONITORS`).

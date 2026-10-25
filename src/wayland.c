@@ -56,8 +56,10 @@ static Resource *resource_new(struct wl_client *c,const struct wl_interface *ifa
 Surface *surface_root(Surface *s){int limit=32;while(s&&s->parent&&limit--)s=s->parent;return s;}
 static void send_configure(Surface *s);
 static void selection_for_client(Server *s,struct wl_client *client);
+static void touch_cancel_surface(Surface *p);
 static void surface_unmap(Surface *p){
  Server *s=p->server;
+ touch_cancel_surface(p);
  if(s->keyboard_focus==p)server_focus(s,NULL);
  if(s->pointer_focus==p){s->pointer_focus=NULL;}
  if(s->pointer_grab==p){s->pointer_grab=NULL;s->held_buttons=0;s->held_button_mask=0;}
@@ -346,9 +348,9 @@ static void send_key_enter(Server *s,struct wl_resource *r,Surface *p){struct wl
 static void send_modifiers(Server *s,struct wl_resource *r){wl_keyboard_send_modifiers(r,wl_display_next_serial(s->display),xkb_state_serialize_mods(s->xkb_state,XKB_STATE_MODS_DEPRESSED),xkb_state_serialize_mods(s->xkb_state,XKB_STATE_MODS_LATCHED),xkb_state_serialize_mods(s->xkb_state,XKB_STATE_MODS_LOCKED),xkb_state_serialize_layout(s->xkb_state,XKB_STATE_LAYOUT_EFFECTIVE));}
 static void seat_pointer(struct wl_client *c,struct wl_resource *r,uint32_t id){Server *s=wl_resource_get_user_data(r);Resource *p=resource_new(c,&wl_pointer_interface,wl_resource_get_version(r),id,&s->pointers);if(!p)return;wl_resource_set_implementation(p->resource,&pointer_impl,p,free_resource);if(s->pointer_focus&&wl_resource_get_client(s->pointer_focus->resource)==c){wl_pointer_send_enter(p->resource,wl_display_next_serial(s->display),s->pointer_focus->resource,wl_fixed_from_double(s->pointer_sx),wl_fixed_from_double(s->pointer_sy));pointer_frame(p->resource);}}
 static void seat_keyboard(struct wl_client *c,struct wl_resource *r,uint32_t id){Server *s=wl_resource_get_user_data(r);Resource *p=resource_new(c,&wl_keyboard_interface,wl_resource_get_version(r),id,&s->keyboards);if(!p)return;wl_resource_set_implementation(p->resource,&keyboard_impl,p,free_resource);wl_keyboard_send_keymap(p->resource,WL_KEYBOARD_KEYMAP_FORMAT_XKB_V1,s->keymap_fd,s->keymap_size);if(wl_resource_get_version(p->resource)>=4)wl_keyboard_send_repeat_info(p->resource,30,500);if(s->keyboard_focus&&wl_resource_get_client(s->keyboard_focus->resource)==c){send_key_enter(s,p->resource,s->keyboard_focus);send_modifiers(s,p->resource);}}
-static void seat_touch(struct wl_client *c,struct wl_resource *r,uint32_t id){struct wl_resource *p=wl_resource_create(c,&wl_touch_interface,wl_resource_get_version(r),id);wl_resource_set_implementation(p,&touch_impl,NULL,NULL);}
+static void seat_touch(struct wl_client *c,struct wl_resource *r,uint32_t id){Server *s=wl_resource_get_user_data(r);Resource *p=resource_new(c,&wl_touch_interface,wl_resource_get_version(r),id,&s->touch_resources);if(!p)return;wl_resource_set_implementation(p->resource,&touch_impl,p,free_resource);}
 static const struct wl_seat_interface seat_impl={.get_pointer=seat_pointer,.get_keyboard=seat_keyboard,.get_touch=seat_touch,.release=resource_destroy_request};
-static void bind_seat(struct wl_client *c,void *data,uint32_t v,uint32_t id){struct wl_resource *r=wl_resource_create(c,&wl_seat_interface,v<7?v:7,id);wl_resource_set_implementation(r,&seat_impl,data,NULL);wl_seat_send_capabilities(r,WL_SEAT_CAPABILITY_POINTER|WL_SEAT_CAPABILITY_KEYBOARD);if(wl_resource_get_version(r)>=2)wl_seat_send_name(r,"chromedrive-driver");}
+static void bind_seat(struct wl_client *c,void *data,uint32_t v,uint32_t id){Server *s=data;struct wl_resource *r=wl_resource_create(c,&wl_seat_interface,v<7?v:7,id);wl_resource_set_implementation(r,&seat_impl,data,NULL);uint32_t caps=WL_SEAT_CAPABILITY_POINTER|WL_SEAT_CAPABILITY_KEYBOARD|(s->touch_available?WL_SEAT_CAPABILITY_TOUCH:0);wl_seat_send_capabilities(r,caps);if(wl_resource_get_version(r)>=2)wl_seat_send_name(r,"chromedrive-driver");}
 void server_focus(Server *s,Surface *p){
  p=surface_root(p);if(p==s->keyboard_focus)return;Surface *old=s->keyboard_focus;Resource *r;
  if(old)wl_list_for_each(r,&s->keyboards,link)if(wl_resource_get_client(r->resource)==wl_resource_get_client(old->resource))wl_keyboard_send_leave(r->resource,wl_display_next_serial(s->display),old->resource);
@@ -403,6 +405,96 @@ void server_pointer_axis(Server *s,double dx,double dy,uint32_t time){
   if(dy){if(ver>=5)wl_pointer_send_axis_discrete(r->resource,WL_POINTER_AXIS_VERTICAL_SCROLL,(int)-dy);wl_pointer_send_axis(r->resource,time,WL_POINTER_AXIS_VERTICAL_SCROLL,wl_fixed_from_double(-dy*15));}
   if(dx){if(ver>=5)wl_pointer_send_axis_discrete(r->resource,WL_POINTER_AXIS_HORIZONTAL_SCROLL,(int)-dx);wl_pointer_send_axis(r->resource,time,WL_POINTER_AXIS_HORIZONTAL_SCROLL,wl_fixed_from_double(-dx*15));}pointer_frame(r->resource);
  }
+}
+static CdTouchPoint *touch_point_find(Server *s,int32_t id,bool create){
+ CdTouchPoint *free_slot=NULL;
+ for(int i=0;i<CD_MAX_TOUCH_POINTS;i++){
+  CdTouchPoint *p=&s->touch_points[i];
+  if(p->active&&p->id==id)return p;
+  if(!p->active&&!free_slot)free_slot=p;
+ }
+ return create?free_slot:NULL;
+}
+static bool touch_client_has_resource(Server *s,struct wl_client *client){
+ Resource *r;wl_list_for_each(r,&s->touch_resources,link)if(wl_resource_get_client(r->resource)==client)return true;
+ return false;
+}
+static void touch_cancel_client(Server *s,struct wl_client *client){
+ bool any=false;
+ for(int i=0;i<CD_MAX_TOUCH_POINTS;i++){
+  CdTouchPoint *p=&s->touch_points[i];
+  if(p->active&&p->surface&&wl_resource_get_client(p->surface->resource)==client)any=true;
+ }
+ if(!any)return;
+ Resource *r;wl_list_for_each(r,&s->touch_resources,link)if(wl_resource_get_client(r->resource)==client)wl_touch_send_cancel(r->resource); /* protocol: no frame after cancel */
+ for(int i=0;i<CD_MAX_TOUCH_POINTS;i++){
+  CdTouchPoint *p=&s->touch_points[i];
+  if(p->active&&p->surface&&wl_resource_get_client(p->surface->resource)==client){p->active=false;p->surface=NULL;}
+ }
+}
+static void touch_cancel_surface(Surface *p){
+ if(!p||!p->server)return;
+ Server *s=p->server;Surface *root=surface_root(p);
+ struct wl_client *clients[CD_MAX_TOUCH_POINTS];int count=0;
+ for(int i=0;i<CD_MAX_TOUCH_POINTS;i++){
+  CdTouchPoint *point=&s->touch_points[i];Surface *surface=point->surface;
+  if(!point->active||!surface)continue;
+  if(surface!=p&&surface_root(surface)!=root)continue;
+  struct wl_client *client=wl_resource_get_client(surface->resource);bool seen=false;
+  for(int j=0;j<count;j++)if(clients[j]==client)seen=true;
+  if(!seen&&count<CD_MAX_TOUCH_POINTS)clients[count++]=client;
+ }
+ for(int i=0;i<count;i++)touch_cancel_client(s,clients[i]);
+}
+void server_touch_cancel(Server *s){
+ struct wl_client *clients[CD_MAX_TOUCH_POINTS];int count=0;
+ for(int i=0;i<CD_MAX_TOUCH_POINTS;i++){
+  CdTouchPoint *p=&s->touch_points[i];
+  if(!p->active||!p->surface)continue;
+  struct wl_client *client=wl_resource_get_client(p->surface->resource);bool seen=false;
+  for(int j=0;j<count;j++)if(clients[j]==client)seen=true;
+  if(!seen&&count<CD_MAX_TOUCH_POINTS)clients[count++]=client;
+ }
+ for(int i=0;i<count;i++)touch_cancel_client(s,clients[i]);
+ for(int i=0;i<CD_MAX_TOUCH_POINTS;i++){s->touch_points[i].active=false;s->touch_points[i].surface=NULL;}
+}
+bool server_touch_down(Server *s,Hit hit,int32_t id,uint32_t time){
+ if(hit.kind!=HIT_APP||!hit.surface||!hit.surface->resource)return false;
+ struct wl_client *client=wl_resource_get_client(hit.surface->resource);
+ /* A pointer-only client has no wl_touch resource. Returning false lets the
+  * backend fall back to left-pointer emulation for this finger instead of
+  * silently swallowing the tap. */
+ if(!touch_client_has_resource(s,client))return false;
+ CdTouchPoint *point=touch_point_find(s,id,false);
+ if(point)return true; /* IDs are not reused before up/cancel; ignore a repeat down */
+ point=touch_point_find(s,id,true);if(!point)return false;
+ point->active=true;point->id=id;point->surface=hit.surface;point->x=hit.x;point->y=hit.y;
+ server_focus(s,hit.surface);
+ uint32_t serial=wl_display_next_serial(s->display);Resource *r;
+ wl_list_for_each(r,&s->touch_resources,link)if(wl_resource_get_client(r->resource)==client){wl_touch_send_down(r->resource,serial,time,hit.surface->resource,id,wl_fixed_from_double(hit.x),wl_fixed_from_double(hit.y));wl_touch_send_frame(r->resource);}
+ return true;
+}
+bool server_touch_motion(Server *s,int32_t id,float x,float y,uint32_t time){
+ CdTouchPoint *point=touch_point_find(s,id,false);
+ if(!point||!point->surface)return false;
+ Hit local=scene_pick_surface(s,point->surface,x,y);
+ if(local.kind!=HIT_APP)return true; /* retain the grab if the ray leaves the plane */
+ point->x=local.x;point->y=local.y;
+ struct wl_client *client=wl_resource_get_client(point->surface->resource);Resource *r;
+ wl_list_for_each(r,&s->touch_resources,link)if(wl_resource_get_client(r->resource)==client){wl_touch_send_motion(r->resource,time,id,wl_fixed_from_double(local.x),wl_fixed_from_double(local.y));wl_touch_send_frame(r->resource);}
+ return true;
+}
+bool server_touch_up(Server *s,int32_t id,uint32_t time){
+ CdTouchPoint *point=touch_point_find(s,id,false);
+ if(!point)return false;
+ Surface *surface=point->surface;
+ if(surface&&surface->resource){
+  struct wl_client *client=wl_resource_get_client(surface->resource);
+  uint32_t serial=wl_display_next_serial(s->display);Resource *r;
+  wl_list_for_each(r,&s->touch_resources,link)if(wl_resource_get_client(r->resource)==client){wl_touch_send_up(r->resource,serial,time,id);wl_touch_send_frame(r->resource);}
+ }
+ point->active=false;point->surface=NULL;
+ return true;
 }
 void server_key(Server *s,uint32_t key,bool down,uint32_t time){
  if(key>=256)return;s->keys[key]=down;xkb_state_update_key(s->xkb_state,key+8,down?XKB_KEY_DOWN:XKB_KEY_UP);if(!s->keyboard_focus)return;
@@ -459,7 +551,8 @@ void server_frame_done(Server *s,uint32_t time){
  Surface *p;wl_list_for_each(p,&s->surfaces,link){Callback *cb,*tmp;wl_list_for_each_safe(cb,tmp,&p->callbacks,link){wl_callback_send_done(cb->resource,time);wl_resource_destroy(cb->resource);}}
 }
 bool server_init(Server *s,const char *socket_name){
- wl_list_init(&s->surfaces);wl_list_init(&s->pointers);wl_list_init(&s->keyboards);wl_list_init(&s->outputs);wl_list_init(&s->data_devices);
+ s->sdl_touch_chrome_id=-1;
+ wl_list_init(&s->surfaces);wl_list_init(&s->pointers);wl_list_init(&s->keyboards);wl_list_init(&s->touch_resources);wl_list_init(&s->outputs);wl_list_init(&s->data_devices);
  s->display=wl_display_create();if(!s->display)return false;s->loop=wl_display_get_event_loop(s->display);
  if(wl_display_init_shm(s->display)<0)return false;
  wl_global_create(s->display,&wl_compositor_interface,4,s,bind_compositor);wl_global_create(s->display,&wl_subcompositor_interface,1,s,bind_subcomp);

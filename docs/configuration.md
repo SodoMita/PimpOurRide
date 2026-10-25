@@ -38,10 +38,12 @@ Three tabs:
 
 1. **Launch Menu** — the app-menu editor (next section). This is the main event.
 2. **Garage3D** — window/camera/scene/physics of the 3D client.
-3. **Compositor** — display/cockpit/session of ChromeDrive itself. The VNC
-   port here is a typed numeric field (1024–65535), not a slider: click it,
+3. **Compositor** — display/cockpit/session of ChromeDrive itself. The
+   display backend is a restart-only enum (`headless`, `windowed`, `fbdev`);
+   the VNC port is a typed numeric field (1024–65535), not a slider: click it,
    type the exact port, press Enter; Escape cancels and invalid values are
-   not saved.
+   not saved. The fbdev device path and fbdev vsync/pan/mirror toggles are
+   file-only (the GUI has no free-text session path editor).
 
 Sliders, toggles, colour pickers and the entry list work with pointer and
 touch. Text fields need a physical keyboard (there is no text-input/OSK
@@ -181,7 +183,9 @@ last until the next file edit, then the file wins for the keys it sets.
 
 - **Compositor, live:** `display.fps`, `display.fov`, `cockpit.*`
   (neon/hud/background), all `[app.*]` menu keys.
-  **Restart:** `display.width/height/fullscreen`, `session.*`.
+  **Restart:** `display.width/height/fullscreen`, and every `session.*` key,
+  including `backend`, `headless` (legacy), `fbdev_device`, `fbdev_vsync`,
+  `fbdev_pan`, and `fbdev_vnc_mirror`.
 - **Spatial window transforms:** titlebar/frame dragging and F6 Arrange
   position, yaw/pitch/roll, uniform scale and corner/edge resize dimensions
   are intentionally session-only. Corner/edge grips request a real new logical
@@ -213,8 +217,18 @@ hud = true            # HUD overlay visible
 background = 3d       # 3d | texture (flat poster) | none
 
 [session]
-headless = true       # false = SDL/GLX dev window   (restart)
-vnc_port = 5900       # headless VNC, 1024..65535; typed field in GUI (restart)
+backend = headless    # headless | windowed | fbdev; wins over legacy headless (restart; GUI enum)
+headless = true       # legacy alias, used only when backend is absent (restart)
+fbdev_device = /dev/fb0  # fbdev output path (restart; file-only)
+fbdev_modeset = false      # opt-in modeset via FBIOPUT_VSCREENINFO (restart; file-only)
+fbdev_mode =               # modeset target "WIDTHxHEIGHT[@BPP]" (restart; file-only; invalid value warns and disables modeset)
+fbdev_vsync = true         # best-effort FBIO_WAITFORVSYNC (restart; file-only)
+fbdev_pan = true           # use FBIOPAN_DISPLAY only if yres_virtual has >=2 pages (restart; file-only)
+fbdev_vnc_mirror = false   # opt-in loopback-only RFB mirror/control for fbdev (restart; file-only)
+fbdev_evdev = true         # enable local evdev input for fbdev (restart; file-only)
+fbdev_grab_input = false   # grab evdev devices via EVIOCGRAB (restart; file-only; warns about VT lockout)
+fbdev_input_devices =      # comma/whitespace-separated explicit device paths (max 8); replaces auto-enumeration (restart; file-only)
+vnc_port = 5900       # headless VNC or fbdev mirror, 1..65535; GUI typed field 1024..65535 (restart)
 demo = false          # launch autostart apps (restart)
 socket =              # Wayland socket name, empty = automatic (restart; file-only)
 
@@ -228,6 +242,32 @@ icon = 0
 enabled = true
 autostart = true
 ```
+
+`backend = fbdev` adopts the mode already programmed on the framebuffer
+(`var.xres`/`var.yres`) by default; `display.width/height` are ignored with a
+warning because the default behavior does not call `FBIOPUT_VSCREENINFO`. With
+`fbdev_modeset = true` or `fbdev_mode = "WIDTHxHEIGHT[@BPP]"` a modeset is
+requested via `FBIOPUT_VSCREENINFO`; the driver may adjust timings or reject the
+request. The original mode is restored on exit. Write access to the device node
+is normally granted through the `video` group or a udev rule, not by running as
+root. Panning is used only when the existing `yres_virtual` already has at
+least two pages; vsync and pan failures degrade to a warning once. Local evdev
+input (keyboard, relative/absolute pointer, multitouch type B, single-touch) is
+enabled by default (`fbdev_evdev = true`); set `fbdev_evdev = false` to disable.
+`fbdev_grab_input = true` opts in to `EVIOCGRAB` (warns about VT/console
+lockout; ungrabbed keys can still reach the VT console). `fbdev_input_devices`
+accepts a comma/whitespace-separated list of explicit `/dev/input/event*` paths
+(max 8); when set it replaces auto-enumeration of `/dev/input/event*`.
+Enumeration is startup-only; no hotplug rescans. Non-direct multitouch devices
+(touchpads) are treated as pointer-only; raw touchpad motion is not translated
+to `wl_touch`. `wl_touch` is advertised only when a direct-touch device is
+present at startup. Without `fbdev_vnc_mirror` and no evdev devices opened,
+fbdev is output-only; with it, RFB binds `127.0.0.1` on `vnc_port`. Use
+`--backend headless|windowed|fbdev`, `--fbdev [DEVICE]`, `--fbdev-device
+PATH`, `--fbdev-modeset`, `--fbdev-mode WxH[@BPP]`, `--no-fbdev-vsync`,
+`--no-fbdev-pan`, `--fbdev-evdev`, `--no-fbdev-evdev`, `--fbdev-grab-input`,
+`--fbdev-input-device PATH`, and `--fbdev-vnc-mirror` (`--vnc-mirror`) on the
+command line; the old `--headless`/`--windowed` aliases still set the same enum.
 
 ### garage3d.conf
 

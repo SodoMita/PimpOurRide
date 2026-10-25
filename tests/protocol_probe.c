@@ -9,9 +9,10 @@
 #include <string.h>
 #include <sys/mman.h>
 #include <unistd.h>
-static struct wl_display *display;static struct wl_compositor *compositor;static struct wl_subcompositor *subcomp;static struct wl_shm *shm;static struct xdg_wm_base *wm;static struct wl_seat *seat;static struct wl_keyboard *keyboard;
+static struct wl_display *display;static struct wl_compositor *compositor;static struct wl_subcompositor *subcomp;static struct wl_shm *shm;static struct xdg_wm_base *wm;static struct wl_seat *seat;static struct wl_keyboard *keyboard;static struct wl_touch *touch;
 static struct zwp_linux_dmabuf_v1 *dmabuf;static int dmabuf_formats,dmabuf_modifiers;
 static int outputs,configured,frames,releases,enters,keymaps,keyboard_enters;static int running=1;
+static int touch_advertised,touch_downs,touch_ups,touch_motions,touch_frames,touch_cancels;
 static void timeout_handler(int sig){_exit(124);}
 static void geom(void *d,struct wl_output *o,int32_t x,int32_t y,int32_t pw,int32_t ph,int32_t sub,const char *make,const char *model,int32_t tr){}
 static void mode(void *d,struct wl_output *o,uint32_t f,int32_t w,int32_t h,int32_t hz){assert((w==1000&&h==625)||(w==1000&&h==404));}
@@ -27,7 +28,15 @@ static void key(void *d,struct wl_keyboard *k,uint32_t serial,uint32_t time,uint
 static void mods(void *d,struct wl_keyboard *k,uint32_t serial,uint32_t dep,uint32_t lat,uint32_t lock,uint32_t group){}
 static void repeat(void *d,struct wl_keyboard *k,int32_t rate,int32_t delay){}
 static const struct wl_keyboard_listener keyboard_listener={.keymap=keymap,.enter=keyenter,.leave=keyleave,.key=key,.modifiers=mods,.repeat_info=repeat};
-static void caps(void *d,struct wl_seat *s,uint32_t caps){if((caps&WL_SEAT_CAPABILITY_KEYBOARD)&&!keyboard){keyboard=wl_seat_get_keyboard(s);wl_keyboard_add_listener(keyboard,&keyboard_listener,NULL);}}
+static void touchdown(void *d,struct wl_touch *t,uint32_t serial,uint32_t time,struct wl_surface *surface,int32_t id,wl_fixed_t x,wl_fixed_t y){touch_downs++;}
+static void touchup(void *d,struct wl_touch *t,uint32_t serial,uint32_t time,int32_t id){touch_ups++;}
+static void touchmotion(void *d,struct wl_touch *t,uint32_t time,int32_t id,wl_fixed_t x,wl_fixed_t y){touch_motions++;}
+static void touchframe(void *d,struct wl_touch *t){touch_frames++;}
+static void touchcancel(void *d,struct wl_touch *t){touch_cancels++;}
+static void touchshape(void *d,struct wl_touch *t,int32_t id,wl_fixed_t major,wl_fixed_t minor){}
+static void touchorientation(void *d,struct wl_touch *t,int32_t id,wl_fixed_t orientation){}
+static const struct wl_touch_listener touch_listener={.down=touchdown,.up=touchup,.motion=touchmotion,.frame=touchframe,.cancel=touchcancel,.shape=touchshape,.orientation=touchorientation};
+static void caps(void *d,struct wl_seat *s,uint32_t caps){if((caps&WL_SEAT_CAPABILITY_KEYBOARD)&&!keyboard){keyboard=wl_seat_get_keyboard(s);wl_keyboard_add_listener(keyboard,&keyboard_listener,NULL);}if(caps&WL_SEAT_CAPABILITY_TOUCH){touch_advertised=1;if(!touch){touch=wl_seat_get_touch(s);wl_touch_add_listener(touch,&touch_listener,NULL);}}}
 static void seatname(void *d,struct wl_seat *s,const char *name){}
 static const struct wl_seat_listener seat_listener={.capabilities=caps,.name=seatname};
 static void ping(void *d,struct xdg_wm_base *w,uint32_t serial){xdg_wm_base_pong(w,serial);}
@@ -65,7 +74,7 @@ static const struct xdg_popup_listener popup_listener={.configure=popupconf,.pop
 static void commit(struct wl_surface *s,struct wl_buffer *b){wl_surface_attach(s,b,0,0);wl_surface_damage_buffer(s,0,0,1000,625);struct wl_callback *cb=wl_surface_frame(s);wl_callback_add_listener(cb,&frame_listener,NULL);wl_surface_commit(s);}
 static void wait_frames(int target){while(running&&frames<target)assert(wl_display_dispatch(display)>=0);assert(running);}
 int main(void){
- signal(SIGALRM,timeout_handler);alarm(10);display=wl_display_connect(NULL);assert(display);struct wl_registry *registry=wl_display_get_registry(display);wl_registry_add_listener(registry,&registry_listener,NULL);assert(wl_display_roundtrip(display)>=0);assert(compositor&&shm&&wm&&subcomp&&seat);assert(wl_display_roundtrip(display)>=0);assert(wl_display_roundtrip(display)>=0);assert(outputs==9&&keymaps==1);
+ signal(SIGALRM,timeout_handler);alarm(10);display=wl_display_connect(NULL);assert(display);struct wl_registry *registry=wl_display_get_registry(display);wl_registry_add_listener(registry,&registry_listener,NULL);assert(wl_display_roundtrip(display)>=0);assert(compositor&&shm&&wm&&subcomp&&seat);assert(wl_display_roundtrip(display)>=0);assert(wl_display_roundtrip(display)>=0);assert(outputs==9&&keymaps==1);assert(!touch_advertised||touch);
  struct wl_surface *surface=wl_compositor_create_surface(compositor);wl_surface_add_listener(surface,&surface_listener,NULL);struct xdg_surface *xdg=xdg_wm_base_get_xdg_surface(wm,surface);xdg_surface_add_listener(xdg,&xdg_listener,NULL);struct xdg_toplevel *top=xdg_surface_get_toplevel(xdg);xdg_toplevel_add_listener(top,&top_listener,NULL);xdg_toplevel_set_title(top,"Protocol probe");xdg_toplevel_set_app_id(top,"chromedrive.probe");wl_surface_commit(surface);assert(wl_display_roundtrip(display)>=0);assert(configured>0);
  size_t size=1000*625*4;int fd=memfd_create("probe",MFD_CLOEXEC);assert(fd>=0&&ftruncate(fd,size)==0);uint32_t *pixels=mmap(NULL,size,PROT_READ|PROT_WRITE,MAP_SHARED,fd,0);assert(pixels!=MAP_FAILED);struct wl_shm_pool *pool=wl_shm_create_pool(shm,fd,size);struct wl_buffer *buffer=wl_shm_pool_create_buffer(pool,0,1000,625,4000,WL_SHM_FORMAT_XRGB8888);wl_buffer_add_listener(buffer,&buffer_listener,NULL);
  for(int n=0;n<3;n++){for(int i=0;i<1000*625;i++)pixels[i]=0xff204050u+n*0x000c1003;commit(surface,buffer);wait_frames(n+1);}assert(enters==1&&keyboard_enters>=1&&releases>=3);
@@ -75,8 +84,8 @@ int main(void){
  struct wl_surface *ps=wl_compositor_create_surface(compositor);struct xdg_surface *px=xdg_wm_base_get_xdg_surface(wm,ps);xdg_surface_add_listener(px,&xdg_listener,NULL);struct xdg_positioner *pos=xdg_wm_base_create_positioner(wm);xdg_positioner_set_size(pos,200,120);xdg_positioner_set_anchor_rect(pos,50,50,30,30);xdg_positioner_set_anchor(pos,XDG_POSITIONER_ANCHOR_BOTTOM_RIGHT);xdg_positioner_set_gravity(pos,XDG_POSITIONER_GRAVITY_BOTTOM_RIGHT);struct xdg_popup *popup=xdg_surface_get_popup(px,xdg,pos);xdg_popup_add_listener(popup,&popup_listener,NULL);wl_surface_commit(ps);assert(wl_display_roundtrip(display)>=0);struct wl_buffer *pb=wl_shm_pool_create_buffer(pool,0,200,120,800,WL_SHM_FORMAT_XRGB8888);wl_buffer_add_listener(pb,&buffer_listener,NULL);commit(ps,pb);wait_frames(5);xdg_popup_destroy(popup);xdg_positioner_destroy(pos);xdg_surface_destroy(px);wl_surface_destroy(ps);wl_buffer_destroy(pb);
  /* Unmap/remap the same toplevel. A fresh configure handshake is required. */
  wl_surface_attach(surface,NULL,0,0);wl_surface_commit(surface);assert(wl_display_roundtrip(display)>=0);wl_surface_commit(surface);assert(wl_display_roundtrip(display)>=0);commit(surface,buffer);wait_frames(6);assert(enters==2&&keyboard_enters>=2&&releases>=6);
- /* zwp_linux_dmabuf_v1: only advertised by the headless/EGL backend (see README —
-  * EGLImage doesn't interoperate with the --windowed GLX dev backend). */
+ /* zwp_linux_dmabuf_v1: only advertised by the EGL backends (headless/fbdev;
+  * see README — EGLImage doesn't interoperate with the --windowed GLX dev backend). */
  if(dmabuf){
   assert(wl_display_roundtrip(display)>=0);
   if(dmabuf_formats>0)printf("PASS: zwp_linux_dmabuf_v1 negotiated %d format(s)/%d modifier event(s)\n",dmabuf_formats,dmabuf_modifiers);
@@ -105,8 +114,10 @@ int main(void){
   printf("PASS: a dma-buf-backed wl_buffer attached to a real xdg toplevel mapped and rendered a frame (zero-copy GL-texture code path exercised end-to-end)\n");
   xdg_toplevel_destroy(dt);xdg_surface_destroy(dx);wl_surface_destroy(ds);wl_buffer_destroy(dbuf);zwp_linux_buffer_params_v1_destroy(dp);assert(wl_display_roundtrip(display)>=0);
  }
+ if(touch)printf("PASS: wl_seat advertised touch and wl_touch resource created (touch events down=%d up=%d motion=%d frame=%d cancel=%d)\n",touch_downs,touch_ups,touch_motions,touch_frames,touch_cancels);
+ else printf("INFO: wl_touch not advertised by this backend (headless/fbdev without SDL input is pointer-only; --windowed/SDL advertises touchscreen touch)\n");
  printf("PASS: outputs=%d, configures=%d, frames=%d, buffer_releases=%d, output_enters=%d, keyboard_enters=%d, keymaps=%d; synchronized subsurface + xdg popup + unmap/remap\n",outputs,configured,frames,releases,enters,keyboard_enters,keymaps);fflush(stdout);
- xdg_toplevel_destroy(top);xdg_surface_destroy(xdg);wl_surface_destroy(surface);wl_buffer_destroy(buffer);wl_shm_pool_destroy(pool);wl_keyboard_release(keyboard);wl_seat_release(seat);assert(wl_display_roundtrip(display)>=0);munmap(pixels,size);close(fd);
+ xdg_toplevel_destroy(top);xdg_surface_destroy(xdg);wl_surface_destroy(surface);wl_buffer_destroy(buffer);wl_shm_pool_destroy(pool);if(touch)wl_touch_release(touch);wl_keyboard_release(keyboard);wl_seat_release(seat);assert(wl_display_roundtrip(display)>=0);munmap(pixels,size);close(fd);
  /* Structural dma-buf parameter validation runs entirely in our own code
   * before any EGL call, so (unlike "is this fd really GPU memory", which
   * this sandbox's software EGL driver answers unreliably — see README) it is
