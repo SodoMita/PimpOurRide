@@ -196,108 +196,86 @@ Plane monitor_plane_at(int index,float reveal){
  deployed.pitch=stowed.pitch+(deployed.pitch-stowed.pitch)*t;
  return deployed;
 }
-/* Stationary chassis hardpoints and 2-link inverse-kinematic parameters for the
- * eight articulated mechanical manipulators holding monitors CD-01 .. CD-08.
- * Every base, shoulder, elbow, and wrist sits in the back half-space behind
- * its monitor plane (vdot(joint - p.center, normal) <= -0.04) and bends outward
- * into the visible inter-monitor or outer-cockpit bays so the driver sees the
- * articulated manipulator linkage without any strut ever crossing in front of
- * a monitor screen or the center console. */
+/* Stationary chassis hardpoints and 2-link telescopic linear-actuator parameters
+ * for the eight articulated mechanical manipulators holding monitors CD-01..CD-08.
+ * Every base and shoulder is bolted directly to the car's physical dashboard,
+ * door sill, roof cantrail, or rear bulkhead in VEHICLE_COCKPIT_FORWARD space,
+ * while the upper-arm, forearm, and hydraulic linear actuators extend/retract
+ * dynamically to hold any freely arranged window Plane p. */
 static const Vec3 manip_base[8]={
- {-0.78f, 2.32f,-1.78f}, /* CD-01: upper-left windshield header gantry */
- {-3.32f, 0.24f,-0.94f}, /* CD-02: outer-left dashboard wing turret */
- { 3.32f, 0.24f,-0.94f}, /* CD-03: outer-right dashboard wing turret */
- {-5.05f, 0.48f, 0.86f}, /* CD-04: left door inner sill turret */
- { 5.05f, 0.48f, 0.86f}, /* CD-05: right door inner sill turret */
- {-3.28f, 2.39f,-0.12f}, /* CD-06: left roof cantrail hinge turret */
- { 3.28f, 2.39f,-0.12f}, /* CD-07: right roof cantrail hinge turret */
- { 0.00f, 0.56f, 7.52f}  /* CD-08: rear deck bulkhead pedestal */
+ {-0.78f, 0.34f,-0.72f-VEHICLE_COCKPIT_FORWARD}, /* CD-01: forward dashboard cowl turret */
+ {-1.48f, 0.31f,-0.56f-VEHICLE_COCKPIT_FORWARD}, /* CD-02: left dashboard wing turret */
+ { 1.48f, 0.31f,-0.56f-VEHICLE_COCKPIT_FORWARD}, /* CD-03: right dashboard wing turret */
+ {-1.68f, 0.22f, 0.58f-VEHICLE_COCKPIT_FORWARD}, /* CD-04: left door inner sill turret */
+ { 1.68f, 0.22f, 0.58f-VEHICLE_COCKPIT_FORWARD}, /* CD-05: right door inner sill turret */
+ {-1.02f, 1.08f, 0.68f-VEHICLE_COCKPIT_FORWARD}, /* CD-06: left roof cantrail hinge turret */
+ { 1.02f, 1.08f, 0.68f-VEHICLE_COCKPIT_FORWARD}, /* CD-07: right roof cantrail hinge turret */
+ { 0.00f, 0.30f, 3.98f-VEHICLE_COCKPIT_FORWARD}  /* CD-08: rear deck bulkhead pedestal */
 };
 static const Vec3 manip_shoulder[8]={
- {-0.92f, 2.16f,-1.82f},
- {-3.22f, 0.42f,-1.00f},
- { 3.22f, 0.42f,-1.00f},
- {-5.12f, 0.64f, 0.84f},
- { 5.12f, 0.64f, 0.84f},
- {-3.24f, 2.28f,-0.08f},
- { 3.24f, 2.28f,-0.08f},
- { 0.00f, 0.72f, 7.46f}
+ {-0.82f, 0.48f,-0.68f-VEHICLE_COCKPIT_FORWARD},
+ {-1.52f, 0.46f,-0.52f-VEHICLE_COCKPIT_FORWARD},
+ { 1.52f, 0.46f,-0.52f-VEHICLE_COCKPIT_FORWARD},
+ {-1.62f, 0.32f, 0.60f-VEHICLE_COCKPIT_FORWARD},
+ { 1.62f, 0.32f, 0.60f-VEHICLE_COCKPIT_FORWARD},
+ {-0.98f, 1.00f, 0.72f-VEHICLE_COCKPIT_FORWARD},
+ { 0.98f, 1.00f, 0.72f-VEHICLE_COCKPIT_FORWARD},
+ { 0.00f, 0.42f, 3.92f-VEHICLE_COCKPIT_FORWARD}
 };
-static const float manip_upper_len[8]={.64f,.42f,.42f,.94f,.94f,.48f,.48f,.52f};
-static const float manip_fore_len[8] ={1.18f,.88f,.88f,.90f,.90f,.44f,.44f,.48f};
 static const Vec3 manip_bend_hint[8]={
- {-0.95f,-0.35f,-0.18f},
- { 0.65f,-0.72f,-0.35f},
- {-0.65f,-0.72f,-0.35f},
- {-0.65f,-0.55f,-0.52f},
- { 0.65f,-0.55f,-0.52f},
- {-0.72f, 0.45f,-0.52f},
- { 0.72f, 0.45f,-0.52f},
- { 0.55f,-0.75f, 0.36f}
+ {-0.92f, 0.82f,-0.18f},
+ {-0.75f, 0.72f,-0.18f},
+ { 0.75f, 0.72f,-0.18f},
+ {-0.58f,-0.35f,-0.52f},
+ { 0.58f,-0.35f,-0.52f},
+ {-0.62f, 0.35f,-0.52f},
+ { 0.62f, 0.35f,-0.52f},
+ { 0.55f,-0.45f, 0.45f}
 };
-static const float manip_wrist_lat[8] ={0.f,-.32f,.32f,0.f,0.f,0.f,0.f,0.f};
-static const float manip_wrist_vert[8]={0.f,-.12f,-.12f,0.f,0.f,0.f,0.f,0.f};
-/* The manipulator was authored around the original 2.10 m monitor bays. Map
- * its local hardpoints into the current, smaller car-part planes instead of
- * leaving world-space arms outside the concept car. This retains the branch's
- * joint layout and fixed link lengths while sharing the exact current mount
- * positions, orientations and cockpit-forward offset. */
-static Plane manipulator_legacy_plane(int slot){
- if(slot==5||slot==6)return (Plane){.center={slot==5?-3.0f:3.0f,1.75f,.20f},.width=2.10f,.height=1.3125f,.yaw=slot==5?45:-45};
- static const float angles[8]={0,-30,30,-62,62,0,0,180};
- float a=angles[slot];
- return (Plane){.center={4.4f*sinf(a*RAD),1.32f,2.8f-4.4f*cosf(a*RAD)},.width=2.10f,.height=1.3125f,.yaw=-a};
-}
-static Vec3 manipulator_map_point(Vec3 point,Plane old_plane,Plane new_plane,float scale){
- Vec3 old_r,old_u,old_n,new_r,new_u,new_n;
- plane_axes(old_plane,&old_r,&old_u,&old_n);plane_axes(new_plane,&new_r,&new_u,&new_n);
- Vec3 d=vsub(point,old_plane.center);
- return vadd(new_plane.center,vadd(vmul(new_r,vdot(d,old_r)*scale),
-  vadd(vmul(new_u,vdot(d,old_u)*scale),vmul(new_n,vdot(d,old_n)*scale))));
-}
-static Vec3 manipulator_map_direction(Vec3 direction,Plane old_plane,Plane new_plane){
- Vec3 old_r,old_u,old_n,new_r,new_u,new_n;
- plane_axes(old_plane,&old_r,&old_u,&old_n);plane_axes(new_plane,&new_r,&new_u,&new_n);
- return vadd(vmul(new_r,vdot(direction,old_r)),
-  vadd(vmul(new_u,vdot(direction,old_u)),vmul(new_n,vdot(direction,old_n))));
-}
-MonitorManipulator monitor_manipulator_at(int index,float reveal){
+static const float manip_wrist_lat[8] ={-0.34f,-0.28f, 0.28f, 0.f, 0.f, 0.f, 0.f, 0.f};
+static const float manip_wrist_vert[8]={ 0.16f, 0.12f, 0.12f,-0.06f,-0.06f, 0.10f, 0.10f,-0.08f};
+MonitorManipulator monitor_manipulator_for_plane(int index,Plane p){
  int slot=index<0?0:(index>7?7:index);
- Plane p=monitor_plane_at(slot,reveal),deployed=monitor_plane(slot);
- Plane legacy=manipulator_legacy_plane(slot);
- float scale=deployed.width/legacy.width;
  Vec3 right,up,normal;plane_axes(p,&right,&up,&normal);
+ float w=p.width,hp=p.height;
  MonitorManipulator m={
-  .base=manipulator_map_point(manip_base[slot],legacy,deployed,scale),
-  .shoulder=manipulator_map_point(manip_shoulder[slot],legacy,deployed,scale),
-  .wrist=vadd(vadd(vadd(p.center,vmul(right,manip_wrist_lat[slot]*scale)),vmul(up,manip_wrist_vert[slot]*scale)),vmul(normal,-.05f)),
-  .upper_len=manip_upper_len[slot]*scale,.fore_len=manip_fore_len[slot]*scale
+  .base=manip_base[slot],
+  .shoulder=manip_shoulder[slot],
+  .wrist=vadd(vadd(vadd(p.center,vmul(right,manip_wrist_lat[slot]*w)),vmul(up,manip_wrist_vert[slot]*hp)),vmul(normal,-.055f))
  };
- /* The deeper stowed dash position needs a little more fixed-link reach than
-  * a straight scale of the legacy arms provides. Do not clamp the IK distance:
-  * that would silently stretch the forearm and detach it from the wrist. */
- if(monitor_mount(slot)==MOUNT_DASH_SLIDE){
-  m.upper_len=fmaxf(m.upper_len,.26f);m.fore_len=fmaxf(m.fore_len,.46f);
- }
  Vec3 delta=vsub(m.wrist,m.shoulder);
  float dist=sqrtf(vdot(delta,delta));
  Vec3 dir=dist>1e-6f?vmul(delta,1.f/dist):v3(0,0,-1);
- Vec3 bend=manipulator_map_direction(manip_bend_hint[slot],legacy,deployed);
+ float u_min=.12f,u_max=2.60f,f_min=.12f,f_max=2.60f;
+ float ul=clampf(dist*.66f,u_min+.04f,u_max-.04f);
+ float fl=clampf(dist*.66f,f_min+.04f,f_max-.04f);
+ Vec3 bend=vsub(manip_bend_hint[slot],vmul(normal,fmaxf(0.f,vdot(manip_bend_hint[slot],normal))+.35f));
  Vec3 perp_raw=vsub(bend,vmul(dir,vdot(bend,dir)));
  float plen=sqrtf(vdot(perp_raw,perp_raw));
  Vec3 perp=plen>1e-6f?vmul(perp_raw,1.f/plen):vnorm(vcross(dir,fabsf(dir.y)>.9f?v3(1,0,0):v3(0,1,0)));
- float ul=m.upper_len,fl=m.fore_len;
  float d=clampf(dist,fabsf(ul-fl)+1e-4f,ul+fl-1e-4f);
  float a=(ul*ul-fl*fl+d*d)/(2.f*d);
  float h=sqrtf(fmaxf(0.f,ul*ul-a*a));
  m.elbow=vadd(m.shoulder,vadd(vmul(dir,a),vmul(perp,h)));
- m.piston_base=vadd(m.base,vmul(vsub(m.shoulder,m.base),.35f));
- m.piston_rod=vadd(m.shoulder,vmul(vsub(m.elbow,m.shoulder),.62f));
- float w=p.width,hp=p.height;
- Vec3 back=vmul(normal,-.025f);
- m.claws[0]=vadd(vadd(p.center,back),vadd(vmul(right,-w*.38f),vmul(up, hp*.5f+.20f)));
- m.claws[1]=vadd(vadd(p.center,back),vadd(vmul(right, w*.38f),vmul(up, hp*.5f+.20f)));
- m.claws[2]=vadd(vadd(p.center,back),vadd(vmul(right,-w*.38f),vmul(up,-hp*.5f-.20f)));
- m.claws[3]=vadd(vadd(p.center,back),vadd(vmul(right, w*.38f),vmul(up,-hp*.5f-.20f)));
+ float eb_dot=vdot(vsub(m.elbow,p.center),normal);
+ if(eb_dot>-.05f)m.elbow=vadd(m.elbow,vmul(normal,-.05f-eb_dot));
+ Vec3 u_vec=vsub(m.elbow,m.shoulder),f_vec=vsub(m.wrist,m.elbow);
+ m.upper_len=sqrtf(vdot(u_vec,u_vec));
+ m.fore_len=sqrtf(vdot(f_vec,f_vec));
+ m.upper_ext=clampf((m.upper_len-u_min)/(u_max-u_min),0.f,1.f);
+ m.fore_ext=clampf((m.fore_len-f_min)/(f_max-f_min),0.f,1.f);
+ m.piston_base=vadd(m.base,vadd(vmul(vsub(m.shoulder,m.base),.32f),vmul(perp,.055f)));
+ m.piston_rod=vadd(m.shoulder,vmul(vsub(m.elbow,m.shoulder),.64f));
+ Vec3 p_vec=vsub(m.piston_rod,m.piston_base);
+ float p_len=sqrtf(vdot(p_vec,p_vec));
+ m.piston_ext=clampf((p_len-.10f)/1.60f,0.f,1.f);
+ Vec3 back=vmul(normal,-.028f);
+ m.claws[0]=vadd(vadd(p.center,back),vadd(vmul(right,-w*.36f),vmul(up, hp*.5f+.18f)));
+ m.claws[1]=vadd(vadd(p.center,back),vadd(vmul(right, w*.36f),vmul(up, hp*.5f+.18f)));
+ m.claws[2]=vadd(vadd(p.center,back),vadd(vmul(right,-w*.36f),vmul(up,-hp*.5f-.05f)));
+ m.claws[3]=vadd(vadd(p.center,back),vadd(vmul(right, w*.36f),vmul(up,-hp*.5f-.05f)));
  return m;
+}
+MonitorManipulator monitor_manipulator_at(int index,float reveal){
+ return monitor_manipulator_for_plane(index,monitor_plane_at(index,reveal));
 }

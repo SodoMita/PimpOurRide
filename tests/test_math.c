@@ -113,10 +113,11 @@ int main(void){
  assert(near(clampf(-100,CD_DRIVER_FOV_MIN,CD_DRIVER_FOV_MAX),1));
  assert(near(clampf(500,CD_DRIVER_FOV_MIN,CD_DRIVER_FOV_MAX),100));
  assert(near(clampf(-100,CD_DRIVER_FOV_MIN,CD_DRIVER_SCROLL_FOV_MAX),1));
- /* Verify 2-link inverse-kinematic monitor manipulators across all 8 app slots
-  * and deployment travel (reveal = 0, 0.5, 1.0): fixed chassis base/shoulder,
+ /* Verify 2-link telescopic linear-actuator monitor manipulators across all 8
+  * app slots and deployment travel (reveal = 0..1) as well as freely arranged
+  * window planes (monitor_manipulator_for_plane): fixed chassis base/shoulder,
   * exact link lengths |elbow-shoulder|==upper_len and |wrist-elbow|==fore_len,
-  * non-degenerate hydraulic piston span, and bezel claw attachment. */
+  * responsive telescopic extension ratios, and bezel claw attachment. */
  for(int i=0;i<8;i++){
   MonitorManipulator m0=monitor_manipulator_at(i,0.f);
   for(int step=0;step<=4;step++){
@@ -129,9 +130,10 @@ int main(void){
    float u_len=sqrtf(vdot(u_vec,u_vec)),f_len=sqrtf(vdot(f_vec,f_vec)),p_len=sqrtf(vdot(p_vec,p_vec));
    assert(near(u_len,m.upper_len)&&near(f_len,m.fore_len));
    assert(p_len>.05f&&p_len<m.upper_len+m.fore_len);
+   assert(m.upper_ext>=0.f&&m.upper_ext<=1.f&&m.fore_ext>=0.f&&m.fore_ext<=1.f&&m.piston_ext>=0.f&&m.piston_ext<=1.f);
    /* Every manipulator joint must stay in the back half-space behind its
     * monitor plane so no strut ever crosses in front of the screen. */
-   Vec3 m_right=rotate_y(v3(1,0,0),mp.yaw),m_up=rotate_y(rotate_x(v3(0,1,0),mp.pitch),mp.yaw),m_norm=vcross(m_right,m_up);
+   Vec3 m_right,m_up,m_norm;plane_axes(mp,&m_right,&m_up,&m_norm);
    assert(vdot(vsub(m.base,mp.center),m_norm)<=-.04f);
    assert(vdot(vsub(m.shoulder,mp.center),m_norm)<=-.04f);
    assert(vdot(vsub(m.elbow,mp.center),m_norm)<=-.04f);
@@ -139,9 +141,29 @@ int main(void){
    for(int k=0;k<4;k++){
     Vec3 c_off=vsub(m.claws[k],mp.center);
     float c_dist=sqrtf(vdot(c_off,c_off));
-    assert(c_dist>.5f&&c_dist<2.0f);
+    assert(c_dist>.30f&&c_dist<1.80f);
    }
   }
+  /* Freely moved/arranged window: chassis base & shoulder stay anchored on
+   * the car while telescopic linear actuators expand to hold the window. */
+  Plane dep=monitor_plane(i);
+  MonitorManipulator m_dep=monitor_manipulator_for_plane(i,dep);
+  Plane custom=plane_translate(dep,eye,.32f,.42f,.25f);
+  custom=plane_rotate(custom,10.f,-8.f,6.f);
+  custom=plane_uniform_scale(custom,dep,1.15f);
+  MonitorManipulator m_cust=monitor_manipulator_for_plane(i,custom);
+  assert(near(m_cust.base.x,m0.base.x)&&near(m_cust.base.y,m0.base.y)&&near(m_cust.base.z,m0.base.z));
+  assert(near(m_cust.shoulder.x,m0.shoulder.x)&&near(m_cust.shoulder.y,m0.shoulder.y)&&near(m_cust.shoulder.z,m0.shoulder.z));
+  Vec3 cu_vec=vsub(m_cust.elbow,m_cust.shoulder),cf_vec=vsub(m_cust.wrist,m_cust.elbow);
+  assert(near(sqrtf(vdot(cu_vec,cu_vec)),m_cust.upper_len)&&near(sqrtf(vdot(cf_vec,cf_vec)),m_cust.fore_len));
+  Vec3 c_right,c_up,c_norm;plane_axes(custom,&c_right,&c_up,&c_norm);
+  assert(vdot(vsub(m_cust.elbow,custom.center),c_norm)<=-.04f);
+  assert(vdot(vsub(m_cust.wrist,custom.center),c_norm)<=-.04f);
+  Plane far_p=dep;
+  far_p.center=vadd(dep.center,vmul(vnorm(vsub(dep.center,m0.shoulder)),.65f));
+  MonitorManipulator m_far=monitor_manipulator_for_plane(i,far_p);
+  assert(m_far.upper_len>m_dep.upper_len+.05f&&m_far.fore_len>m_dep.fore_len+.05f);
+  assert(m_far.upper_ext>m_dep.upper_ext&&m_far.fore_ext>m_dep.fore_ext);
  }
  puts("PASS: output/mount transforms, Arrange resizing, close targets, FOV bounds, back-face rejection, and articulated manipulator IK");return 0;
 }

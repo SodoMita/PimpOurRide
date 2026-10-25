@@ -506,7 +506,8 @@ int main(void) {
  }
 
  /* All nine Wayland outputs are physical car-part displays, not a separate
-  * exterior monitor ring. Check deployed, stowed and mid-animation corners. */
+  * exterior monitor ring. Check deployed, stowed and mid-animation corners,
+  * together with the car-mounted telescopic manipulator joints. */
  for (int slot = 0; slot < 9; slot++) for (int pose = 0; pose <= 2; pose++) {
   Plane plane = monitor_plane_at(slot, pose * 0.5f);
   Vec3 right = rotate_y(v3(1, 0, 0), plane.yaw);
@@ -517,6 +518,15 @@ int main(void) {
    CHECK(vehicle_point_inside_envelope(p, 0.0f),
          "monitor %d pose %d corner outside shared body: (%f,%f,%f)",
          slot, pose, p.x, p.y, p.z);
+  }
+  if (slot < 8) {
+   MonitorManipulator m = monitor_manipulator_at(slot, pose * 0.5f);
+   Vec3 joints[] = {m.base, m.shoulder, m.elbow, m.wrist, m.piston_base, m.piston_rod};
+   for (size_t j = 0; j < sizeof(joints) / sizeof(joints[0]); j++) {
+    CHECK(vehicle_point_inside_envelope(joints[j], 0.0f),
+          "manipulator %d pose %d joint %zu outside shared body: (%f,%f,%f)",
+          slot, pose, j, joints[j].x, joints[j].y, joints[j].z);
+   }
   }
  }
 

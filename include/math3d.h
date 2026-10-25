@@ -35,10 +35,12 @@ typedef struct {
  Vec3 piston_base,piston_rod;
  Vec3 claws[4];
  float upper_len,fore_len;
+ float upper_ext,fore_ext,piston_ext;
 } MonitorManipulator;
 Plane monitor_plane(int index); /* fully deployed transform */
 Plane windshield_hud_plane(void); /* fitted projection on the shared windshield */
 Plane monitor_plane_at(int index,float reveal); /* shared by drawing and picking */
+MonitorManipulator monitor_manipulator_for_plane(int index,Plane p);
 MonitorManipulator monitor_manipulator_at(int index,float reveal);
 MonitorMount monitor_mount(int index);
 const char *monitor_mount_name(int index);
