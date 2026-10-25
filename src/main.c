@@ -907,6 +907,10 @@ else if(!strcmp(argv[i],"--no-fbdev-vsync"))s.fbdev_vsync=false;
   double remain=1.0/s.fps_limit-(clock_now()-frame_start);if(remain>0)SDL_Delay((uint32_t)(remain*1000));
  }
  for(int i=0;i<s.child_count;i++)kill(-s.children[i],SIGTERM);
+ /* Direct-input release needs live Wayland/xkb state. Stop that worker and
+  * balance keys/touches before server_finish; backend_*_shutdown is idempotent
+  * here and later tears down presentation after GL objects are gone. */
+ if(s.evdev_state)backend_evdev_shutdown(&s);
  telemetry_finish(&s);server_finish(&s);scene_finish(&s);
  backend_shutdown(&s);
  SDL_Quit();for(int i=0;i<6;i++)free(s.launch_commands[i]);return 0;

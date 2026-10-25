@@ -1,5 +1,6 @@
 #include "fbdev_pixfmt.h"
 #include "evdev_util.h"
+#include "evdev_queue.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -215,6 +216,38 @@ static void test_evdev_touch_id_pool(void){
   int id_after_reset = evdev_util_touch_id_alloc(); CHECK(id_after_reset == 0);
 }
 
+static void test_evdev_async_queue(void){
+ CdEvdevQueue q;
+ CHECK(cd_evdev_queue_init(&q));
+ for(int i=0;i<CD_EVDEV_QUEUE_CAPACITY;i++){
+  CdEvdevEvent event={.time=(uint32_t)i,.device=(uint8_t)(i%8),.kind=CD_EVDEV_EVENT_RAW};
+  event.input.type=EV_KEY;event.input.code=KEY_A;event.input.value=i;
+  CHECK(cd_evdev_queue_push(&q,&event));
+ }
+ CHECK(!cd_evdev_queue_overflowed(&q));
+ CdEvdevEvent extra={.kind=CD_EVDEV_EVENT_RAW};extra.input.value=12345;
+ CHECK(!cd_evdev_queue_push(&q,&extra));
+ CHECK(cd_evdev_queue_overflowed(&q));
+ CdEvdevEvent out;
+ CHECK(cd_evdev_queue_pop(&q,&out));CHECK(out.input.value==0);
+ uint64_t dropped=0;
+ CHECK(!cd_evdev_queue_overflow_drained(&q,&dropped)); /* old prefix still queued */
+ CHECK(!cd_evdev_queue_push(&q,&extra)); /* producer remains behind the reset barrier */
+ for(int i=1;i<CD_EVDEV_QUEUE_CAPACITY;i++){
+  CHECK(cd_evdev_queue_pop(&q,&out));
+  CHECK(out.input.value==i);CHECK(out.time==(uint32_t)i);
+  CHECK(out.device==(uint8_t)(i%8));
+ }
+ CHECK(!cd_evdev_queue_pop(&q,&out));
+ CHECK(cd_evdev_queue_overflow_drained(&q,&dropped));CHECK(dropped==2);
+ cd_evdev_queue_acknowledge(&q);
+ CHECK(!cd_evdev_queue_overflowed(&q));
+ CHECK(cd_evdev_queue_push(&q,&extra));
+ CHECK(cd_evdev_queue_pop(&q,&out));CHECK(out.input.value==12345);
+ CHECK(!cd_evdev_queue_overflow_drained(&q,&dropped));
+ cd_evdev_queue_destroy(&q);
+}
+
 int main(void){
   test_rejects();
   test_packing();
@@ -224,7 +257,8 @@ int main(void){
   test_mode_parse();
   test_evdev_scale_abs();
   test_evdev_touch_id_pool();
+  test_evdev_async_queue();
   if(failures)return 1;
-  puts("PASS: fbdev pixel formats (16/24/32bpp packing, LUT quantization, row flip, independent strides/padding, geometry, page offsets, mode parsing) + evdev_util (abs scaling, touch-id pool)");
+  puts("PASS: fbdev formats/geometry/modes + evdev abs/touch ids + async queue ordering and overflow barrier");
   return 0;
 }

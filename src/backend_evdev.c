@@ -1,7 +1,10 @@
-/* Raw evdev input for the fbdev backend. No libinput/libevdev dependency.
- * Uses <linux/input.h> ioctls + read() directly. Mirrors backend_sdl.c and
- * backend_vnc.c conventions for input dispatch through the compositor core. */
+/* Raw evdev input for direct-display backends. No libinput/libevdev dependency.
+ * A single epoll worker reads kernel events into a bounded timestamped queue;
+ * the compositor thread alone dispatches them to the car, scene and Wayland.
+ * This follows asyncinput's producer/polling split without importing its
+ * callback threading model into the compositor's GL/Wayland lifecycle. */
 #include "chrome.h"
+#include "evdev_queue.h"
 #include "evdev_util.h"
 #include <dirent.h>
 #include <errno.h>
@@ -9,15 +12,44 @@
 #include <linux/input.h>
 #include <linux/input-event-codes.h>
 #include <poll.h>
+#include <pthread.h>
+#include <stdatomic.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/epoll.h>
+#include <sys/eventfd.h>
 #include <sys/ioctl.h>
+#include <time.h>
 #include <unistd.h>
 
 static EvdevState *evdev_state(Server *s) {
     return s ? (EvdevState *)s->evdev_state : NULL;
+}
+
+typedef struct {
+    EvdevState *state;
+    int epoll_fd,wake_fd;
+    pthread_t worker;
+    bool worker_started;
+    bool queue_initialized;
+    atomic_bool stop;
+    atomic_uint disconnects; /* reliable even when the bounded event queue is full */
+    CdEvdevQueue queue;
+} EvdevAsync;
+
+static EvdevAsync *evdev_async(EvdevState *st){return st?(EvdevAsync*)st->async_state:NULL;}
+static uint32_t evdev_monotonic_ms(void){
+    struct timespec ts;clock_gettime(CLOCK_MONOTONIC,&ts);
+    return (uint32_t)((uint64_t)ts.tv_sec*1000u+(uint64_t)ts.tv_nsec/1000000u);
+}
+static uint32_t evdev_event_time(const EvdevDevice *d,const struct input_event *event){
+    if(!d->monotonic_timestamps)return evdev_monotonic_ms();
+    return (uint32_t)((uint64_t)event->time.tv_sec*1000u+(uint64_t)event->time.tv_usec/1000u);
+}
+static void evdev_wake(EvdevAsync *a){
+    if(a&&a->wake_fd>=0){uint64_t one=1;ssize_t ignored=write(a->wake_fd,&one,sizeof(one));(void)ignored;}
 }
 
 static void evdev_device_close(EvdevDevice *d) {
@@ -95,12 +127,31 @@ static void evdev_release_device_state(Server *s, EvdevDevice *d, uint32_t time)
         s->middle_look = false;
         d->middle_look_held = false;
     }
+    d->rel_accum_x=d->rel_accum_y=0;
+    d->wheel_accum=d->hwheel_accum=0;
+    d->current_slot=0;
+    for(int i=0;i<EVDEV_MAX_SLOTS;i++)d->mt_fingers[i].tracking_id=-1;
+    d->st_finger.tracking_id=-1;
+}
+
+/* A device loss, SYN_DROPPED, or queue overflow invalidates compositor-local
+ * state as well as Wayland key/touch state. Reset every slot as one barrier so
+ * a held throttle/steer or a contact on another device cannot survive it. */
+static void evdev_reset_all_devices(Server *s,uint32_t time){
+    EvdevState *st=evdev_state(s);if(!st)return;
+    app_release_input(s,time);
+    for(int i=0;i<st->device_count;i++)evdev_release_device_state(s,&st->devices[i],time);
 }
 
 static bool evdev_open_device(EvdevDevice *d, const char *path, bool grab) {
     d->fd = open(path, O_RDONLY | O_NONBLOCK | O_CLOEXEC);
     if (d->fd < 0) return false;
     snprintf(d->path, sizeof(d->path), "%s", path);
+    /* Wayland and the compositor frame clock are monotonic. Ask the kernel to
+     * timestamp at acquisition time rather than stamping events after a slow
+     * render; older kernels/drivers retain a safe read-time fallback. */
+    int clock_id=CLOCK_MONOTONIC;
+    d->monotonic_timestamps=ioctl(d->fd,EVIOCSCLOCKID,&clock_id)==0;
 
     uint8_t evbit[EV_MAX / 8 + 1] = {0};
     uint8_t keybit[KEY_MAX / 8 + 1] = {0};
@@ -212,7 +263,8 @@ static bool evdev_open_device(EvdevDevice *d, const char *path, bool grab) {
         }
     }
 
-    fprintf(stderr, "[evdev] opened %s: %s (type %d)\n", d->path, d->name, d->type);
+    fprintf(stderr, "[evdev] opened %s: %s (type %d, %s timestamps)\n", d->path, d->name, d->type,
+            d->monotonic_timestamps?"kernel-monotonic":"read-time fallback");
     return true;
 }
 
@@ -746,39 +798,98 @@ static void evdev_handle_syn_dropped(Server *s, EvdevDevice *d, uint32_t time) {
         fprintf(stderr, "[evdev] SYN_DROPPED on unknown device, resetting state\n");
     }
 
-    uint32_t released_mask = d->sent_button_mask & d->held_button_mask;
-    if (released_mask) {
-        if (released_mask & (1u << 0)) server_pointer_button(s, BTN_LEFT, false, time);
-        if (released_mask & (1u << 1)) server_pointer_button(s, BTN_RIGHT, false, time);
-        if (released_mask & (1u << 2)) server_pointer_button(s, BTN_MIDDLE, false, time);
-        if (released_mask & (1u << 3)) server_pointer_button(s, BTN_SIDE, false, time);
-        if (released_mask & (1u << 4)) server_pointer_button(s, BTN_EXTRA, false, time);
-    }
-    d->held_button_mask = 0;
-    d->sent_button_mask = 0;
-    d->btn_left = d->btn_right = d->btn_middle = d->btn_side = d->btn_extra = false;
+    evdev_reset_all_devices(s,time);
+}
 
-    for (int i = 0; i < EVDEV_MAX_SLOTS; i++) {
-        evdev_release_finger(s, &d->mt_fingers[i], time, d->mt_fingers[i].is_chrome_owner);
+static void evdev_drain_wake(int fd){
+    uint64_t value;ssize_t ignored=read(fd,&value,sizeof(value));(void)ignored;
+}
+static void *evdev_worker_main(void *arg){
+    EvdevAsync *a=arg;EvdevState *st=a->state;
+    bool active[EVDEV_MAX_DEVICES];
+    for(int i=0;i<EVDEV_MAX_DEVICES;i++)active[i]=i<st->device_count&&st->devices[i].fd>=0;
+    while(!atomic_load_explicit(&a->stop,memory_order_acquire)){
+        /* Do not spin on level-triggered descriptors while the consumer is
+         * performing the overflow release barrier. The ack wake reopens epoll. */
+        if(cd_evdev_queue_overflowed(&a->queue)){
+            struct pollfd pfd={.fd=a->wake_fd,.events=POLLIN};
+            if(poll(&pfd,1,50)>0&&(pfd.revents&POLLIN))evdev_drain_wake(a->wake_fd);
+            continue;
+        }
+        struct epoll_event ready[EVDEV_MAX_DEVICES+1];
+        int n=epoll_wait(a->epoll_fd,ready,EVDEV_MAX_DEVICES+1,-1);
+        if(n<0){if(errno==EINTR)continue;break;}
+        for(int r=0;r<n;r++){
+            uint32_t index=ready[r].data.u32;
+            if(index==UINT32_MAX){evdev_drain_wake(a->wake_fd);continue;}
+            if(index>=(uint32_t)st->device_count||!active[index])continue;
+            EvdevDevice *d=&st->devices[index];int fd=d->fd;
+            bool disconnect=false,blocked=false;
+            for(;;){
+                struct input_event input[64];
+                ssize_t bytes=read(fd,input,sizeof(input));
+                if(bytes>0){
+                    int count=(int)(bytes/(ssize_t)sizeof(input[0]));
+                    for(int j=0;j<count;j++){
+                        CdEvdevEvent event={.input=input[j],.time=evdev_event_time(d,&input[j]),
+                            .device=(uint8_t)index,.kind=CD_EVDEV_EVENT_RAW};
+                        if(!cd_evdev_queue_push(&a->queue,&event)){blocked=true;break;}
+                    }
+                    /* Discard the unread suffix of this pre-reset batch. Even
+                     * a very fast consumer ack must never make it reappear as
+                     * fresh post-reset input. */
+                    if(blocked)break;
+                    continue;
+                }
+                if(bytes<0&&(errno==EAGAIN||errno==EWOULDBLOCK))break;
+                if(bytes<0&&errno==EINTR)continue;
+                /* ENODEV/EIO and a zero read both mean that this stable slot
+                 * must be retired by the compositor after its older events. */
+                disconnect=true;break;
+            }
+            if(blocked)break;
+            if(disconnect){
+                active[index]=false;
+                epoll_ctl(a->epoll_fd,EPOLL_CTL_DEL,fd,NULL);
+                atomic_fetch_or_explicit(&a->disconnects,1u<<index,memory_order_release);
+            }
+        }
     }
-    evdev_release_finger(s, &d->st_finger, time, d->st_finger.is_chrome_owner);
-
-    if (d->middle_look_held) {
-        s->middle_look = false;
-        d->middle_look_held = false;
+    return NULL;
+}
+static void evdev_async_destroy(EvdevState *st){
+    EvdevAsync *a=evdev_async(st);if(!a)return;
+    if(a->worker_started){
+        atomic_store_explicit(&a->stop,true,memory_order_release);evdev_wake(a);
+        pthread_join(a->worker,NULL);
     }
-
-    d->rel_accum_x = d->rel_accum_y = 0;
-    d->wheel_accum = d->hwheel_accum = 0;
-    d->current_slot = 0;
-    for (int i = 0; i < EVDEV_MAX_SLOTS; i++) {
-        d->mt_fingers[i].tracking_id = -1;
+    if(a->epoll_fd>=0)close(a->epoll_fd);
+    if(a->wake_fd>=0)close(a->wake_fd);
+    if(a->queue_initialized)cd_evdev_queue_destroy(&a->queue);
+    free(a);st->async_state=NULL;
+}
+static bool evdev_async_start(EvdevState *st){
+    EvdevAsync *a=calloc(1,sizeof(*a));if(!a)return false;
+    a->state=st;a->epoll_fd=a->wake_fd=-1;atomic_init(&a->stop,false);atomic_init(&a->disconnects,0);st->async_state=a;
+    a->queue_initialized=cd_evdev_queue_init(&a->queue);
+    a->epoll_fd=epoll_create1(EPOLL_CLOEXEC);
+    a->wake_fd=eventfd(0,EFD_NONBLOCK|EFD_CLOEXEC);
+    if(!a->queue_initialized||a->epoll_fd<0||a->wake_fd<0)goto fail;
+    struct epoll_event wake={.events=EPOLLIN,.data.u32=UINT32_MAX};
+    if(epoll_ctl(a->epoll_fd,EPOLL_CTL_ADD,a->wake_fd,&wake)<0)goto fail;
+    for(int i=0;i<st->device_count;i++){
+        struct epoll_event event={.events=EPOLLIN,.data.u32=(uint32_t)i};
+        if(epoll_ctl(a->epoll_fd,EPOLL_CTL_ADD,st->devices[i].fd,&event)<0)goto fail;
     }
-    d->st_finger.tracking_id = -1;
-
-    if (d->has_keys) {
-        server_release_keys(s, time);
-    }
+    int thread_error=pthread_create(&a->worker,NULL,evdev_worker_main,a);
+    if(thread_error){errno=thread_error;goto fail;}
+    a->worker_started=true;
+    fprintf(stderr,"[evdev] asynchronous epoll input: %d device slot(s), %u-event bounded queue, kernel timestamps\n",
+            st->device_count,(unsigned)CD_EVDEV_QUEUE_CAPACITY);
+    return true;
+fail:
+    fprintf(stderr,"[evdev] could not start asynchronous input: %s\n",strerror(errno));
+    evdev_async_destroy(st);return false;
 }
 
 bool backend_evdev_init(Server *s) {
@@ -839,7 +950,10 @@ bool backend_evdev_init(Server *s) {
                 s->touch_available = true;
             }
         }
-        if (path != st->explicit_paths[0]) free((void *)path);
+        /* Explicit paths point into st->explicit_paths; only auto-enumerated
+         * paths are strdup-owned. Comparing against just element zero used to
+         * make a second --fbdev-input-device an invalid free. */
+        if (st->explicit_count == 0) free((void *)path);
     }
 
     if (opened == 0) {
@@ -847,77 +961,60 @@ bool backend_evdev_init(Server *s) {
     }
 
     evdev_util_touch_id_reset();
+    if(opened>0&&!evdev_async_start(st)){
+        for(int i=0;i<st->device_count;i++)evdev_device_close(&st->devices[i]);
+        free(st);s->evdev_state=NULL;return false;
+    }
     return true;
 }
 
 void backend_evdev_poll(Server *s) {
-    EvdevState *st = evdev_state(s);
-    if (!st || !st->evdev_enabled || st->device_count == 0) return;
-
-    uint32_t time = (uint32_t)(s->time * 1000.0);
-
-    for (int i = 0; i < st->device_count; i++) {
-        EvdevDevice *d = &st->devices[i];
-        if (d->fd < 0) continue;
-
-        struct input_event ev[64];
-        while (true) {
-            ssize_t n = read(d->fd, ev, sizeof(ev));
-            if (n < 0) {
-                if (errno == EAGAIN || errno == EWOULDBLOCK) break;
-                if (errno == ENODEV || errno == EIO) {
-                    fprintf(stderr, "[evdev] device %s removed: %s\n", d->path, strerror(errno));
-                    evdev_release_device_state(s, d, time);
-                    evdev_device_close(d);
-                    if (i < st->device_count - 1) {
-                        memmove(&st->devices[i], &st->devices[i + 1],
-                                (st->device_count - i - 1) * sizeof(EvdevDevice));
-                    }
-                    st->device_count--;
-                    i--;
-                    break;
-                }
-                break;
-            }
-            int count = n / sizeof(struct input_event);
-            for (int j = 0; j < count; j++) {
-                struct input_event *e = &ev[j];
-                switch (e->type) {
-                    case EV_KEY:
-                        evdev_process_key(s, d, e->code, e->value, time);
-                        break;
-                    case EV_REL:
-                        evdev_process_rel(s, d, e->code, e->value);
-                        break;
-                    case EV_ABS:
-                        evdev_process_abs(s, d, e->code, e->value);
-                        break;
-                    case EV_SYN:
-                        if (e->code == SYN_REPORT) {
-                            evdev_dispatch_syn(s, d, time);
-                        } else if (e->code == SYN_DROPPED) {
-                            evdev_handle_syn_dropped(s, d, time);
-                        }
-                        break;
-                }
-            }
+    EvdevState *st=evdev_state(s);EvdevAsync *a=evdev_async(st);
+    if(!st||!st->evdev_enabled||!a)return;
+    CdEvdevEvent event;
+    while(cd_evdev_queue_pop(&a->queue,&event)){
+        if(event.device>=st->device_count)continue;
+        EvdevDevice *d=&st->devices[event.device];
+        if(event.kind==CD_EVDEV_EVENT_DISCONNECT){
+            fprintf(stderr,"[evdev] device %s removed or unreadable; resetting input\n",d->path);
+            evdev_reset_all_devices(s,event.time);evdev_device_close(d);d->type=EVDEV_DEV_NONE;
+            continue;
         }
+        if(event.kind!=CD_EVDEV_EVENT_RAW||d->fd<0)continue;
+        const struct input_event *e=&event.input;
+        switch(e->type){
+            case EV_KEY:evdev_process_key(s,d,e->code,e->value,event.time);break;
+            case EV_REL:evdev_process_rel(s,d,e->code,e->value);break;
+            case EV_ABS:evdev_process_abs(s,d,e->code,e->value);break;
+            case EV_SYN:
+                if(e->code==SYN_REPORT)evdev_dispatch_syn(s,d,event.time);
+                else if(e->code==SYN_DROPPED)evdev_handle_syn_dropped(s,d,event.time);
+                break;
+        }
+    }
+    uint32_t disconnects=atomic_exchange_explicit(&a->disconnects,0,memory_order_acq_rel);
+    for(int i=0;i<st->device_count;i++)if(disconnects&(1u<<i)){
+        EvdevDevice *d=&st->devices[i];
+        fprintf(stderr,"[evdev] device %s removed or unreadable; resetting input\n",d->path);
+        evdev_reset_all_devices(s,evdev_monotonic_ms());evdev_device_close(d);d->type=EVDEV_DEV_NONE;
+    }
+    uint64_t dropped=0;
+    if(cd_evdev_queue_overflow_drained(&a->queue,&dropped)){
+        fprintf(stderr,"[evdev] input queue overflow (%llu event(s) discarded); releasing all input before resuming\n",
+                (unsigned long long)dropped);
+        evdev_reset_all_devices(s,evdev_monotonic_ms());
+        cd_evdev_queue_acknowledge(&a->queue);
+        evdev_wake(a); /* only after the release barrier, never before it */
     }
 }
 
 void backend_evdev_shutdown(Server *s) {
-    EvdevState *st = evdev_state(s);
-    if (!st) return;
-
-    uint32_t time = (uint32_t)(s->time * 1000.0);
-
-    for (int i = 0; i < st->device_count; i++) {
-        EvdevDevice *d = &st->devices[i];
-        evdev_release_device_state(s, d, time);
-        evdev_device_close(d);
-    }
-
-    free(st);
-    s->evdev_state = NULL;
-    s->evdev_chrome_touch_id = -1;
+    EvdevState *st=evdev_state(s);if(!st)return;
+    st->evdev_enabled=false;
+    /* Stop production before releasing devices. main calls this before
+     * server_finish(), so release events still have a live Wayland display. */
+    evdev_async_destroy(st);
+    evdev_reset_all_devices(s,evdev_monotonic_ms());
+    for(int i=0;i<st->device_count;i++)evdev_device_close(&st->devices[i]);
+    free(st);s->evdev_state=NULL;s->evdev_chrome_touch_id=-1;
 }

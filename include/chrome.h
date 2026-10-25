@@ -350,6 +350,7 @@ typedef struct {
     char name[256];
     EvdevDevType type;
     bool grabbed;
+    bool monotonic_timestamps; /* EVIOCSCLOCKID(CLOCK_MONOTONIC), else read-time fallback */
     bool has_rel_x, has_rel_y;
     bool has_abs_x, has_abs_y;
     bool has_keys;
@@ -374,5 +375,6 @@ typedef struct {
     char explicit_paths[EVDEV_MAX_DEVICES][256];
     int explicit_count;
     bool evdev_enabled;
+    void *async_state; /* backend_evdev.c: epoll worker + bounded main-thread queue */
 } EvdevState;
 #endif
