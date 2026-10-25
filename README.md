@@ -226,6 +226,12 @@ effect `shaders/ssim-downscale.frag`. Use `render_scale = 2` (or greater) and
 `post_shader = shaders/ssim-downscale.frag`; it is an experimental
 single-pass approximation of igv's LGPL SSimDownscaler and costs a footprint
 loop per output pixel, so plain trilinear supersampling is usually cheaper.
+Two Hermite (Mitchell-Netravali B=0, C=0) downscalers are post effects too:
+`shaders/hermite-downscale.frag` is the exact full-footprint gather (cost grows
+~ratio^2, capped at 4x) and `shaders/hermite-downscale-mipmap.frag` is a fixed
+49-tap mipmap-assisted approximation (needs a mipmap `render_downscale`
+filter). Both use `render_scale > 1` plus `post_shader`; trilinear remains the
+cheapest default.
 When `render_to_texture` is on and the
 effective scaled size differs from the output, the compositor renders the
 scene into a scaled offscreen target, then samples it into the output; at
@@ -241,8 +247,9 @@ bypassing the direct/windowed-MSAA path; the shader samples the finished world
 image through `u_src`/`u_size` and the scaled world image through
 `u_world`/`u_world_size` (texture unit 1, native render resolution, mipmap
 filter intact) with `gl_TexCoord[0].xy`, may use `u_time`, and writes
-`gl_FragColor`. `shaders/khronos-pbr-neutral.frag` and
-`shaders/ssim-downscale.frag` are runnable examples. Empty or missing turns it
+`gl_FragColor`. `shaders/khronos-pbr-neutral.frag`,
+`shaders/ssim-downscale.frag` and the two `shaders/hermite-downscale*.frag`
+shaders are runnable examples. Empty or missing turns it
 off; an unreadable or non-compiling file logs one warning and renders normally
 until the path changes.
 

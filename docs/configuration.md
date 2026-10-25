@@ -296,6 +296,29 @@ so plain trilinear supersampling is usually cheaper. At ratio <= 1 it passes
 negative bias to force base-LOD samples; see the shader header for that
 driver-dependent trick.
 
+`shaders/hermite-downscale.frag` is the exact Hermite downscaler
+(Mitchell-Netravali B=0, C=0, ImageMagick's "Hermite"). Use
+`render_scale > 1` and `post_shader = shaders/hermite-downscale.frag` (no
+mipmap filter required). It gathers every source texel in the one-output-pixel
+support at LOD 0, weights it with the separable cubic and normalizes by the
+weight sum (alpha included). Cost grows ~ratio^2 per output pixel; above a 4x
+maximum ratio it returns the resolved `u_src`, and at ratio <= 1 it passes
+`u_src` through. Compared with `ssim-downscale.frag` it is a plain resampling
+filter with no contrast restoration, and cheaper at low ratios; compared with
+trilinear it costs more for a sharper, less boxy footprint.
+
+`shaders/hermite-downscale-mipmap.frag` is the mipmap-assisted approximation of
+the same kernel. It needs a mipmap `render_downscale` filter (the default
+`linear_mipmap_linear`) on `u_world`, uses one mip level sharper than the full
+footprint as the inner prefilter, and applies the Hermite weights over a fixed
+7x7 grid of that level's texels. It is fixed-cost (49 taps) with no support
+cap, but the hardware box average is not an exact Hermite inner filter, so it
+is an approximation rather than the reference gather. Enable it the same way
+with `post_shader = shaders/hermite-downscale-mipmap.frag`; at ratio <= 1 it
+passes `u_src` through. Both Hermite shaders are cheaper than the SSIM
+footprint loop at high ratios, with the mipmap variant bounded regardless of
+ratio.
+
 Point `display.post_shader` at either a relative path (resolved from the
 working directory) or an absolute path.
 
