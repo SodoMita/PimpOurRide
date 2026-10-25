@@ -714,7 +714,8 @@ static bool rtt_mipmapped(GLuint f){
  return f==GL_NEAREST_MIPMAP_NEAREST||f==GL_LINEAR_MIPMAP_NEAREST||
         f==GL_NEAREST_MIPMAP_LINEAR||f==GL_LINEAR_MIPMAP_LINEAR;
 }
-static const char *rtt_filter_name(GLuint f){
+static const char *rtt_filter_name(GLuint f,bool ssim){
+ if(ssim)return "ssim";
  switch(f){
  case GL_NEAREST:return "nearest";
  case GL_LINEAR:return "linear";
@@ -731,12 +732,302 @@ static int rtt_max_dim(void){
  if(rb>0&&rb<max)max=rb;
  return max;
 }
+/* SSIM downscaler ported from igv's SSimDownscaler (an mpv user shader,
+ * LGPL-3.0-or-later). The GLSL below is written for ChromeDrive's
+ * fixed-function compatibility context; it is not a copy of the mpv hook
+ * directives or of the mpv shader dispatch machinery. The three passes map to
+ * igv's L2 (two separable convolution directions), MR (mean & R), and final
+ * contrast-restoration passes. */
+static const char *ssim_vertex_src=
+ "#version 120\n"
+ "void main(){\n"
+ " gl_Position=gl_ModelViewProjectionMatrix*gl_Vertex;\n"
+ " gl_TexCoord[0]=gl_MultiTexCoord0;\n"
+ "}\n";
+static const char *ssim_l2_src=
+ "#version 120\n"
+ "// Port of igv SSimDownscaler (LGPL-3.0-or-later).\n"
+ "uniform sampler2D u_src;\n"
+ "uniform vec2 u_src_size;\n"
+ "uniform vec2 u_out_size;\n"
+ "uniform int u_axis;\n"
+ "uniform int u_square;\n"
+ "float mn(float b,float c,float x){\n"
+ " if(x<1.0)return ((2.0-1.5*b-c)*x+(-3.0+2.0*b+c))*x*x+(1.0-b/3.0);\n"
+ " return (((-b/6.0-c)*x+(b+5.0*c))*x+(-2.0*b-8.0*c))*x+(4.0/3.0*b+4.0*c);\n"
+ "}\n"
+ "float kernel(float x){return mn(0.0,0.5,abs(x));}\n"
+ "void main(){\n"
+ " vec2 base=gl_TexCoord[0].xy;\n"
+ " vec2 outpos=base*u_out_size;\n"
+ " float ratio=(u_axis==1)?(u_src_size.y/u_out_size.y):(u_src_size.x/u_out_size.x);\n"
+ " float coord=(u_axis==1)?outpos.y:outpos.x;\n"
+ " float incoord=coord*ratio;\n"
+ " float low=ceil(incoord-2.0*ratio-0.5);\n"
+ " float high=floor(incoord+2.0*ratio-0.5);\n"
+ " float W=0.0;\n"
+ " vec4 avg=vec4(0.0);\n"
+ " for(int i=0;i<64;i++){\n"
+ "  float k=low+float(i);\n"
+ "  if(k>high)break;\n"
+ "  vec2 uv=base;\n"
+ "  if(u_axis==1)uv.y=(k+0.5)/u_src_size.y;else uv.x=(k+0.5)/u_src_size.x;\n"
+ "  float rel=(k+0.5-incoord)/ratio;\n"
+ "  float w=kernel(rel);\n"
+ "  vec4 tex=texture2D(u_src,uv);\n"
+ "  if(u_square==1)tex=tex*tex;\n"
+ "  avg+=w*tex;W+=w;\n"
+ " }\n"
+ " gl_FragColor=avg/W;\n"
+ "}\n";
+static const char *ssim_mr_src=
+ "#version 120\n"
+ "// Port of igv SSimDownscaler (LGPL-3.0-or-later).\n"
+ "uniform sampler2D u_src;\n"
+ "uniform sampler2D u_l2;\n"
+ "uniform vec2 u_out_size;\n"
+ "void main(){\n"
+ " vec2 base=gl_TexCoord[0].xy;\n"
+ " vec3 m=vec3(0.0),m2=vec3(0.0),l2=vec3(0.0);\n"
+ " float W=0.0;\n"
+ " for(int j=-1;j<=1;j++)for(int i=-1;i<=1;i++){\n"
+ "  vec2 uv=clamp(base+vec2(float(i),float(j))/u_out_size,vec2(0.0),vec2(1.0));\n"
+ "  float w=exp2(-float(abs(i)+abs(j)));\n"
+ "  vec3 L=texture2D(u_src,uv).rgb;\n"
+ "  m+=w*L;m2+=w*L*L;l2+=w*texture2D(u_l2,uv).rgb;W+=w;\n"
+ " }\n"
+ " m/=W;m2/=W;l2/=W;\n"
+ " float Sl=dot(max(m2-m*m,vec3(0.0)),vec3(0.2126,0.7152,0.0722));\n"
+ " float Sh=dot(max(l2-m*m,vec3(0.0)),vec3(0.2126,0.7152,0.0722));\n"
+ " float sigma=10.0/65025.0;\n"
+ " float R=(Sl>Sh)?clamp(Sh/Sl,0.0,1.0):sqrt((Sh+sigma)/(Sl+sigma));\n"
+ " gl_FragColor=vec4(m,R);\n"
+ "}\n";
+static const char *ssim_final_src=
+ "#version 120\n"
+ "// Port of igv SSimDownscaler (LGPL-3.0-or-later).\n"
+ "uniform sampler2D u_mr;\n"
+ "uniform sampler2D u_src;\n"
+ "uniform vec2 u_out_size;\n"
+ "void main(){\n"
+ " vec2 base=gl_TexCoord[0].xy;\n"
+ " vec3 rm=vec3(0.0),m=vec3(0.0);\n"
+ " float r=0.0,W=0.0;\n"
+ " for(int j=-1;j<=1;j++)for(int i=-1;i<=1;i++){\n"
+ "  vec2 uv=clamp(base+vec2(float(i),float(j))/u_out_size,vec2(0.0),vec2(1.0));\n"
+ "  float w=exp2(-float(abs(i)+abs(j)));\n"
+ "  vec4 MR=texture2D(u_mr,uv);\n"
+ "  rm+=w*MR.a*MR.rgb;m+=w*MR.rgb;r+=w*MR.a;W+=w;\n"
+ " }\n"
+ " rm/=W;m/=W;r/=W;\n"
+ " vec4 L=texture2D(u_src,base);\n"
+ " gl_FragColor=vec4(m+r*L.rgb-rm,L.a);\n"
+ "}\n";
+static GLuint rtt_ssim_link(const char *vs_src,const char *fs_src,const char *label){
+ GLuint vs=glCreateShader(GL_VERTEX_SHADER),fs=glCreateShader(GL_FRAGMENT_SHADER);
+ if(!vs||!fs){if(vs)glDeleteShader(vs);if(fs)glDeleteShader(fs);return 0;}
+ const char *src=vs_src;glShaderSource(vs,1,&src,NULL);
+ src=fs_src;glShaderSource(fs,1,&src,NULL);
+ GLint ok=0;char log[2048];
+ glCompileShader(vs);glGetShaderiv(vs,GL_COMPILE_STATUS,&ok);
+ if(!ok){log[0]='\0';glGetShaderInfoLog(vs,(GLsizei)sizeof(log),NULL,log);
+  fprintf(stderr,"[rtt] ssim %s vertex compile failed: %s\n",label,log);glDeleteShader(vs);glDeleteShader(fs);return 0;}
+ glCompileShader(fs);glGetShaderiv(fs,GL_COMPILE_STATUS,&ok);
+ if(!ok){log[0]='\0';glGetShaderInfoLog(fs,(GLsizei)sizeof(log),NULL,log);
+  fprintf(stderr,"[rtt] ssim %s fragment compile failed: %s\n",label,log);glDeleteShader(vs);glDeleteShader(fs);return 0;}
+ GLuint prog=glCreateProgram();
+ if(!prog){glDeleteShader(vs);glDeleteShader(fs);return 0;}
+ glAttachShader(prog,vs);glAttachShader(prog,fs);glLinkProgram(prog);
+ glGetProgramiv(prog,GL_LINK_STATUS,&ok);
+ if(!ok){log[0]='\0';glGetProgramInfoLog(prog,(GLsizei)sizeof(log),NULL,log);
+  fprintf(stderr,"[rtt] ssim %s link failed: %s\n",label,log);glDeleteProgram(prog);prog=0;}
+ glDeleteShader(vs);glDeleteShader(fs);
+ return prog;
+}
+static bool rtt_ssim_init(Server *s){
+ if(s->ssim_prog_l2&&s->ssim_prog_mr&&s->ssim_prog_final)return true;
+ if(s->ssim_prog_l2||s->ssim_prog_mr||s->ssim_prog_final)return false;
+ s->ssim_prog_l2=rtt_ssim_link(ssim_vertex_src,ssim_l2_src,"L2");
+ s->ssim_prog_mr=rtt_ssim_link(ssim_vertex_src,ssim_mr_src,"MR");
+ s->ssim_prog_final=rtt_ssim_link(ssim_vertex_src,ssim_final_src,"final");
+ if(s->ssim_prog_l2&&s->ssim_prog_mr&&s->ssim_prog_final)return true;
+ if(s->ssim_prog_l2)glDeleteProgram(s->ssim_prog_l2);
+ if(s->ssim_prog_mr)glDeleteProgram(s->ssim_prog_mr);
+ if(s->ssim_prog_final)glDeleteProgram(s->ssim_prog_final);
+ s->ssim_prog_l2=s->ssim_prog_mr=s->ssim_prog_final=0;
+ return false;
+}
+static void rtt_ssim_free_target(GLuint *tex,GLuint *fbo){
+ if(*tex)glDeleteTextures(1,tex);
+ if(*fbo)glDeleteFramebuffers(1,fbo);
+ *tex=*fbo=0;
+}
+static void rtt_ssim_release_targets(Server *s){
+ rtt_ssim_free_target(&s->ssim_tmp_tex,&s->ssim_tmp_fbo);
+ rtt_ssim_free_target(&s->ssim_l2_tex,&s->ssim_l2_fbo);
+ rtt_ssim_free_target(&s->ssim_mr_tex,&s->ssim_mr_fbo);
+ s->ssim_src_w=s->ssim_src_h=s->ssim_out_w=s->ssim_out_h=0;
+}
+static void rtt_ssim_release_programs(Server *s){
+ if(s->ssim_prog_l2)glDeleteProgram(s->ssim_prog_l2);
+ if(s->ssim_prog_mr)glDeleteProgram(s->ssim_prog_mr);
+ if(s->ssim_prog_final)glDeleteProgram(s->ssim_prog_final);
+ s->ssim_prog_l2=s->ssim_prog_mr=s->ssim_prog_final=0;
+}
+static bool rtt_ssim_supported(Server *s,int w,int h){
+ if(!s->render_downscale_ssim||s->rtt_ssim_failed)return false;
+ if(w<=s->width||h<=s->height)return false;
+ return (double)w/(double)s->width<=8.0&&(double)h/(double)s->height<=8.0;
+}
+static void rtt_ssim_disable(Server *s,const char *why){
+ if(!s->rtt_ssim_failed)
+  fprintf(stderr,"[rtt] ssim disabled for this session (%s); using %s sampling\n",why,rtt_filter_name(s->render_min_filter,false));
+ s->rtt_ssim_failed=true;
+}
 static void rtt_release(Server *s){
  if(s->rtt_color_tex)glDeleteTextures(1,&s->rtt_color_tex);
  if(s->rtt_depth_rb)glDeleteRenderbuffers(1,&s->rtt_depth_rb);
  if(s->rtt_fbo)glDeleteFramebuffers(1,&s->rtt_fbo);
  s->rtt_color_tex=s->rtt_depth_rb=s->rtt_fbo=0;
  s->render_width=s->render_height=0;
+ rtt_ssim_release_targets(s);
+}
+static bool rtt_ssim_target(GLuint *tex,GLuint *fbo,int w,int h){
+ *tex=*fbo=0;
+ while(glGetError()!=GL_NO_ERROR){}
+ glGenTextures(1,tex);
+ if(!*tex)return false;
+ glBindTexture(GL_TEXTURE_2D,*tex);
+ glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_WRAP_S,GL_CLAMP_TO_EDGE);
+ glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_WRAP_T,GL_CLAMP_TO_EDGE);
+ glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MAG_FILTER,GL_LINEAR);
+ glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MIN_FILTER,GL_LINEAR);
+ glTexImage2D(GL_TEXTURE_2D,0,GL_RGBA16F,w,h,0,GL_RGBA,GL_FLOAT,NULL);
+ if(glGetError()!=GL_NO_ERROR){rtt_ssim_free_target(tex,fbo);return false;}
+ glGenFramebuffers(1,fbo);
+ if(!*fbo){rtt_ssim_free_target(tex,fbo);return false;}
+ glBindFramebuffer(GL_FRAMEBUFFER,*fbo);
+ glFramebufferTexture2D(GL_FRAMEBUFFER,GL_COLOR_ATTACHMENT0,GL_TEXTURE_2D,*tex,0);
+ GLenum status=glCheckFramebufferStatus(GL_FRAMEBUFFER);
+ if(status!=GL_FRAMEBUFFER_COMPLETE||glGetError()!=GL_NO_ERROR){
+  rtt_ssim_free_target(tex,fbo);return false;
+ }
+ return true;
+}
+static bool rtt_ssim_ensure_targets(Server *s,int sw,int sh,int ow,int oh){
+ if(s->ssim_tmp_tex&&s->ssim_l2_tex&&s->ssim_mr_tex&&
+    s->ssim_src_w==sw&&s->ssim_src_h==sh&&s->ssim_out_w==ow&&s->ssim_out_h==oh)
+  return true;
+ rtt_ssim_release_targets(s);
+ if(!rtt_ssim_target(&s->ssim_tmp_tex,&s->ssim_tmp_fbo,sw,oh)||
+    !rtt_ssim_target(&s->ssim_l2_tex,&s->ssim_l2_fbo,ow,oh)||
+    !rtt_ssim_target(&s->ssim_mr_tex,&s->ssim_mr_fbo,ow,oh)){
+  rtt_ssim_release_targets(s);return false;
+ }
+ s->ssim_src_w=sw;s->ssim_src_h=sh;s->ssim_out_w=ow;s->ssim_out_h=oh;
+ return true;
+}
+static void rtt_ssim_quad(void){
+ glBegin(GL_QUADS);
+ glTexCoord2f(0,0);glVertex2f(-1,-1);glTexCoord2f(1,0);glVertex2f(1,-1);
+ glTexCoord2f(1,1);glVertex2f(1,1);glTexCoord2f(0,1);glVertex2f(-1,1);
+ glEnd();
+}
+static bool rtt_ssim_resolve(Server *s){
+ int sw=s->rtt_width,sh=s->rtt_height,ow=s->width,oh=s->height;
+ bool ok=false;
+ GLint prev_prog=0,prev_active=GL_TEXTURE0,prev_tex0=0,prev_tex1=0,prev_mm=GL_MODELVIEW;
+ GLint src_min=GL_LINEAR,src_mag=GL_LINEAR;
+ GLfloat color[4]={1,1,1,1};
+ GLboolean depth=glIsEnabled(GL_DEPTH_TEST),light=glIsEnabled(GL_LIGHTING),blend=glIsEnabled(GL_BLEND);
+ GLboolean tex2d=glIsEnabled(GL_TEXTURE_2D),stencil=glIsEnabled(GL_STENCIL_TEST),fog=glIsEnabled(GL_FOG),cull=glIsEnabled(GL_CULL_FACE);
+ glGetIntegerv(GL_CURRENT_PROGRAM,&prev_prog);
+ glGetIntegerv(GL_ACTIVE_TEXTURE,&prev_active);
+ glGetIntegerv(GL_MATRIX_MODE,&prev_mm);
+ glActiveTexture(GL_TEXTURE0);glGetIntegerv(GL_TEXTURE_BINDING_2D,&prev_tex0);
+ glActiveTexture(GL_TEXTURE1);glGetIntegerv(GL_TEXTURE_BINDING_2D,&prev_tex1);
+ glActiveTexture(GL_TEXTURE0);glBindTexture(GL_TEXTURE_2D,s->rtt_color_tex);
+ glGetTexParameteriv(GL_TEXTURE_2D,GL_TEXTURE_MIN_FILTER,&src_min);
+ glGetTexParameteriv(GL_TEXTURE_2D,GL_TEXTURE_MAG_FILTER,&src_mag);
+ glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MIN_FILTER,GL_LINEAR);
+ glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MAG_FILTER,GL_LINEAR);
+ glActiveTexture((GLenum)prev_active);
+ glGetFloatv(GL_CURRENT_COLOR,color);
+ glMatrixMode(GL_PROJECTION);glPushMatrix();glLoadIdentity();
+ glMatrixMode(GL_MODELVIEW);glPushMatrix();glLoadIdentity();
+ glDisable(GL_DEPTH_TEST);glDisable(GL_LIGHTING);glDisable(GL_BLEND);glDisable(GL_STENCIL_TEST);
+ glDisable(GL_FOG);glDisable(GL_CULL_FACE);glEnable(GL_TEXTURE_2D);
+ glColor4f(1,1,1,1);
+ if(!rtt_ssim_init(s)||!rtt_ssim_ensure_targets(s,sw,sh,ow,oh)){
+  rtt_ssim_disable(s,"shader or FBO setup failed");
+  goto restore;
+ }
+ while(glGetError()!=GL_NO_ERROR){}
+ /* L2 pass 1: vertical footprint reduction into srcW x outH. */
+ glUseProgram(s->ssim_prog_l2);
+ glActiveTexture(GL_TEXTURE0);glBindTexture(GL_TEXTURE_2D,s->rtt_color_tex);
+ glUniform1i(glGetUniformLocation(s->ssim_prog_l2,"u_src"),0);
+ glUniform2f(glGetUniformLocation(s->ssim_prog_l2,"u_src_size"),(GLfloat)sw,(GLfloat)sh);
+ glUniform2f(glGetUniformLocation(s->ssim_prog_l2,"u_out_size"),(GLfloat)sw,(GLfloat)oh);
+ glUniform1i(glGetUniformLocation(s->ssim_prog_l2,"u_axis"),1);
+ glUniform1i(glGetUniformLocation(s->ssim_prog_l2,"u_square"),1);
+ glBindFramebuffer(GL_FRAMEBUFFER,s->ssim_tmp_fbo);glViewport(0,0,sw,oh);
+ rtt_ssim_quad();
+ /* L2 pass 2: horizontal footprint reduction into outW x outH. The input is
+  * already E[x^2], so this pass averages it without squaring again (igv). */
+ glActiveTexture(GL_TEXTURE0);glBindTexture(GL_TEXTURE_2D,s->ssim_tmp_tex);
+ glUniform2f(glGetUniformLocation(s->ssim_prog_l2,"u_src_size"),(GLfloat)sw,(GLfloat)oh);
+ glUniform2f(glGetUniformLocation(s->ssim_prog_l2,"u_out_size"),(GLfloat)ow,(GLfloat)oh);
+ glUniform1i(glGetUniformLocation(s->ssim_prog_l2,"u_axis"),0);
+ glUniform1i(glGetUniformLocation(s->ssim_prog_l2,"u_square"),0);
+ glBindFramebuffer(GL_FRAMEBUFFER,s->ssim_l2_fbo);glViewport(0,0,ow,oh);
+ rtt_ssim_quad();
+ /* MR: local mean/L2 statistics and the SSIM ratio. */
+ glUseProgram(s->ssim_prog_mr);
+ glActiveTexture(GL_TEXTURE0);glBindTexture(GL_TEXTURE_2D,s->rtt_color_tex);
+ glActiveTexture(GL_TEXTURE1);glBindTexture(GL_TEXTURE_2D,s->ssim_l2_tex);
+ glUniform1i(glGetUniformLocation(s->ssim_prog_mr,"u_src"),0);
+ glUniform1i(glGetUniformLocation(s->ssim_prog_mr,"u_l2"),1);
+ glUniform2f(glGetUniformLocation(s->ssim_prog_mr,"u_out_size"),(GLfloat)ow,(GLfloat)oh);
+ glBindFramebuffer(GL_FRAMEBUFFER,s->ssim_mr_fbo);glViewport(0,0,ow,oh);
+ rtt_ssim_quad();
+ /* Final: restore local contrast around the downscaled local mean. */
+ glUseProgram(s->ssim_prog_final);
+ glActiveTexture(GL_TEXTURE0);glBindTexture(GL_TEXTURE_2D,s->ssim_mr_tex);
+ glActiveTexture(GL_TEXTURE1);glBindTexture(GL_TEXTURE_2D,s->rtt_color_tex);
+ glUniform1i(glGetUniformLocation(s->ssim_prog_final,"u_mr"),0);
+ glUniform1i(glGetUniformLocation(s->ssim_prog_final,"u_src"),1);
+ glUniform2f(glGetUniformLocation(s->ssim_prog_final,"u_out_size"),(GLfloat)ow,(GLfloat)oh);
+ glBindFramebuffer(GL_FRAMEBUFFER,s->target_fbo);glViewport(0,0,ow,oh);
+ rtt_ssim_quad();
+ {
+  GLenum err=glGetError();
+  if(err!=GL_NO_ERROR){while(glGetError()!=GL_NO_ERROR){}ok=false;
+   fprintf(stderr,"[rtt] ssim resolve GL error 0x%x\n",err);}
+  else ok=true;
+ }
+ if(!ok)rtt_ssim_disable(s,"resolve GL error");
+restore:
+ glUseProgram((GLuint)prev_prog);
+ glMatrixMode(GL_MODELVIEW);glPopMatrix();
+ glMatrixMode(GL_PROJECTION);glPopMatrix();
+ glMatrixMode((GLenum)prev_mm);
+ if(depth)glEnable(GL_DEPTH_TEST);else glDisable(GL_DEPTH_TEST);
+ if(light)glEnable(GL_LIGHTING);else glDisable(GL_LIGHTING);
+ if(blend)glEnable(GL_BLEND);else glDisable(GL_BLEND);
+ if(tex2d)glEnable(GL_TEXTURE_2D);else glDisable(GL_TEXTURE_2D);
+ if(stencil)glEnable(GL_STENCIL_TEST);else glDisable(GL_STENCIL_TEST);
+ if(fog)glEnable(GL_FOG);else glDisable(GL_FOG);
+ if(cull)glEnable(GL_CULL_FACE);else glDisable(GL_CULL_FACE);
+ glActiveTexture(GL_TEXTURE0);glBindTexture(GL_TEXTURE_2D,s->rtt_color_tex);
+ glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MIN_FILTER,src_min);
+ glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MAG_FILTER,src_mag);
+ glBindTexture(GL_TEXTURE_2D,(GLuint)prev_tex0);
+ glActiveTexture(GL_TEXTURE1);glBindTexture(GL_TEXTURE_2D,(GLuint)prev_tex1);
+ glActiveTexture((GLenum)prev_active);
+ glColor4f(color[0],color[1],color[2],color[3]);
+ glBindFramebuffer(GL_FRAMEBUFFER,s->target_fbo);glViewport(0,0,ow,oh);
+ return ok;
 }
 bool scene_rtt_begin(Server *s){
  if(!s->render_to_texture){s->render_width=s->render_height=0;return false;}
@@ -748,7 +1039,8 @@ bool scene_rtt_begin(Server *s){
  if(w<1)w=1;if(h<1)h=1;if(w>max)w=max;if(h>max)h=max;
  if(w==s->width&&h==s->height){s->render_width=s->render_height=0;return false;}
  GLuint mag=s->render_mag_filter,min=s->render_min_filter;
- if(w==s->rtt_width&&h==s->rtt_height&&mag==s->rtt_mag_filter&&min==s->rtt_min_filter){
+ if(w==s->rtt_width&&h==s->rtt_height&&mag==s->rtt_mag_filter&&min==s->rtt_min_filter&&
+    s->rtt_ssim==s->render_downscale_ssim){
   if(!s->rtt_fbo){s->render_width=s->render_height=0;return false;}
   s->render_width=w;s->render_height=h;
   glBindFramebuffer(GL_FRAMEBUFFER,s->rtt_fbo);glViewport(0,0,w,h);
@@ -756,6 +1048,8 @@ bool scene_rtt_begin(Server *s){
  }
  rtt_release(s);
  s->rtt_width=w;s->rtt_height=h;s->rtt_mag_filter=mag;s->rtt_min_filter=min;
+ s->rtt_ssim=s->render_downscale_ssim;
+ bool ssim_label=rtt_ssim_supported(s,w,h);
  GLint prev_tex=0;glGetIntegerv(GL_TEXTURE_BINDING_2D,&prev_tex);
  while(glGetError()!=GL_NO_ERROR){}
  GLuint tex=0,rb=0,fbo=0;
@@ -773,7 +1067,7 @@ bool scene_rtt_begin(Server *s){
  glBindTexture(GL_TEXTURE_2D,(GLuint)prev_tex);
  if(!tex||!rb||!fbo||status!=GL_FRAMEBUFFER_COMPLETE||err!=GL_NO_ERROR){
   fprintf(stderr,"[rtt] allocation failed %dx%d (output %dx%d, scale %g, mag %s, min %s): status 0x%x error 0x%x\n",
-          w,h,s->width,s->height,s->render_scale,rtt_filter_name(mag),rtt_filter_name(min),status,err);
+          w,h,s->width,s->height,s->render_scale,rtt_filter_name(mag,false),rtt_filter_name(min,false),status,err);
   if(tex)glDeleteTextures(1,&tex);if(rb)glDeleteRenderbuffers(1,&rb);if(fbo)glDeleteFramebuffers(1,&fbo);
   s->render_width=s->render_height=0;
   glBindFramebuffer(GL_FRAMEBUFFER,s->target_fbo);glViewport(0,0,s->width,s->height);
@@ -782,12 +1076,23 @@ bool scene_rtt_begin(Server *s){
  s->rtt_color_tex=tex;s->rtt_depth_rb=rb;s->rtt_fbo=fbo;
  s->render_width=w;s->render_height=h;
  fprintf(stderr,"[rtt] render target %dx%d (output %dx%d, scale %g, mag %s, min %s)\n",
-         w,h,s->width,s->height,s->render_scale,rtt_filter_name(mag),rtt_filter_name(min));
+         w,h,s->width,s->height,s->render_scale,rtt_filter_name(mag,false),rtt_filter_name(min,ssim_label));
  glBindFramebuffer(GL_FRAMEBUFFER,s->rtt_fbo);glViewport(0,0,w,h);
  return true;
 }
 void scene_rtt_end(Server *s){
  if(!s->rtt_fbo){glBindFramebuffer(GL_FRAMEBUFFER,s->target_fbo);glViewport(0,0,s->width,s->height);return;}
+ if(s->render_downscale_ssim&&!s->rtt_ssim_failed&&
+    s->rtt_width>s->width&&s->rtt_height>s->height){
+  if(!rtt_ssim_supported(s,s->rtt_width,s->rtt_height)){
+   if(!s->rtt_ssim_ratio_warned){
+    fprintf(stderr,"[rtt] ssim downscale %.2fx/%.2fx exceeds the 8x limit; using %s sampling\n",
+            (double)s->rtt_width/(double)s->width,(double)s->rtt_height/(double)s->height,
+            rtt_filter_name(s->render_min_filter,false));
+    s->rtt_ssim_ratio_warned=true;
+   }
+  }else if(rtt_ssim_resolve(s))return;
+ }
  GLint prev_tex=0;GLfloat color[4];
  GLboolean depth=glIsEnabled(GL_DEPTH_TEST),light=glIsEnabled(GL_LIGHTING),blend=glIsEnabled(GL_BLEND);
  GLboolean tex2d=glIsEnabled(GL_TEXTURE_2D),stencil=glIsEnabled(GL_STENCIL_TEST),fog=glIsEnabled(GL_FOG),cull=glIsEnabled(GL_CULL_FACE);
@@ -988,4 +1293,5 @@ void scene_finish(Server *s){
  city_finish(s);vehicle_scene_finish();if(seat_list)glDeleteLists(seat_list,1);seat_list=0;
  GLuint textures[]={s->garage_tex,s->carbon_tex,s->console_tex,s->hub_tex,s->hud_tex,s->windshield_tex,s->help_tex,s->plate_tex,s->handles_tex};glDeleteTextures(sizeof(textures)/sizeof(textures[0]),textures);for(int i=0;i<6;i++)glDeleteTextures(1,&s->buttons[i].texture);for(int i=0;i<CD_MAX_MONITORS;i++)glDeleteTextures(1,&s->monitors[i].label);
  rtt_release(s);
+ rtt_ssim_release_programs(s);
 }

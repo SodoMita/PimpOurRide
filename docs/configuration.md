@@ -217,7 +217,15 @@ the direct-to-output path and the sampling keys have no effect.
 maps to `GL_TEXTURE_MIN_FILTER`, so you can pick a different sampler for
 magnifying and minifying. Values below 1 render fewer pixels (useful for slow
 software GPUs); values above 1 supersample. Mipmap downscale tokens generate
-mipmaps each frame; the others do not.
+mipmaps each frame; the others do not. `render_downscale = ssim` is the
+exception: it is not a GL filter at all. It selects an SSIM-guided resolve
+(a port of igv's SSimDownscaler, LGPL-3.0-or-later; this is our own GLSL for
+the compositor, not an mpv hook) only when both scaled dimensions are larger
+than the output and neither ratio exceeds 8x. It costs four extra fullscreen
+passes and three RGBA16F intermediates, so it is intended for
+`render_scale > 1` supersampling, not for low-resolution rendering; when
+upscaling, or beyond 8x, the configured `render_min_filter` fallback is used.
+Compile/allocation failure warns once and disables SSIM for that session.
 
 The configured scale is accepted from `0.001` through `100` inclusive. The
 effective allocation is clamped to the driver's `GL_MAX_TEXTURE_SIZE` and
@@ -243,7 +251,7 @@ fov = 65              # 1..100 driver FOV; background scroll clamps to 1..75
 render_to_texture = true # gate for the scaled 3D pass; HUD stays native (live)
 render_scale = 1      # 0.001..100, 1 = 100%; typed field in GUI (live)
 render_upscale = linear   # nearest | linear (live)
-render_downscale = linear # nearest | linear | *_mipmap_nearest | *_mipmap_linear (live)
+render_downscale = linear # nearest | linear | ssim | *_mipmap_nearest | *_mipmap_linear (live)
 fullscreen = false    # --windowed only      (restart)
 
 [ui]

@@ -146,10 +146,23 @@ SdlTouchFinger sdl_touch[CD_MAX_TOUCH_POINTS];int sdl_touch_chrome_id;
  bool render_to_texture;
  double render_scale;
  GLuint render_mag_filter,render_min_filter;
+ /* display.render_downscale=ssim selects the SSIM resolve instead of a GL
+  * filter. It is requested separately because "ssim" is not a sampler token;
+  * render_min_filter stays the fallback used when SSIM is unavailable. */
+ bool render_downscale_ssim;
+ bool rtt_ssim_failed;                                 /* compile/alloc failure disables SSIM for the session */
+ bool rtt_ssim_ratio_warned;                           /* one warning for ratios above the 8x limit */
+ bool rtt_ssim;                                        /* ssim flag baked into the current RTT cache key */
  GLuint rtt_fbo,rtt_color_tex,rtt_depth_rb;
  int rtt_width,rtt_height;
  GLuint rtt_mag_filter,rtt_min_filter;
  int render_width,render_height;                       /* active 3D size; 0 = direct */
+ /* Lazily compiled SSIM resolve programs and cached RGBA16F intermediates.
+  * The cache is keyed by (rtt_width,rtt_height,output width,output height). */
+ GLuint ssim_prog_l2,ssim_prog_mr,ssim_prog_final;
+ GLuint ssim_tmp_tex,ssim_l2_tex,ssim_mr_tex;
+ GLuint ssim_tmp_fbo,ssim_l2_fbo,ssim_mr_fbo;
+ int ssim_src_w,ssim_src_h,ssim_out_w,ssim_out_h;
  void *vnc_screen;int vnc_port;                        /* rfbScreenInfoPtr, opaque here (see backend_vnc.c) */
  void *headless_state;                                 /* asynchronous pixel-pack ring, owned by backend_headless.c */
  int vnc_prev_mask,vnc_prev_x,vnc_prev_y;              /* RFB pointer edge-detection state (no separate down/up events in the protocol) */

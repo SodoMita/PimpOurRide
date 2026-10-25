@@ -219,7 +219,11 @@ render scale, upscale/downscale sampling, underglow, 3D-vs-texture backdrop,
 and the VNC port as an exact typed number—not a slider). `render_scale` is a
 typed number (`0.001`–`100`, `1` = 100%) rather than a slider, and the two
 sampling keys take `nearest`/`linear` (upscale) or those plus the four
-`*_mipmap_*` combinations (downscale). When `render_to_texture` is on and the
+`*_mipmap_*` combinations (downscale). Downscale also accepts `ssim`, an
+SSIM-guided resolve ported from igv's LGPL SSimDownscaler (our own GLSL, not
+an mpv hook); it adds four fullscreen passes and is only used for
+supersampled `render_scale > 1` at ratios up to 8x, not for upscaling. When
+`render_to_texture` is on and the
 effective scaled size differs from the output, the compositor renders the
 scene into a scaled offscreen target, then samples it into the output; at
 scale `1` (or with the toggle off) it renders directly, with no offscreen
