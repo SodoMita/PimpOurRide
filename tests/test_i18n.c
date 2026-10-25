@@ -321,8 +321,14 @@ static void test_catalog_drift(void) {
         }
     }
     free(line);
-    free(corpus);
     fclose(f);
+
+    /* Translating a bare "%s" leaves the actual dynamic message in English.
+     * Keep this source-level check beside the key-drift guard so newly added
+     * global actions cannot silently reintroduce that localization hole. */
+    CHECK(strstr(corpus, "tr(\"%s\")") == NULL,
+          "dynamic messages translate their text, not a bare %s placeholder");
+    free(corpus);
 
     CHECK(checked > 0, "drift guard found keys to check");
     CHECK(stale == 0, "every ru.lang key still exists verbatim in the sources");

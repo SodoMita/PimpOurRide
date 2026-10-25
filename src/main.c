@@ -317,7 +317,7 @@ void app_request_quit(Server *s,bool via_hotkey){
  if(s->time<s->quit_armed_until){fprintf(stderr,"[input] EXIT confirmed from dashboard button\n");s->running=false;return;}
  s->quit_armed_until=s->time+3.0;
  fprintf(stderr,"[input] EXIT armed from dashboard button (3 s)\n");
- app_notice(s,"EXIT armed — press the red button again to quit ChromeDrive");
+ app_notice(s,tr("EXIT armed — press the red button again to quit ChromeDrive"));
 }
 /* ---- F6 Arrange mode ---------------------------------------------------
  * A modal, session-only transform editor for whole spatial monitors. The
@@ -338,7 +338,7 @@ static void monitor_transform_notice(Server *s,int slot,const char *prefix){
   prefix,slot+1,p.center.x,p.center.y,p.center.z,p.yaw,p.pitch,p.roll,p.width,p.height,win_w,win_h);
 }
 static void arrange_notice(Server *s){
- if(arrange_valid(s))monitor_transform_notice(s,s->arrange_slot,"Arrange");
+ if(arrange_valid(s))monitor_transform_notice(s,s->arrange_slot,tr("Arrange"));
 }
 static bool arrange_set_target(Server *s,int slot,bool move_camera){
  if(slot<0||slot>=CD_MAX_MONITORS||slot==CD_CLUSTER_SLOT||!s->monitors[slot].surface)return false;
@@ -553,7 +553,7 @@ bool app_frame_pointer_button(Server *s,Hit hit,uint32_t button,bool down){
  }
  if(s->frame_dragging){
   int slot=s->frame_drag_slot;s->frame_dragging=false;s->frame_drag_slot=-1;
-  monitor_transform_notice(s,slot,"Moved");
+  monitor_transform_notice(s,slot,tr("Moved"));
   return true;
  }
  return false;
@@ -604,7 +604,7 @@ bool app_global_key(Server *s,uint32_t evdev,bool down){
   if(s->door_shortcut_down){if(!down)s->door_shortcut_down=false;return true;}
   if(down&&meta&&!s->keys[KEY_O]){
    s->door_shortcut_down=true;vehicle_toggle_doors(&s->vehicle);
-   app_notice(s,tr("%s"),s->vehicle.door_target[0]>.5f?"Doors opening / Meta+O closes both":"Doors closing / Meta+O opens both");
+   app_notice(s,"%s",s->vehicle.door_target[0]>.5f?tr("Doors opening / Meta+O closes both"):tr("Doors closing / Meta+O opens both"));
    return true;
   }
  }
@@ -615,7 +615,7 @@ bool app_global_key(Server *s,uint32_t evdev,bool down){
   if(down&&meta&&!s->keys[KEY_A]){
    s->autopilot_shortcut_down=true;bool enable=!s->vehicle.autopilot_enabled;
    vehicle_autopilot_set(&s->vehicle,enable);
-   app_notice(s,tr("%s"),enable?"Autopilot engaged / doors closing, then city route":"Autopilot disengaged / vehicle braking");
+   app_notice(s,"%s",enable?tr("Autopilot engaged / doors closing, then city route"):tr("Autopilot disengaged / vehicle braking"));
    return true;
   }
  }
@@ -690,12 +690,12 @@ bool app_global_key(Server *s,uint32_t evdev,bool down){
   s->focus_view=false;s->target_fov=65;
   if(s->camera_mode==VEHICLE_CAMERA_DRIVER)scene_reset_camera(s);
   scene_wheel_cancel(s);
-  app_notice(s,tr("%s"),s->camera_mode==VEHICLE_CAMERA_DRIVER?(s->camera_seat==VEHICLE_SEAT_DRIVER?"Driver seat camera":"Passenger seat camera"):s->camera_mode==VEHICLE_CAMERA_CHASE?"Exterior concept camera":"EV systems cutaway");
+  app_notice(s,"%s",s->camera_mode==VEHICLE_CAMERA_DRIVER?(s->camera_seat==VEHICLE_SEAT_DRIVER?tr("Driver seat camera"):tr("Passenger seat camera")):s->camera_mode==VEHICLE_CAMERA_CHASE?tr("Exterior concept camera"):tr("EV systems cutaway"));
   break;
  case KEY_F9:
   s->camera_seat=s->camera_seat==VEHICLE_SEAT_DRIVER?VEHICLE_SEAT_PASSENGER:VEHICLE_SEAT_DRIVER;
   scene_reset_camera(s);scene_wheel_cancel(s);
-  app_notice(s,tr("%s"),s->camera_seat==VEHICLE_SEAT_DRIVER?"Driver seat / aligned with steering wheel":"Passenger seat / F9 returns to driver");
+  app_notice(s,"%s",s->camera_seat==VEHICLE_SEAT_DRIVER?tr("Driver seat / aligned with steering wheel"):tr("Passenger seat / F9 returns to driver"));
   break;
  case KEY_F10:
   vehicle_reset_pose(&s->vehicle);clear_drive_controls(s);scene_wheel_cancel(s);
