@@ -7,7 +7,7 @@ LDLIBS = $(shell pkg-config --libs $(PKGS)) -lm
 PROTO_DIR := $(shell pkg-config --variable=pkgdatadir wayland-protocols)
 GEN = .generated
 BIN = bin
-SOURCES = src/main.c src/wayland.c src/scene.c src/city_scene.c src/vehicle.c src/city.c src/vehicle_scene.c src/vehicle_seat.c src/keymap.c src/wheel_input.c src/ui.c src/math3d.c src/telemetry.c src/dmabuf.c src/cdconfig.c src/i18n.c src/backend_sdl.c src/backend_headless.c src/backend_egl.c src/backend_vnc.c src/backend_fbdev.c src/backend_evdev.c src/evdev_util.c src/fbdev_pixfmt.c
+SOURCES = src/main.c src/wayland.c src/scene.c src/city_scene.c src/vehicle.c src/city.c src/city_stream.c src/vehicle_scene.c src/vehicle_seat.c src/keymap.c src/wheel_input.c src/ui.c src/math3d.c src/telemetry.c src/dmabuf.c src/cdconfig.c src/i18n.c src/backend_sdl.c src/backend_headless.c src/backend_egl.c src/backend_vnc.c src/backend_fbdev.c src/backend_evdev.c src/evdev_util.c src/fbdev_pixfmt.c
 PROTOCOLS = $(GEN)/xdg-shell-protocol.c $(GEN)/xdg-decoration-protocol.c $(GEN)/linux-dmabuf-protocol.c
 HEADERS = $(GEN)/xdg-shell-server.h $(GEN)/xdg-decoration-server.h $(GEN)/linux-dmabuf-server.h
 .PHONY: all clean test sanitize garage3d garage3d-test garage3d-clean
@@ -55,10 +55,12 @@ garage3d-clean:
 	$(MAKE) -C clients/garage3d clean
 $(BIN)/test-config: tests/test_config.c src/cdconfig.c include/cdconfig.h | $(BIN)
 	$(CC) -Iinclude $(CFLAGS) tests/test_config.c src/cdconfig.c -o $@ -lm
-$(BIN)/test-vehicle: tests/test_vehicle.c src/vehicle.c src/city.c src/math3d.c include/vehicle.h include/city.h include/math3d.h | $(BIN)
-	$(CC) -Iinclude $(CFLAGS) tests/test_vehicle.c src/vehicle.c src/city.c src/math3d.c -o $@ -lm
-$(BIN)/test-telemetry: tests/test_telemetry.c src/telemetry.c src/vehicle.c src/city.c src/math3d.c include/chrome.h include/telemetry.h | $(BIN)
-	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_telemetry.c src/telemetry.c src/vehicle.c src/city.c src/math3d.c -o $@ -lm
+$(BIN)/test-vehicle: tests/test_vehicle.c src/vehicle.c src/city.c src/city_stream.c src/math3d.c include/vehicle.h include/city.h include/math3d.h | $(BIN)
+	$(CC) -Iinclude $(CFLAGS) tests/test_vehicle.c src/city_stream.c src/vehicle.c src/city.c src/math3d.c -o $@ -lm
+$(BIN)/test-city: tests/test_city.c src/city.c src/city_stream.c src/vehicle.c src/math3d.c include/city.h include/vehicle.h include/math3d.h | $(BIN)
+	$(CC) -Iinclude $(CFLAGS) tests/test_city.c src/city.c src/city_stream.c src/vehicle.c src/math3d.c -o $@ -lm
+$(BIN)/test-telemetry: tests/test_telemetry.c src/telemetry.c src/vehicle.c src/city.c src/city_stream.c src/math3d.c include/chrome.h include/telemetry.h | $(BIN)
+	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_telemetry.c src/telemetry.c src/vehicle.c src/city.c src/city_stream.c src/math3d.c -o $@ -lm
 $(BIN)/test-keymap: tests/test_keymap.c src/keymap.c include/keymap.h | $(BIN)
 	$(CC) -Iinclude $(CFLAGS) tests/test_keymap.c src/keymap.c -o $@
 $(BIN)/test-wheel-input: tests/test_wheel_input.c src/wheel_input.c include/wheel_input.h | $(BIN)
@@ -67,10 +69,11 @@ $(BIN)/test-fbdev: tests/test_fbdev.c src/fbdev_pixfmt.c src/evdev_util.c includ
 	$(CC) -Iinclude $(CFLAGS) tests/test_fbdev.c src/fbdev_pixfmt.c src/evdev_util.c -o $@
 $(BIN)/test-i18n: tests/test_i18n.c src/i18n.c include/i18n.h | $(BIN)
 	$(CC) -Iinclude $(CFLAGS) tests/test_i18n.c src/i18n.c -o $@
-test: $(BIN)/test-math $(BIN)/test-config $(BIN)/test-vehicle $(BIN)/test-telemetry $(BIN)/test-keymap $(BIN)/test-wheel-input $(BIN)/test-fbdev $(BIN)/test-i18n $(BIN)/chromedrive-config
+test: $(BIN)/test-math $(BIN)/test-config $(BIN)/test-vehicle $(BIN)/test-city $(BIN)/test-telemetry $(BIN)/test-keymap $(BIN)/test-wheel-input $(BIN)/test-fbdev $(BIN)/test-i18n $(BIN)/chromedrive-config
 	./$(BIN)/test-math
 	./$(BIN)/test-config
 	./$(BIN)/test-vehicle
+	./$(BIN)/test-city
 	./$(BIN)/test-telemetry
 	./$(BIN)/test-keymap
 	./$(BIN)/test-wheel-input

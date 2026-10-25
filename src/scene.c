@@ -931,7 +931,7 @@ void scene_save_screenshot(Server *s,const char *path){
 }
 void scene_finish(Server *s){
  if(s->city_list)glDeleteLists(s->city_list,1);
- for(int i=0;i<4;i++)if(s->city_signs[i])glDeleteTextures(1,&s->city_signs[i]);
+ for(int i=0;i<10;i++)if(s->city_signs[i])glDeleteTextures(1,&s->city_signs[i]);
  GLuint textures[]={s->garage_tex,s->carbon_tex,s->console_tex,s->hub_tex,s->hud_tex,s->windshield_tex,s->help_tex,s->plate_tex,s->handles_tex};glDeleteTextures(sizeof(textures)/sizeof(textures[0]),textures);for(int i=0;i<6;i++)glDeleteTextures(1,&s->buttons[i].texture);for(int i=0;i<CD_MAX_MONITORS;i++)glDeleteTextures(1,&s->monitors[i].label);
  rtt_release(s);
 }

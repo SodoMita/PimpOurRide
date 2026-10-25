@@ -8,8 +8,8 @@
 static const CityBuilding buildings[] = {
  {-110,-145,28,24,46,0},{-32,-145,26,24,28,1},{32,-145,24,24,58,2},{110,-145,30,24,36,3},
  {-110,-94,26,18,32,1},{-32,-94,24,18,52,2},{32,-94,24,18,30,0},{110,-94,28,18,64,3},
- {-110,-42,26,20,24,2},{-32,-42,22,20,38,0},{32,-42,22,20,45,1},{110,-42,28,20,30,3},
- {-110,25,28,26,42,0},{-32,25,24,24,26,2},{32,25,24,24,34,1},{110,25,30,26,55,0},
+ {-110,-42,26,20,24,2},{-110,60,28,22,36,1},{110,60,28,22,47,2},{110,-42,28,20,30,3},
+ {-110,25,28,26,42,0},{-110,90,26,18,28,0},{110,90,26,18,40,3},{110,25,30,26,55,0},
 };
 
 static const CityGarage garages[] = {
@@ -17,6 +17,13 @@ static const CityGarage garages[] = {
  {-65,-95,24,24,1,"NEON WORKS / WEST"},
  {0,-115,34,24,0,"SKYLINE LAB / NORTH"},
  {65,-95,24,24,1,"HARBOR SERVICE / EAST"},
+};
+
+static const CityGarage campus_garages[] = {
+ {-34,-12,18,34,1,"VOLT WORKS / CAMPUS WEST"},
+ { 34,-12,18,34,1,"AERO LAB / CAMPUS EAST"},
+ {-34, 36,18,24,1,"PIXEL BODY / CAMPUS SOUTH"},
+ { 34, 36,18,24,1,"CHARGE POINT / CAMPUS SOUTH"},
 };
 
 typedef struct { float x,z,speed; const char *destination; bool precise; } RoutePoint;
@@ -38,7 +45,31 @@ static const RoutePoint route[] = {
  {-65.0f,-95,4,"NEON WORKS / WEST",false},
  {-65.0f,-80.0f,5,"CHROMEDRIVE / HOME",true},
  {-59.0f,-76.0f,6,"CHROMEDRIVE / HOME",false},
- {0,-76.0f,6,"CHROMEDRIVE / HOME",false},
+ {0,-76.0f,6,"NORTHERN EXPEDITION",false},
+ /* Branch north from the eastbound service junction. Turning around at an
+  * intermediate Home stop would require an unsafe U-turn inside its walls. */
+ {59,-76,5,"NORTHERN EXPEDITION",false},
+ {65,-76,4,"NORTHERN EXPEDITION",true},
+ {65,-160,8,"NEON TUNNEL / NORTH",false},
+ {65,-240,7,"NEON TUNNEL / NORTH",false},
+ {0,-240,6,"NEON TUNNEL / NORTH",true},
+ {0,-400,6,"CIVIC COMMONS / NORTH",true}, /* no early turn into tunnel walls */
+ {240,-400,8,"SERVICE ROW / GARAGE COURT",false},
+ {240,-320,7,"SERVICE ROW / GARAGE COURT",false},
+ {212,-320,4,"DISTRICT GARAGE / EAST",true},
+ {212,-280,4,"DISTRICT GARAGE / EAST",false},
+ {212,-248,4,"DISTRICT GARAGE / EAST",false},
+ {212,-240,5,"PARKING COURT / EAST",false},
+ {150,-240,5,"PARKING COURT / EAST",false},
+ {150,-320,5,"CIVIC COMMONS / SQUARE",false}, /* clear eastern parking aisle */
+ {40,-320,6,"CIVIC COMMONS / SQUARE",false},
+ {40,-304,4,"CIVIC COMMONS / SQUARE",false}, /* fountain remains 24 m away */
+ {80,-304,4,"CIVIC COMMONS / SQUARE",false},
+ {80,-240,6,"CHROMEDRIVE / HOME",false},
+ {65,-240,4,"CHROMEDRIVE / HOME",true},
+ {65,-160,8,"CHROMEDRIVE / HOME",false},
+ {65,-76,4,"CHROMEDRIVE / HOME",true}, /* fully leave Harbor before turning */
+ {0,-76,6,"CHROMEDRIVE / HOME",false},
  {0,-48,6,"CHROMEDRIVE / HOME",false},
  {0,-24,5,"CHROMEDRIVE / HOME",false},
  {0,0,3,"CHROMEDRIVE / HOME",false},
@@ -75,14 +106,26 @@ CityGarage city_garage(int index){
  if(index<0)index=0;if(index>=city_garage_count())index=city_garage_count()-1;
  return garages[index];
 }
+int city_campus_garage_count(void){return (int)(sizeof(campus_garages)/sizeof(campus_garages[0]));}
+CityGarage city_campus_garage(int index){
+ if(index<0)index=0;if(index>=city_campus_garage_count())index=city_campus_garage_count()-1;
+ return campus_garages[index];
+}
 const char *city_garage_at(Vec3 p){
  for(int i=0;i<city_garage_count();i++){
   CityGarage g=garages[i];
   if(fabsf(p.x-g.x)<=g.width*.5f&&fabsf(p.z-g.z)<=g.depth*.5f)return g.name;
  }
- return NULL;
+ for(int i=0;i<city_campus_garage_count();i++){
+  CityGarage g=campus_garages[i];
+  if(fabsf(p.x-g.x)<=g.width*.5f&&fabsf(p.z-g.z)<=g.depth*.5f)return g.name;
+ }
+ return city_stream_garage_at(p);
 }
 int city_nearest_route_point(Vec3 p){
+ /* A completed expedition parks nose-in. Always restart at the doorway exit,
+  * never at another nearby route coordinate inside the enclosed garage. */
+ if(city_garage_at(p)==garages[0].name&&p.z>-20.0f)return 0;
  int best=0;float best_d2=1e30f;
  for(int i=0;i<ROUTE_COUNT;i++){
   float dx=p.x-route[i].x,dz=p.z-route[i].z,d2=dx*dx+dz*dz;
@@ -217,10 +260,14 @@ VehicleInput city_autopilot_input(Vehicle *v,float dt){
  if(v->autopilot_crossing==2&&v->position.z>-50.0f)v->autopilot_crossing=0;
  float dx=route[i].x-v->position.x,dz=route[i].z-v->position.z;
  float distance=sqrtf(dx*dx+dz*dz);
- if(!v->autopilot_crossing&&(i==1||(i==12&&!v->autopilot_reverse))&&distance<8.0f){
-  /* Nose-in restart reverses through the same home junction and therefore
-   * uses the same all-or-nothing exit reservation as a forward first exit. */
-  int crossing=i==1?1:2;
+ int crossing=0;
+ if(i+1<ROUTE_COUNT){
+  if(route[i].x==0&&route[i].z==-48.0f&&route[i+1].z<route[i].z)crossing=1;
+  if(!v->autopilot_reverse&&route[i].x==0&&route[i].z==-76.0f&&route[i+1].z>route[i].z)crossing=2;
+ }
+ if(!v->autopilot_crossing&&crossing&&distance<8.0f){
+  /* Both service and northern tours reserve the same Home junction. Nose-in
+   * restart reverses through it and uses the identical all-or-nothing gate. */
   if(home_crossing_clear(v,i,crossing))v->autopilot_crossing=crossing;
   else{v->autopilot_yield=true;input.throttle=0;input.brake=1;return input;}
  }
@@ -327,6 +374,34 @@ void city_constrain_vehicle(Vehicle *v,Vec3 previous){
   }
   for(int w=0;w<2;w++)if(collide_obstacle(v,previous,extent,walls[w]))return;
  }
+ for(int i=0;i<city_campus_garage_count();i++){
+  CityGarage g=campus_garages[i];
+  Obstacle walls[2]={
+   {g.x-g.width*.5f,g.z,.6f,g.depth},
+   {g.x+g.width*.5f,g.z,.6f,g.depth}
+  };
+  for(int w=0;w<2;w++)if(collide_obstacle(v,previous,extent,walls[w]))return;
+ }
+ /* Only nearby streamed chunks can collide this tick. Their solids, garage
+  * side walls and tunnel walls are the same records used by the renderer;
+  * there is no invisible finite-world rectangle at the edge of the core. */
+ CityChunk centre=city_chunk_at(v->position);
+ for(int dx=-1;dx<=1;dx++)for(int dz=-1;dz<=1;dz++){
+  CityChunk chunk=city_chunk(centre.x+dx,centre.z+dz);
+  for(int i=0;i<city_chunk_solid_count(chunk);i++){
+   CitySolid s=city_chunk_solid(chunk,i);Obstacle o={s.x,s.z,s.width,s.depth};
+   if(collide_obstacle(v,previous,extent,o))return;
+  }
+  for(int i=0;i<city_chunk_garage_count(chunk);i++){
+   CityGarage g=city_chunk_garage(chunk,i);
+   Obstacle walls[2]={{g.x-g.width*.5f,g.z,.6f,g.depth},{g.x+g.width*.5f,g.z,.6f,g.depth}};
+   for(int w=0;w<2;w++)if(collide_obstacle(v,previous,extent,walls[w]))return;
+  }
+  for(int i=0;i<city_chunk_road_solid_count(chunk);i++){
+   CitySolid s=city_chunk_road_solid(chunk,i);Obstacle o={s.x,s.z,s.width,s.depth};
+   if(collide_obstacle(v,previous,extent,o))return;
+  }
+ }
  /* The exact poses drawn by city_scene.c are physical for manual and
   * automatic driving alike. Prediction should prevent contact; this resolver
   * is the final guard against a moving car entering an already safe pose. */
@@ -336,8 +411,6 @@ void city_constrain_vehicle(Vehicle *v,Vec3 previous){
   Obstacle o={car.position.x,car.position.z,e.x*2,e.z*2};
   if(collide_obstacle(v,previous,extent,o))return;
  }
- float old_x=v->position.x,old_z=v->position.z;
- v->position.x=clampf(v->position.x,-170.f+extent.x,170.f-extent.x);
- v->position.z=clampf(v->position.z,-235.f+extent.z,105.f-extent.z);
- if(old_x!=v->position.x||old_z!=v->position.z){v->speed*=.18f;v->collision=true;}
+ /* No position clamp: roads, land-use solids and collision continue
+  * deterministically for every finite world coordinate. */
 }

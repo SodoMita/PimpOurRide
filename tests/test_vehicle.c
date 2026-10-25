@@ -44,20 +44,31 @@ typedef struct {
  double phase;
  int ticks, contacts, yield_ticks;
  bool visited[4];
+ bool visited_tunnel,visited_square,visited_parking,visited_stream_garage;
+ int first_contact_tick,last_contact_tick,first_contact_wp,last_contact_wp;
+ Vec3 first_contact_position,last_contact_position;
 } TourResult;
 
 static TourResult run_city_tour(double phase) {
- TourResult r = {.phase = phase};
+ TourResult r = {.phase = phase,.first_contact_tick=-1};
  vehicle_init(&r.vehicle);
  r.vehicle.simulation_time = phase;
  vehicle_autopilot_set(&r.vehicle, true);
- while (r.vehicle.autopilot_enabled && r.ticks < 22000) {
+ while (r.vehicle.autopilot_enabled && r.ticks < 60000) {
   vehicle_step(&r.vehicle, (VehicleInput){0}, (float)VEHICLE_FIXED_DT);
   r.ticks++;
-  r.contacts += r.vehicle.collision;
+  if(r.vehicle.collision){
+   if(r.first_contact_tick<0){r.first_contact_tick=r.ticks;r.first_contact_wp=r.vehicle.autopilot_waypoint;r.first_contact_position=r.vehicle.position;}
+   r.last_contact_tick=r.ticks;r.last_contact_wp=r.vehicle.autopilot_waypoint;r.last_contact_position=r.vehicle.position;r.contacts++;
+  }
   r.yield_ticks += r.vehicle.autopilot_yield;
   const char *here = city_garage_at(r.vehicle.position);
   for (int g = 0; g < 4; g++) if (here == city_garage(g).name) r.visited[g] = true;
+  CityChunk chunk=city_chunk_at(r.vehicle.position);
+  r.visited_tunnel |= city_stream_is_tunnel(r.vehicle.position);
+  r.visited_square |= chunk.x==0&&chunk.z==-4&&chunk.feature==CITY_FEATURE_SQUARE;
+  r.visited_parking |= chunk.x==1&&chunk.z==-4&&chunk.feature==CITY_FEATURE_PARKING;
+  if(here==city_chunk_garage(city_chunk(2,-4),1).name)r.visited_stream_garage=true;
  }
  /* Autopilot requests a final brake at the home terminus. Keep simulating
   * after it disables so the test proves actual parked rest, not merely route
@@ -152,6 +163,19 @@ int main(void) {
        "connected city data is incomplete");
  CHECK(city_garage_at(v3(65, 0, -95)) == city_garage(3).name,
        "east service garage is not enterable/addressable");
+ /* The outer city has no finite-world clamp. A far road intersection stays
+  * untouched, while a streamed civic fountain is genuinely physical. */
+ Vehicle far; vehicle_init(&far); far.position = v3(8000, 0, 8000);
+ city_constrain_vehicle(&far, far.position);
+ CHECK(!far.collision && far.position.x == 8000.0f && far.position.z == 8000.0f,
+       "infinite-city road was clamped or obstructed: (%f,%f)", far.position.x, far.position.z);
+ CitySolid streamed = city_chunk_solid(city_chunk(0, -4), 0);
+ Vehicle civic; vehicle_init(&civic); civic.position = v3(streamed.x, 0, streamed.z);
+ city_constrain_vehicle(&civic, civic.position);
+ CHECK(civic.collision
+       && (fabsf(civic.position.x - streamed.x) > 0.01f
+           || fabsf(civic.position.z - streamed.z) > 0.01f),
+       "streamed square solid has no matching collision");
  Vec3 straight = vehicle_collision_extents(0), sideways = vehicle_collision_extents(90);
  CHECK(nearf(straight.x, VEHICLE_COLLISION_HALF_WIDTH, 1e-5f)
        && nearf(straight.z, VEHICLE_COLLISION_HALF_LENGTH, 1e-5f)
@@ -188,14 +212,19 @@ int main(void) {
    TourResult r = p == 0 ? first : run_city_tour(phases[p]);
    total_yields += r.yield_ticks;
    CHECK(r.visited[0] && r.visited[1] && r.visited[2] && r.visited[3]
-         && !r.vehicle.autopilot_enabled && r.ticks < 22000
+         && r.visited_tunnel && r.visited_square && r.visited_parking && r.visited_stream_garage
+         && !r.vehicle.autopilot_enabled && r.ticks < 60000
          && r.vehicle.distance_m > 450.0f && r.contacts == 0
          && fabsf(r.vehicle.speed) < 0.2f
          && city_garage_at(r.vehicle.position) == city_garage(0).name,
-         "phase %.1f tour failed: ticks=%d contacts=%d enabled=%d visited=%d%d%d%d speed=%f pos=(%f,%f) distance=%f",
+         "phase %.1f tour failed: ticks=%d contacts=%d enabled=%d visited=%d%d%d%d features=%d%d%d%d speed=%f pos=(%f,%f) distance=%f wp=%d",
          phases[p], r.ticks, r.contacts, r.vehicle.autopilot_enabled,
          r.visited[0], r.visited[1], r.visited[2], r.visited[3],
-         r.vehicle.speed, r.vehicle.position.x, r.vehicle.position.z, r.vehicle.distance_m);
+         r.visited_tunnel,r.visited_square,r.visited_parking,r.visited_stream_garage,
+         r.vehicle.speed, r.vehicle.position.x, r.vehicle.position.z, r.vehicle.distance_m,r.vehicle.autopilot_waypoint);
+   if(r.contacts)fprintf(stderr,"contact trace phase %.1f: first tick=%d wp=%d pos=(%f,%f), last tick=%d wp=%d pos=(%f,%f)\n",
+                         phases[p],r.first_contact_tick,r.first_contact_wp,r.first_contact_position.x,r.first_contact_position.z,
+                         r.last_contact_tick,r.last_contact_wp,r.last_contact_position.x,r.last_contact_position.z);
 
    Vehicle exit = r.vehicle;
    vehicle_autopilot_set(&exit, true);

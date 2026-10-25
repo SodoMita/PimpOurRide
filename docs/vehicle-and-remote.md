@@ -173,26 +173,41 @@ subtracted from a `float` near 69 kWh.
 
 ### Connected city, garages, and autopilot
 
-`src/city.c` owns the shared city model and navigation; `src/city_scene.c`
-renders that same geometry. Three connected streets and two cross streets join
-four enterable destinations: **ChromeDrive / Home**, **Neon Works / West**,
-**Skyline Lab / North**, and **Harbor Service / East**. The remote garages have
-real side walls, roofs, service benches, two-sided illuminated signs, and clear
-drive-through lanes. Sixteen towers, lit windows, sidewalks, lane markings,
-crosswalks, streetlights, rooftop beacons, rain, and eight moving hover cars
-provide actual 3D surroundings and ambient activity. Static city geometry is
-cached in a GL display list; weather uses render time, while traffic uses the
-same authoritative fixed-step simulation clock as control and collision.
+`src/city.c` owns the protected core, navigation, traffic and collision;
+`src/city_stream.c` is the allocation-free procedural model; and
+`src/city_scene.c` renders those same records. Each 80 m chunk owns its minimum
+X/Z road edges and land-use interior. Integer hashing makes districts, buildings,
+parked vehicles and garages identical on every visit, including negative and
+far-world coordinates. Six coherent districts use local roads, alleys, avenues,
+boulevards and covered tunnels, with blocks, public squares, parking courts,
+parks and garage courts. Tunnel walls have matching 12 m intersection openings;
+garage walls, fountains, kiosks, trees and parked cars are physical rather than
+renderer-only decoration.
+
+The aligned 20-chunk core preserves the detailed Home hall and original city.
+Home stands in a paved off-street campus with four additional physical workshops,
+not on a public through-road. Three connected streets and two cross streets join
+**ChromeDrive / Home**, **Neon Works / West**, **Skyline Lab / North**, and
+**Harbor Service / East**. Remote and streamed garages have real side walls,
+roofs, service benches and clear drive-through lanes. Core geometry is cached in
+a GL display list; nearby streamed chunks are emitted from the same data used by
+collision and garage lookup. Vehicle-relative rain is suppressed inside garages
+and tunnels. Eight moving hover cars use the authoritative fixed-step simulation
+clock for rendering, prediction and collision.
 
 Meta+A toggles autopilot in either input-ownership mode. Engagement requests
 both doors to close and holds the parking brake until they have physically
 finished. Each 120 Hz tick then produces an ordinary `VehicleInput`: throttle,
 regenerative/service brake, and steering pass through the same hover dynamics,
 battery/thermal telemetry, and collision path as manual input. There is no
-render-time translation of the car along a spline. The deterministic route
-visits all three remote garages and parks at home. Starting another run after
-parking nose-in first reverses out of the home doorway, then resumes forward
-driving. Ambient traffic follows deterministic closed-form routes on that same
+render-time translation of the car along a spline. The deterministic expedition
+visits all three original remote garages, continues through the northern tunnel,
+a streamed district garage, a parking court and civic square, then returns along
+Harbor's open drive-through axis and parks at Home. It does not attempt a U-turn
+inside the enclosed Home hall. Starting another run after parking nose-in first
+reverses out of the home doorway, then resumes forward driving. Multi-phase
+fixed-step tests require every destination, actual parked rest and zero contacts.
+Ambient traffic follows deterministic closed-form routes on that same
 clock; it is not a substitute for the main car's simulated controls. Rendering,
 predictive yielding/braking, and collision fallback use identical traffic poses
 and body dimensions. Crossing reservations protect corners and Home exits;
@@ -201,8 +216,8 @@ last-resort contact resolution remains enabled rather than hiding traffic.
 In Drive mode, pressing a driving key immediately disengages autopilot and
 returns manual control. In Client mode those keys still go to the focused
 Wayland application, so it is possible to work while the car drives. F10
-recovery also disengages autopilot. The native HUD shows the current garage,
-next autopilot destination, and live FOV; the browser toolbar exposes the same
+recovery also disengages autopilot. The native HUD shows the current garage or
+district/land-use area, next autopilot destination, and live FOV; the browser toolbar exposes the same
 Meta+A shortcut.
 
 ### One rig, exact picking

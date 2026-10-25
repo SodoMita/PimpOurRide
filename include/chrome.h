@@ -191,7 +191,7 @@ SdlTouchFinger sdl_touch[CD_MAX_TOUCH_POINTS];int sdl_touch_chrome_id;
  GLuint scene_list;bool rebuild_scene;
  /* Cached real city geometry and destination signs. Dynamic traffic/rain are
   * rendered separately from the static display list. */
- GLuint city_list,city_signs[4];
+ GLuint city_list,city_signs[10]; /* route + Home campus + shared district-garage signs */
  bool screenshot_requested;char screenshot_path[4096];
 };
 bool server_init(Server *s,const char *socket_name);

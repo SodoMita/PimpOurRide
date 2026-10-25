@@ -10,9 +10,12 @@ spatial monitor** mounted around the windshield.
 The cockpit now belongs to a **spline-built electric hover car**. Its modeled
 82 kWh skateboard pack, dual drive units, power electronics, charging hardware,
 and thermal loop can be inspected in an exterior systems cutaway. Fixed-step
-120 Hz dynamics make the whole car/cockpit/monitor rig drive through the home
-garage and a connected 3D city—without pretending to simulate wheels. Meta+A
-engages a deterministic garage-to-garage autopilot using the same throttle,
+120 Hz dynamics make the whole car/cockpit/monitor rig drive through an off-street
+home garage campus and a deterministic infinite 3D city—without pretending to
+simulate wheels. Streamed 80 m districts contain local streets, alleys, avenues,
+boulevards, covered tunnels, public squares, parking courts, parks, and other
+enterable garages. Meta+A engages a deterministic garage-to-garage/northern-district
+autopilot using the same throttle,
 brake and steering inputs as manual driving. F7 switches the physical steering
 wheel and driving keys between Wayland-client input and hover-car control; F8
 cycles driver, smooth exterior-concept, and EV-systems cameras, while F9
@@ -307,7 +310,7 @@ reverse proxy and firewall before exposing them to an untrusted network.
 | F3 | Toggle a tight focus zoom on the active screen |
 | F4 | Cycle underglow color (violet / ice blue / acid lime) |
 | Meta+O | Open or close both full-height hinged doors (sill, glass, roof rail, trim and door displays move too) |
-| Meta+A | Toggle city autopilot; closes the doors first, tours the other garages, and parks at home |
+| Meta+A | Toggle city autopilot; closes the doors, tours service garages + northern tunnel/square/parking/garage districts, and parks at home |
 | Meta+Shift+Q | Quit ChromeDrive immediately (also works in Arrange mode) |
 | F5 | Unbound in the compositor; reserved for browser/client restart or reload |
 | F6 | Toggle Arrange for the selected screen (move / rotate / roll / scale / resize) |
@@ -423,6 +426,9 @@ Launch commands for the dashboard buttons can be overridden with the
 ```
 include/chrome.h, math3d.h, vehicle.h, telemetry.h, cdconfig.h  shared compositor APIs/types
 src/math3d.c                 camera rays, plane intersection, car-part mounts + Arrange transforms
+src/city.c                   core city, campus, traffic, safe autopilot + shared collision
+src/city_stream.c            deterministic infinite districts, roads, land use + streamed solids
+src/city_scene.c             matching core/streamed city, garages, tunnels + weather renderer
 src/vehicle.c                fixed-step hover EV dynamics, splines, exact rig transforms
 src/vehicle_scene.c          electric systems, spline cables, hover pods + render orchestration
 src/vehicle_seat.c           sculpted stitched/perforated seating shared by every camera view
@@ -451,7 +457,8 @@ docs/configuration.md          config files, launch-menu editing, hot-reload sem
 docs/vehicle-and-remote.md    EV physics/model, browser stack, Wayland/EGL/frame lifecycle
 tests/test_math.c             raycast/picking, mounts and Arrange-transform unit tests
 tests/test_config.c           INI store round-trip tests
-tests/test_vehicle.c          spline, EV dynamics, transform and fixed-step tests
+tests/test_vehicle.c          spline/EV tests + multi-phase safe service and northern autopilot tours
+tests/test_city.c             infinite determinism, district/road coverage, clearance + Home campus
 tests/test_telemetry.c        shared cluster telemetry and seqlock tests
 tests/test_keymap.c           RFB typing/WASD/function-key mapping regressions
 tests/test_fbdev.c            pure fbdev pixel packing/flip/stride/geometry/page tests + evdev_util (abs scaling, touch-id pool)

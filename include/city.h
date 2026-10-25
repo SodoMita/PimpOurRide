@@ -17,6 +17,77 @@ typedef struct {
  const char *name;
 } CityGarage;
 
+/* Infinite city streaming. A chunk owns the roads on its minimum X/Z edges
+ * and the land inside it. All values are pure functions of integer chunk
+ * coordinates: no frame-rate-dependent random state, allocation, or finite
+ * world origin is involved. The aligned home core remains hand-authored. */
+#define CITY_STREAM_CHUNK_SIZE 80.0f
+#define CITY_STREAM_RADIUS 2
+
+typedef enum {
+ CITY_DISTRICT_DOWNTOWN = 0,
+ CITY_DISTRICT_RESIDENTIAL,
+ CITY_DISTRICT_INDUSTRIAL,
+ CITY_DISTRICT_PARK,
+ CITY_DISTRICT_CIVIC,
+ CITY_DISTRICT_SERVICE
+} CityDistrict;
+typedef enum {
+ CITY_FEATURE_BLOCKS = 0,
+ CITY_FEATURE_SQUARE,
+ CITY_FEATURE_PARKING,
+ CITY_FEATURE_PARK,
+ CITY_FEATURE_GARAGES
+} CityFeature;
+typedef enum {
+ CITY_ROAD_LOCAL = 0,
+ CITY_ROAD_ALLEY,
+ CITY_ROAD_AVENUE,
+ CITY_ROAD_BOULEVARD,
+ CITY_ROAD_TUNNEL
+} CityRoadType;
+typedef enum {
+ CITY_SOLID_BUILDING = 0,
+ CITY_SOLID_FOUNTAIN,
+ CITY_SOLID_PARKED_CAR,
+ CITY_SOLID_TREE,
+ CITY_SOLID_KIOSK,
+ CITY_SOLID_TUNNEL_WALL
+} CitySolidKind;
+typedef struct {
+ float x,z,width,depth,height;
+ int style;
+ CitySolidKind kind;
+} CitySolid;
+typedef struct {
+ int x,z;
+ CityDistrict district;
+ CityFeature feature;
+} CityChunk;
+
+CityChunk city_chunk(int x,int z);
+CityChunk city_chunk_at(Vec3 position);
+bool city_stream_chunk_is_core(CityChunk chunk);
+CityDistrict city_district_at(Vec3 position);
+const char *city_district_name(CityDistrict district);
+const char *city_feature_name(CityFeature feature);
+CityRoadType city_road_type(int edge,int segment,bool vertical);
+float city_road_width(CityRoadType type);
+bool city_stream_is_tunnel(Vec3 position);
+int city_chunk_solid_count(CityChunk chunk);
+CitySolid city_chunk_solid(CityChunk chunk,int index);
+int city_chunk_garage_count(CityChunk chunk);
+CityGarage city_chunk_garage(CityChunk chunk,int index);
+int city_chunk_road_solid_count(CityChunk chunk);
+CitySolid city_chunk_road_solid(CityChunk chunk,int index);
+const char *city_stream_garage_at(Vec3 position);
+
+/* Additional physical workshops around Home. These are deliberately separate
+ * from the four autopilot destinations, so campus expansion cannot silently
+ * change the validated tour's destination indices. */
+int city_campus_garage_count(void);
+CityGarage city_campus_garage(int index);
+
 /* Ambient cars are part of the simulation, not renderer-only decoration.
  * These dimensions cover the visible body and lamps; poses are evaluated
  * from the same fixed-step clock by rendering, control and collision. */

@@ -126,7 +126,16 @@ static void hud(Server *s){
  rgba(c,.39,.45,.56,.2);cairo_set_line_width(c,1);line(c,28,91,w-28,91);
  const char *view=s->camera_mode==VEHICLE_CAMERA_DRIVER?(s->camera_seat==VEHICLE_SEAT_DRIVER?tr("DRIVER SEAT  /  FIRST PERSON"):tr("PASSENGER SEAT  /  FIRST PERSON")):s->camera_mode==VEHICLE_CAMERA_CHASE?tr("EXTERIOR VIEW  /  CONCEPT SPLINE BODY"):tr("EV SYSTEMS  /  800 V CUTAWAY");
  rgb(c,.42,.49,.6);mono(c,29,116,10,view);snprintf(b,sizeof(b),tr("%02d CONNECTED  /  %02d BAYS"),count,CD_APP_BAYS);mono(c,w-237,116,10,b);
- const char *garage=city_garage_at(s->vehicle.position);if(garage){rgb(c,.38,.66,.72);mono(c,29,135,9,garage);}
+ const char *garage=city_garage_at(s->vehicle.position);
+ CityChunk city_here=city_chunk_at(s->vehicle.position);
+ if(garage)snprintf(b,sizeof(b),"%s",garage);
+ else if(city_stream_is_tunnel(s->vehicle.position))snprintf(b,sizeof(b),"COVERED TUNNEL / THROUGH ROAD");
+ else if(city_stream_chunk_is_core(city_here)&&fabsf(s->vehicle.position.x)<=55.0f
+         &&s->vehicle.position.z>=-50.0f&&s->vehicle.position.z<=60.0f)
+  snprintf(b,sizeof(b),"HOME GARAGE CAMPUS / OFF-STREET COURT");
+ else if(city_stream_chunk_is_core(city_here))snprintf(b,sizeof(b),"CHROMEDRIVE CORE / CITY STREETS");
+ else snprintf(b,sizeof(b),"%s / %s",city_district_name(city_here.district),city_feature_name(city_here.feature));
+ rgb(c,.38,.66,.72);mono(c,29,135,9,b);
  snprintf(b,sizeof(b),tr("FOV %.1f DEG"),s->fov);rgb(c,.38,.49,.60);mono(c,w-237,135,9,b);
  if(w>1050){snprintf(b,sizeof(b),tr("%3.0f%% PACK  /  %+6.1f KW"),100*s->vehicle.battery_kwh/VEHICLE_BATTERY_CAPACITY_KWH,s->vehicle.power_kw);mono(c,w/2-78,116,10,b);}
  /* The control hints are chrome, not fake app controls. The actual buttons are 3D. */
