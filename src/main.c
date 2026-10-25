@@ -280,7 +280,14 @@ static void config_poll(Server *s){
 void app_exec(Server *s,const char *command){
  if(!command||!*command)return;
  if(s->child_count>=128){app_notice(s,tr("Child process limit reached"));return;}
- posix_spawnattr_t attr;posix_spawnattr_init(&attr);posix_spawnattr_setflags(&attr,POSIX_SPAWN_SETPGROUP);posix_spawnattr_setpgroup(&attr,0);
+ posix_spawnattr_t attr;posix_spawnattr_init(&attr);
+ short spawn_flags=POSIX_SPAWN_SETPGROUP;sigset_t child_mask;
+ /* signalfd requires SIGUSR1/2 blocked in every compositor thread. Clients
+  * must inherit the caller's original mask, not our private VT mask. */
+ if(backend_vt_child_mask(&child_mask)){
+  posix_spawnattr_setsigmask(&attr,&child_mask);spawn_flags|=POSIX_SPAWN_SETSIGMASK;
+ }
+ posix_spawnattr_setflags(&attr,spawn_flags);posix_spawnattr_setpgroup(&attr,0);
  char *args[]={"sh","-lc",(char*)command,NULL};pid_t pid;int err=posix_spawn(&pid,"/bin/sh",NULL,&attr,args,environ);posix_spawnattr_destroy(&attr);
  if(err){app_notice(s,tr("Launch failed: %s"),strerror(err));fprintf(stderr,"[launch] %s: %s\n",command,strerror(err));return;}
  s->children[s->child_count++]=pid;fprintf(stderr,"[launch] pid=%d %s\n",(int)pid,command);app_notice(s,tr("Connecting a new native Wayland client..."));
@@ -773,20 +780,28 @@ static const char *backend_label(Backend backend){
  }
 }
 static void backend_poll(Server *s){
+ backend_vt_service(s);
+ if(!s->running||backend_vt_is_suspended(s))return;
  switch(s->backend){
  case CD_BACKEND_HEADLESS:backend_headless_poll(s);break;
  case CD_BACKEND_WINDOWED:backend_sdl_poll(s);break;
  case CD_BACKEND_FBDEV:backend_fbdev_poll(s);break;
  case CD_BACKEND_DRM:backend_drm_poll(s);break;
  }
+ /* A signal may have arrived while evdev/DRM events were being drained. */
+ backend_vt_service(s);
 }
-static void backend_present(Server *s){
+static PresentResult backend_present(Server *s){
+ PresentResult result=CD_PRESENT_OK;
  switch(s->backend){
  case CD_BACKEND_HEADLESS:backend_headless_present(s);break;
  case CD_BACKEND_WINDOWED:backend_sdl_present(s);break;
  case CD_BACKEND_FBDEV:backend_fbdev_present(s);break;
- case CD_BACKEND_DRM:backend_drm_present(s);break;
+ case CD_BACKEND_DRM:result=backend_drm_present(s);break;
  }
+ /* A VT-aware page-flip wait returns before handling the signal, avoiding
+  * recursive release from inside the wait. Service it before frame_done. */
+ backend_vt_service(s);return result;
 }
 static void backend_shutdown(Server *s){
  switch(s->backend){
@@ -796,7 +811,7 @@ static void backend_shutdown(Server *s){
  case CD_BACKEND_DRM:backend_drm_shutdown(s);break;
  }
 }
-static void usage(const char *name){printf("ChromeDrive " CD_VERSION " \xe2\x80\x94 native, first-person Wayland cockpit\n\nUsage: %s [options]\n  --demo                Start the configured autostart Wayland clients\n  --socket NAME         Wayland socket (default: automatic)\n  --exec COMMAND        Launch an extra Wayland client (repeatable)\n  --size WIDTHxHEIGHT   Framebuffer/host window size (default 1600x1000)\n  --fps N               Frame cap, 1..120 (default 60)\n  --backend MODE        headless (default) | windowed | fbdev | drm\n  --headless            Alias for --backend headless: surfaceless EGL + built-in VNC\n  --windowed            Alias for --backend windowed: SDL2/GLX dev window on X\n  --fbdev [DEVICE]      Direct Linux framebuffer output (default /dev/fb0)\n  --fbdev-device PATH   Framebuffer device for --backend fbdev\n  --drm [DEVICE]        Direct DRM/KMS + GBM/EGL output (default /dev/dri/card0)\n  --drm-device PATH     KMS card device for --backend drm\n  --drm-mode WxH        Require an exact KMS mode; default current or preferred\n  --evdev / --no-evdev  Enable/disable local input for fbdev and DRM\n  --grab-input          EVIOCGRAB local devices (warns about VT lockout)\n  --input-device PATH   Restrict local input (repeatable, max 8)\n  --fbdev-modeset       Select fbdev backend and request modeset to configured render size\n  --fbdev-mode WxH[@BPP] Select fbdev backend, imply modeset, set size/BPP (BPP in 16,24,32)\n  --no-fbdev-vsync      Do not wait for FBIO_WAITFORVSYNC\n  --no-fbdev-pan        Do not use FBIOPAN_DISPLAY double buffering\n  --fbdev-vnc-mirror    Loopback-only RFB input/output companion for fbdev\n  --vnc-mirror          Alias for --fbdev-vnc-mirror\n  --fbdev-evdev         Enable local evdev input for direct backends (default: on)\n  --no-fbdev-evdev      Disable local evdev input for direct backends\n  --fbdev-grab-input    Grab evdev devices (EVIOCGRAB; warns about VT lockout)\n  --fbdev-input-device PATH Restrict evdev to explicit device (repeatable, max 8)\n  --vnc-port N          VNC port for headless or the fbdev mirror (default 5900)\n  --fullscreen          --windowed only: start fullscreen, F11 to leave\n  --exit-after SECONDS   Useful for automated checks\n  --screenshot PATH     Capture a WebP after 3 seconds\n  --config PATH         Config file (default: ~/.config/chromedrive/chromedrive.conf)\n  --no-config           Ignore the config file entirely\n  --help                Show this help\n\nfbdev adopts the current kernel framebuffer mode by default (no modesetting);\nwith --fbdev-modeset or --fbdev-mode it requests a modeset via FBIOPUT_VSCREENINFO.\nThe original mode is restored on exit. Local evdev input (keyboard/mouse/touchscreen)\nis enabled by default for fbdev and DRM; use --no-evdev to disable. Explicit devices\nvia --input-device replace auto-enumeration. Startup-only enumeration; no hotplug.\nDRM/KMS uses direct GBM/EGL scanout with page-flip events (no readback blit).\nIt retains the current mode or chooses the preferred one; --drm-mode requires an exact mode.\nLocal evdev is shared by fbdev and DRM, with monotonic kernel timestamps and a bounded async queue.\n\nF1 help | F2 selected seat | F3 focus/next | F4 neon | F6 arrange | Meta+H HUD | Meta+O doors\nF7 client/drive input | F8 driver/exterior/systems | F9 switch seat | F10 recover car\nMeta+Shift+Q quit | red dash EXIT button: press twice\nF5 is unbound for browser/client restart or reload\nDrive: WASD/arrows + Space + drag wheel\nMiddle-drag/VNC-drag to look | Drag a titlebar to move | HANDLES shows the Arrange gizmo\nArrange: Tab next window, Esc/F6 exit | Ctrl+Alt+Enter new terminal\n",name);}
+static void usage(const char *name){printf("ChromeDrive " CD_VERSION " \xe2\x80\x94 native, first-person Wayland cockpit\n\nUsage: %s [options]\n  --demo                Start the configured autostart Wayland clients\n  --socket NAME         Wayland socket (default: automatic)\n  --exec COMMAND        Launch an extra Wayland client (repeatable)\n  --size WIDTHxHEIGHT   Framebuffer/host window size (default 1600x1000)\n  --fps N               Frame cap, 1..120 (default 60)\n  --backend MODE        headless (default) | windowed | fbdev | drm\n  --headless            Alias for --backend headless: surfaceless EGL + built-in VNC\n  --windowed            Alias for --backend windowed: SDL2/GLX dev window on X\n  --fbdev [DEVICE]      Direct Linux framebuffer output (default /dev/fb0)\n  --fbdev-device PATH   Framebuffer device for --backend fbdev\n  --drm [DEVICE]        Direct DRM/KMS + GBM/EGL output (default /dev/dri/card0)\n  --drm-device PATH     KMS card device for --backend drm\n  --drm-mode WxH        Require an exact KMS mode; default current or preferred\n  --evdev / --no-evdev  Enable/disable local input for fbdev and DRM\n  --grab-input          EVIOCGRAB local devices (DRM needs managed VT or downgrades)\n  --input-device PATH   Restrict local input (repeatable, max 8)\n  --fbdev-modeset       Select fbdev backend and request modeset to configured render size\n  --fbdev-mode WxH[@BPP] Select fbdev backend, imply modeset, set size/BPP (BPP in 16,24,32)\n  --no-fbdev-vsync      Do not wait for FBIO_WAITFORVSYNC\n  --no-fbdev-pan        Do not use FBIOPAN_DISPLAY double buffering\n  --fbdev-vnc-mirror    Loopback-only RFB input/output companion for fbdev\n  --vnc-mirror          Alias for --fbdev-vnc-mirror\n  --fbdev-evdev         Enable local evdev input for direct backends (default: on)\n  --no-fbdev-evdev      Disable local evdev input for direct backends\n  --fbdev-grab-input    Grab evdev devices (fbdev VT lockout warning; DRM managed VT)\n  --fbdev-input-device PATH Restrict evdev to explicit device (repeatable, max 8)\n  --vnc-port N          VNC port for headless or the fbdev mirror (default 5900)\n  --fullscreen          --windowed only: start fullscreen, F11 to leave\n  --exit-after SECONDS   Useful for automated checks\n  --screenshot PATH     Capture a WebP after 3 seconds\n  --config PATH         Config file (default: ~/.config/chromedrive/chromedrive.conf)\n  --no-config           Ignore the config file entirely\n  --help                Show this help\n\nfbdev adopts the current kernel framebuffer mode by default (no modesetting);\nwith --fbdev-modeset or --fbdev-mode it requests a modeset via FBIOPUT_VSCREENINFO.\nThe original mode is restored on exit. Local evdev input (keyboard/mouse/touchscreen)\nis enabled by default for fbdev and DRM; use --no-evdev to disable. Explicit devices\nvia --input-device replace auto-enumeration. Startup-only enumeration; no hotplug.\nDRM/KMS uses direct GBM/EGL scanout with page-flip events (no readback blit).\nIt retains the current mode or chooses the preferred one; --drm-mode requires an exact mode.\nOn a controlling Linux VT, physical Ctrl+Alt+F1..F12 releases input/DRM master and resumes on return.\nWithout a managed VT, DRM downgrades input grabbing; fbdev VT switching remains unmanaged.\nLocal evdev is shared by fbdev and DRM, with monotonic kernel timestamps and a bounded async queue.\n\nF1 help | F2 selected seat | F3 focus/next | F4 neon | F6 arrange | Meta+H HUD | Meta+O doors\nF7 client/drive input | F8 driver/exterior/systems | F9 switch seat | F10 recover car\nMeta+Shift+Q quit | red dash EXIT button: press twice\nF5 is unbound for browser/client restart or reload\nDrive: WASD/arrows + Space + drag wheel\nMiddle-drag/VNC-drag to look | Drag a titlebar to move | HANDLES shows the Arrange gizmo\nArrange: Tab next window, Esc/F6 exit | Ctrl+Alt+Enter new terminal\n",name);}
 int main(int argc,char **argv){
  Server s={.width=1600,.height=1000,.fps_limit=60,.running=true,.hud_visible=true,.hover_button=-1,.hover_close=-1,.keymap_fd=-1,.arrange_slot=-1,.frame_drag_slot=-1,.fov=65,.target_fov=65,.base_fov=65,.backend=CD_BACKEND_HEADLESS,.fbdev_vsync=true,.fbdev_pan=true,.fbdev_evdev=true,.fbdev_grab_input=false,.vnc_port=5900,.telemetry_fd=-1,.fbdev_modeset=false,.fbdev_mode_width=0,.fbdev_mode_height=0,.fbdev_mode_bpp=0,.fbdev_input_device_count=0,.render_to_texture=true,.render_scale=1,.render_mag_filter=GL_LINEAR,.render_min_filter=GL_LINEAR_MIPMAP_LINEAR};
  vehicle_init(&s.vehicle);
@@ -865,6 +880,9 @@ int main(int argc,char **argv){
  apply_language(&s,true);
  if(!getenv("XDG_RUNTIME_DIR")){snprintf(s.runtime,sizeof(s.runtime),"/tmp/chromedrive-%d",(int)getuid());if(mkdir(s.runtime,0700)<0&&errno!=EEXIST){perror("runtime directory");return 1;}struct stat st;if(stat(s.runtime,&st)<0||st.st_uid!=getuid()||(st.st_mode&0077)){fprintf(stderr,"Runtime directory must be private and owned by you\n");return 1;}setenv("XDG_RUNTIME_DIR",s.runtime,1);}else snprintf(s.runtime,sizeof(s.runtime),"%s",getenv("XDG_RUNTIME_DIR"));
  signal(SIGINT,on_signal);signal(SIGTERM,on_signal);signal(SIGPIPE,SIG_IGN);
+ /* signalfd is process-wide only if these signals are blocked before SDL or
+  * any evdev thread can be created. backend_vt_init() is intentionally later. */
+ if(s.backend==CD_BACKEND_DRM)backend_vt_block_signals();
  if(SDL_Init(SDL_INIT_TIMER)<0){fprintf(stderr,"SDL: %s\n",SDL_GetError());return 1;} /* timer only: used for clock_now()/frame pacing in both backends */
  bool backend_ok=false;
  switch(s.backend){
@@ -904,6 +922,12 @@ int main(int argc,char **argv){
  while(s.running&&!interrupted){
   double frame_start=clock_now();s.time=frame_start-s.start_time;s.dt=frame_start-last;last=frame_start;
   backend_poll(&s);
+  if(!s.running)break;
+  if(backend_vt_is_suspended(&s)){
+   /* Wayland dispatch, physics, GL and frame callbacks all pause with the
+    * session. A finite signalfd wait still lets SIGINT/SIGTERM leave. */
+   backend_vt_wait(&s,50);continue;
+  }
   config_poll(&s);
   server_dispatch(&s);
   int status;pid_t pid;while((pid=waitpid(-1,&status,WNOHANG))>0){for(int i=0;i<s.child_count;i++)if(s.children[i]==pid){s.children[i]=s.children[--s.child_count];break;}if(WIFEXITED(status)&&WEXITSTATUS(status)!=0){fprintf(stderr,"[launch] pid %d exited %d\n",(int)pid,WEXITSTATUS(status));app_notice(&s,tr("Client exited with status %d — see launch log"),WEXITSTATUS(status));}}
@@ -938,15 +962,18 @@ int main(int argc,char **argv){
    * the HUD is composited after the offscreen sample at output resolution. */
   ui_draw_overlay(&s);
   if(auto_screenshot&&s.time>3){s.screenshot_requested=true;auto_screenshot=false;}if(s.screenshot_requested){scene_save_screenshot(&s,s.screenshot_path);s.screenshot_requested=false;app_notice(&s,tr("Screenshot saved"));}
-  backend_present(&s);
+  PresentResult presented=backend_present(&s);
   /* Frame callback render loop pattern:
    * Only AFTER scene_render() and backend_*_present() have sampled the newly
    * committed Wayland textures and pushed the finished frame to RFB/SDL—or
    * completed the DRM page-flip event—do we fire wl_callback.done(compositor_ms)
    * via server_frame_done() and flush the client sockets. This paces Wayland
    * clients to actual display consumption rather than allowing them to spin in
-   * an unthrottled render loop. */
-  server_frame_done(&s,(uint32_t)(clock_now()*1000));wl_display_flush_clients(s.display);s.frames++;fps_frames++;
+   * an unthrottled render loop. A VT-interrupted/failed present is not a
+   * completed frame and therefore cannot release waiting client callbacks. */
+  if(s.running&&presented==CD_PRESENT_OK&&!backend_vt_is_suspended(&s)){
+   server_frame_done(&s,(uint32_t)(clock_now()*1000));wl_display_flush_clients(s.display);s.frames++;fps_frames++;
+  }
   if(frame_start-fps_start>.5){s.fps=fps_frames/(frame_start-fps_start);fps_frames=0;fps_start=frame_start;}
   if(exit_after>0&&s.time>=exit_after)s.running=false;
   double remain=1.0/s.fps_limit-(clock_now()-frame_start);if(remain>0)SDL_Delay((uint32_t)(remain*1000));

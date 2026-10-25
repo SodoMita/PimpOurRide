@@ -132,6 +132,7 @@ static void evdev_release_device_state(Server *s, EvdevDevice *d, uint32_t time)
     d->current_slot=0;
     for(int i=0;i<EVDEV_MAX_SLOTS;i++)d->mt_fingers[i].tracking_id=-1;
     d->st_finger.tracking_id=-1;
+    evdev_vt_shortcut_reset(&d->vt_shortcut);
 }
 
 /* A device loss, SYN_DROPPED, or queue overflow invalidates compositor-local
@@ -270,6 +271,29 @@ static bool evdev_open_device(EvdevDevice *d, const char *path, bool grab) {
 
 static void evdev_process_key(Server *s, EvdevDevice *d, uint16_t code, int value, uint32_t time) {
     if (value == 2) return;
+    /* Managed VT switching is a physical-keyboard, DRM-only feature. SDL, RFB
+     * and app_global_key() deliberately never reach this path, and fbdev keeps
+     * its previous unmanaged behavior. */
+    if (s->backend == CD_BACKEND_DRM) {
+        evdev_vt_shortcut_update_modifiers(&d->vt_shortcut, code, value);
+        if (backend_vt_managed(s)) {
+            /* Modifiers may be split across physical keyboards, but every
+             * part of the chord must come from evdev. Server.keys is shared
+             * with SDL/VNC and is deliberately not consulted here. */
+            EvdevState *st = evdev_state(s);
+            bool ctrl = false, alt = false;
+            if (st) for (int i = 0; i < st->device_count; i++) {
+                ctrl |= evdev_vt_shortcut_ctrl(&st->devices[i].vt_shortcut);
+                alt |= evdev_vt_shortcut_alt(&st->devices[i].vt_shortcut);
+            }
+            int vt = evdev_vt_shortcut(&d->vt_shortcut, code, value, ctrl, alt);
+            if (vt < 0) return;
+            if (vt > 0) {
+                backend_vt_request(s, vt);
+                return;
+            }
+        }
+    }
 
     if (code < 0x100) {
         if (code == KEY_LEFTSHIFT || code == KEY_RIGHTSHIFT) {
@@ -877,15 +901,20 @@ static bool evdev_async_start(EvdevState *st){
     if(!a->queue_initialized||a->epoll_fd<0||a->wake_fd<0)goto fail;
     struct epoll_event wake={.events=EPOLLIN,.data.u32=UINT32_MAX};
     if(epoll_ctl(a->epoll_fd,EPOLL_CTL_ADD,a->wake_fd,&wake)<0)goto fail;
+    int active_devices=0;
     for(int i=0;i<st->device_count;i++){
+        /* Disconnected slots stay stable for queued event indices, but their
+         * closed descriptors must not prevent a later VT resume. */
+        if(st->devices[i].fd<0)continue;
         struct epoll_event event={.events=EPOLLIN,.data.u32=(uint32_t)i};
         if(epoll_ctl(a->epoll_fd,EPOLL_CTL_ADD,st->devices[i].fd,&event)<0)goto fail;
+        active_devices++;
     }
     int thread_error=pthread_create(&a->worker,NULL,evdev_worker_main,a);
     if(thread_error){errno=thread_error;goto fail;}
     a->worker_started=true;
-    fprintf(stderr,"[evdev] asynchronous epoll input: %d device slot(s), %u-event bounded queue, kernel timestamps\n",
-            st->device_count,(unsigned)CD_EVDEV_QUEUE_CAPACITY);
+    fprintf(stderr,"[evdev] asynchronous epoll input: %d active device slot(s), %u-event bounded queue, kernel timestamps\n",
+            active_devices,(unsigned)CD_EVDEV_QUEUE_CAPACITY);
     return true;
 fail:
     fprintf(stderr,"[evdev] could not start asynchronous input: %s\n",strerror(errno));
@@ -970,7 +999,7 @@ bool backend_evdev_init(Server *s) {
 
 void backend_evdev_poll(Server *s) {
     EvdevState *st=evdev_state(s);EvdevAsync *a=evdev_async(st);
-    if(!st||!st->evdev_enabled||!a)return;
+    if(!st||!st->evdev_enabled||st->suspended||!a)return;
     CdEvdevEvent event;
     while(cd_evdev_queue_pop(&a->queue,&event)){
         if(event.device>=st->device_count)continue;
@@ -1008,6 +1037,72 @@ void backend_evdev_poll(Server *s) {
     }
 }
 
+static void evdev_discard_pending(EvdevDevice *d) {
+    if (!d || d->fd < 0) return;
+    struct input_event events[64];
+    for (;;) {
+        ssize_t bytes = read(d->fd, events, sizeof(events));
+        if (bytes > 0) continue;
+        if (bytes < 0 && errno == EINTR) continue;
+        break;
+    }
+}
+
+static void evdev_ungrab_all(EvdevState *st) {
+    if (!st) return;
+    for (int i = 0; i < st->device_count; i++) {
+        EvdevDevice *d = &st->devices[i];
+        if (d->fd >= 0 && d->grabbed) {
+            if (ioctl(d->fd, EVIOCGRAB, (int)0) < 0) {
+                /* Closing the fd is the kernel's guaranteed grab release.
+                 * Keep the slot stable but retired rather than risking a
+                 * keyboard that cannot issue Ctrl+Alt+F* on another VT. */
+                fprintf(stderr, "[evdev] EVIOCGRAB release failed on %s: %s; closing device\n",
+                        d->path, strerror(errno));
+                close(d->fd);d->fd = -1;d->type = EVDEV_DEV_NONE;
+            }
+            d->grabbed = false;
+        }
+    }
+}
+
+/* VT release: stop/join the producer, release all compositor-visible input
+ * state, then drop EVIOCGRAB while keeping the device fds open. Stale queued
+ * bytes are discarded on resume, before the worker is restarted. */
+void backend_evdev_suspend(Server *s) {
+    EvdevState *st = evdev_state(s);
+    if (!st || st->suspended) return;
+    st->suspended = true;
+    evdev_async_destroy(st);
+    evdev_reset_all_devices(s, evdev_monotonic_ms());
+    evdev_ungrab_all(st);
+    s->evdev_chrome_touch_id = -1;
+    fprintf(stderr, "[evdev] suspended for VT switch; devices ungrabbed and fds retained\n");
+}
+
+bool backend_evdev_resume(Server *s) {
+    EvdevState *st = evdev_state(s);
+    if (!st || !st->suspended) return true;
+    for (int i = 0; i < st->device_count; i++) evdev_discard_pending(&st->devices[i]);
+    if (st->grab_input) {
+        for (int i = 0; i < st->device_count; i++) {
+            EvdevDevice *d = &st->devices[i];
+            if (d->fd < 0 || d->grabbed) continue;
+            if (ioctl(d->fd, EVIOCGRAB, (int)1) == 0) d->grabbed = true;
+            else fprintf(stderr, "[evdev] EVIOCGRAB on %s failed after VT resume: %s (continuing ungrabbed)\n",
+                         d->path, strerror(errno));
+        }
+    }
+    if (st->device_count > 0 && !evdev_async_start(st)) {
+        fprintf(stderr, "[evdev] VT resume could not restart asynchronous input; ungrabbing all devices\n");
+        evdev_ungrab_all(st);
+        return false;
+    }
+    st->suspended = false;
+    fprintf(stderr, "[evdev] resumed after VT switch (%d device slot(s))\n", st->device_count);
+    return true;
+}
+
 void backend_evdev_shutdown(Server *s) {
     EvdevState *st=evdev_state(s);if(!st)return;
     st->evdev_enabled=false;
@@ -1015,6 +1110,7 @@ void backend_evdev_shutdown(Server *s) {
      * server_finish(), so release events still have a live Wayland display. */
     evdev_async_destroy(st);
     evdev_reset_all_devices(s,evdev_monotonic_ms());
+    evdev_ungrab_all(st);
     for(int i=0;i<st->device_count;i++)evdev_device_close(&st->devices[i]);
     free(st);s->evdev_state=NULL;s->evdev_chrome_touch_id=-1;
 }

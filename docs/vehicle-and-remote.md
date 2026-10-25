@@ -436,8 +436,9 @@ kernel mode; with `--fbdev-modeset` or `--fbdev-mode` it requests a modeset via
 `FBIOPUT_VSCREENINFO` and restores the original mode on exit. The driver may
 adjust timings or reject the request. Local evdev input (keyboard, mouse,
 touchscreen) is enabled by default for fbdev and DRM; `--no-evdev` (or
-`--no-fbdev-evdev`) disables it. `--grab-input` opts in to `EVIOCGRAB` (with a
-VT-lockout warning), and `--input-device PATH` restricts enumeration (up to 8;
+`--no-fbdev-evdev`) disables it. `--grab-input` opts in to `EVIOCGRAB` (fbdev
+warns about VT lockout; DRM requires a managed controlling VT or downgrades the
+grab), and `--input-device PATH` restricts enumeration (up to 8;
 older fbdev-named aliases remain valid). A single epoll worker reads devices
 and queues plain events with `CLOCK_MONOTONIC` kernel timestamps where
 supported. It never calls Wayland, scene, physics, or GL code. The compositor
@@ -446,11 +447,21 @@ queue blocks further production until the old prefix is drained and every
 potentially latched key, touch, pointer button, and driving control is safely
 released; device slots are never compacted underneath queued events.
 
+On a controlling Linux VT, physical-evdev Ctrl+Alt+F1…F12 uses the DRM backend's
+`VT_PROCESS`/`signalfd` lifecycle. The worker is joined before input state is
+released and grabs are dropped; stale device bytes are discarded before a fresh
+queue/worker starts on resume. DRM drains and retires old scanout buffers before
+dropping master, and the main loop pauses Wayland, physics, GL and frame
+callbacks while inactive. VNC/SDL chords never switch the host VT. fbdev keeps
+its previous unmanaged VT behavior.
+
 During shutdown, direct input is stopped and released before Wayland/xkb state
 is destroyed. Clients and scene textures are then destroyed before the EGL
 context is unbound and terminated. fbdev restores the original video mode (or
-pan offset) before unmapping; DRM waits for outstanding flips, restores the
-previous CRTC, releases locked GBM buffers, and drops DRM master. No physics
+pan offset) before unmapping; an active DRM session waits for outstanding
+flips and restores the previous CRTC, while inactive-VT cleanup skips that wait
+and restoration. Both release locked GBM buffers and drop master only when
+held. No physics
 code, browser code, or worker thread owns a GL context.
 
 ## Validation

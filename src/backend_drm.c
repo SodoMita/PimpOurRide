@@ -15,6 +15,7 @@
 #include <poll.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include <unistd.h>
 #include <xf86drm.h>
 #include <xf86drmMode.h>
@@ -103,22 +104,41 @@ static void drm_page_flipped(int fd,unsigned sequence,unsigned seconds,unsigned 
  if(old)drm_release_bo(st,old);
 }
 
-/* 1 = consumed an event, 0 = timeout/no event, -1 = polling/driver error. */
-static int drm_wait_event(DrmState *st,int timeout_ms){
- struct pollfd pfd={.fd=st->fd,.events=POLLIN};
+static int64_t drm_now_ms(void){
+ struct timespec now;
+ clock_gettime(CLOCK_MONOTONIC,&now);
+ return (int64_t)now.tv_sec*1000+now.tv_nsec/1000000;
+}
+
+/* 1 = consumed a DRM event, 0 = timeout/no event, -1 = polling/driver error,
+ * -2 = VT signal activity. The VT fd is polled alongside DRM so a release
+ * request cannot be stuck behind a slow page-flip wait. */
+static int drm_wait_event(Server *s,int timeout_ms){
+ DrmState *st=drm_state(s);
+ if(!st||st->fd<0)return -1;
+ struct pollfd fds[2]={{.fd=st->fd,.events=POLLIN}};
+ int count=1;
+ int vt_fd=backend_vt_fd(s);
+ if(vt_fd>=0){fds[1].fd=vt_fd;fds[1].events=POLLIN;count=2;}
  int ready;
- do ready=poll(&pfd,1,timeout_ms);while(ready<0&&errno==EINTR);
+ do ready=poll(fds,(nfds_t)count,timeout_ms);while(ready<0&&errno==EINTR);
  if(ready==0)return 0;
- if(ready<0||(pfd.revents&(POLLERR|POLLHUP|POLLNVAL)))return -1;
- if(!(pfd.revents&POLLIN))return 0;
+ if(ready<0||(fds[0].revents&(POLLERR|POLLHUP|POLLNVAL)))return -1;
+ if(count>1&&fds[1].revents)return -2;
+ if(!(fds[0].revents&POLLIN))return 0;
  drmEventContext context={.version=DRM_EVENT_CONTEXT_VERSION,.page_flip_handler=drm_page_flipped};
  return drmHandleEvent(st->fd,&context)==0?1:-1;
 }
 
-static bool drm_wait_for_flip(DrmState *st){
+static bool drm_wait_for_flip(Server *s,int timeout_ms){
+ DrmState *st=drm_state(s);
+ if(!st)return true;
+ int64_t deadline=drm_now_ms()+timeout_ms;
  while(st->page_flip_pending){
-  int result=drm_wait_event(st,1000);
+  int64_t remaining=deadline-drm_now_ms();
+  int result=drm_wait_event(s,remaining>0?(int)remaining:0);
   if(result>0)continue;
+  if(result==-2){fprintf(stderr,"[drm] page-flip wait interrupted by VT activity\n");return false;}
   if(result==0)fprintf(stderr,"[drm] timed out waiting for page-flip completion\n");
   else fprintf(stderr,"[drm] page-flip event wait failed: %s\n",strerror(errno));
   return false;
@@ -246,6 +266,9 @@ static bool drm_egl_init(Server *s,DrmState *st){
 bool backend_drm_init(Server *s){
  DrmState *st=calloc(1,sizeof(*st));if(!st){fprintf(stderr,"[drm] out of memory\n");return false;}
  st->fd=-1;st->egl_surface=EGL_NO_SURFACE;s->drm_state=st;
+ /* Install VT_PROCESS before taking DRM master or starting evdev. Any later
+  * init failure goes through the same mode/signalfd restoration path. */
+ backend_vt_init(s);
  s->egl_display=EGL_NO_DISPLAY;s->egl_context=EGL_NO_CONTEXT;s->target_fbo=0;s->readback_pixels=NULL;
  snprintf(st->path,sizeof(st->path),"%s",s->drm_path[0]?s->drm_path:"/dev/dri/card0");
  st->fd=open(st->path,O_RDWR|O_CLOEXEC);
@@ -256,6 +279,12 @@ bool backend_drm_init(Server *s){
  if(!drm_egl_init(s,st))goto fail;
  fprintf(stderr,"[drm] %s: connector %s (%u), CRTC %u, %ux%u@%u\n",st->path,
   st->connector_name,st->connector_id,st->crtc_id,st->mode.hdisplay,st->mode.vdisplay,st->mode.vrefresh);
+ /* Managed VT switching needs /dev/tty. Without it, grab would make the
+  * kernel Ctrl+Alt+F* chord unreachable, so downgrade rather than trap input. */
+ if(s->fbdev_grab_input&&!backend_vt_managed(s)){
+  s->fbdev_grab_input=false;
+  fprintf(stderr,"[drm] no managed VT available; EVIOCGRAB downgraded so kernel VT switching stays reachable\n");
+ }
  if(s->fbdev_evdev&&!backend_evdev_init(s))goto fail;
  if(s->fbdev_evdev&&(!s->evdev_state||((EvdevState*)s->evdev_state)->device_count==0))
   fprintf(stderr,"[drm] no local evdev devices opened; display continues without local input\n");
@@ -268,34 +297,43 @@ void backend_drm_poll(Server *s){
  DrmState *st=drm_state(s);if(!st)return;
  if(s->fbdev_evdev)backend_evdev_poll(s);
  int result;
- while((result=drm_wait_event(st,0))>0){}
- if(result<0&&!st->warned_event){fprintf(stderr,"[drm] DRM event polling failed: %s\n",strerror(errno));st->warned_event=true;}
+ while((result=drm_wait_event(s,0))>0){}
+ if(result==-1&&!st->warned_event){fprintf(stderr,"[drm] DRM event polling failed: %s\n",strerror(errno));st->warned_event=true;}
 }
 
-void backend_drm_present(Server *s){
- DrmState *st=drm_state(s);if(!st||st->egl_surface==EGL_NO_SURFACE)return;
+PresentResult backend_drm_present(Server *s){
+ DrmState *st=drm_state(s);
+ if(!st||st->egl_surface==EGL_NO_SURFACE||!st->master)return CD_PRESENT_SKIPPED;
+ if(backend_vt_is_suspended(s))return CD_PRESENT_SKIPPED;
  /* Rendering a third frame before the prior flip completes would lock too
   * many GBM buffers. Wait before swapping, never after locking a new buffer. */
- if(!drm_wait_for_flip(st))return;
- if(!eglSwapBuffers(s->egl_display,st->egl_surface)){fprintf(stderr,"[drm] eglSwapBuffers failed: 0x%x\n",eglGetError());return;}
+ if(!drm_wait_for_flip(s,1000))return CD_PRESENT_INTERRUPTED;
+ if(!st->master||backend_vt_is_suspended(s))return CD_PRESENT_SKIPPED;
+ if(!eglSwapBuffers(s->egl_display,st->egl_surface)){
+  fprintf(stderr,"[drm] eglSwapBuffers failed: 0x%x\n",eglGetError());return CD_PRESENT_SKIPPED;
+ }
  struct gbm_bo *bo=gbm_surface_lock_front_buffer(st->surface);
- if(!bo){fprintf(stderr,"[drm] gbm_surface_lock_front_buffer failed\n");return;}
+ if(!bo){fprintf(stderr,"[drm] gbm_surface_lock_front_buffer failed\n");return CD_PRESENT_SKIPPED;}
  uint32_t fb_id=drm_bo_framebuffer(st,bo);
- if(!fb_id){drm_release_bo(st,bo);return;}
+ if(!fb_id){drm_release_bo(st,bo);return CD_PRESENT_SKIPPED;}
  if(!st->mode_set){
   if(drmModeSetCrtc(st->fd,st->crtc_id,fb_id,0,0,&st->connector_id,1,&st->mode)<0){
-   fprintf(stderr,"[drm] initial drmModeSetCrtc failed: %s\n",strerror(errno));drm_release_bo(st,bo);return;
+   fprintf(stderr,"[drm] initial drmModeSetCrtc failed: %s\n",strerror(errno));drm_release_bo(st,bo);return CD_PRESENT_SKIPPED;
   }
-  st->mode_set=true;st->current_bo=bo;return;
+  st->mode_set=true;st->current_bo=bo;
+  /* Preserve the existing first-frame contract: SetCrtc installs this buffer
+   * immediately; subsequent presents are paced by their page-flip events. */
+  return CD_PRESENT_OK;
  }
  if(drmModePageFlip(st->fd,st->crtc_id,fb_id,DRM_MODE_PAGE_FLIP_EVENT,st)<0){
-  fprintf(stderr,"[drm] drmModePageFlip failed: %s\n",strerror(errno));drm_release_bo(st,bo);return;
+  fprintf(stderr,"[drm] drmModePageFlip failed: %s\n",strerror(errno));drm_release_bo(st,bo);return CD_PRESENT_SKIPPED;
  }
  st->pending_bo=bo;st->page_flip_pending=true;
  /* main emits wl_callback.done immediately after backend_*_present. Waiting
   * for the flip here preserves its contract: clients are paced to completed
   * scanout, not merely to an ioctl that queued a future frame. */
- drm_wait_for_flip(st);
+ if(!drm_wait_for_flip(s,1000))return CD_PRESENT_INTERRUPTED;
+ return CD_PRESENT_OK;
 }
 
 static void drm_restore_crtc(DrmState *st){
@@ -323,12 +361,60 @@ static void drm_restore_crtc(DrmState *st){
  else st->mode_set=false;
 }
 
-void backend_drm_shutdown(Server *s){
+/* Called before the release acknowledgement. Drain the outstanding flip while
+ * still master, disable the CRTC, then release only buffers that are provably
+ * no longer scanned out. Failure is fatal to the session: main will quit
+ * instead of trying to reacquire stale DRM state, but still acknowledges VT. */
+bool backend_drm_release_for_vt(Server *s){
+ DrmState *st=drm_state(s);
+ if(!st||st->fd<0)return true;
+ bool drained=true,retired=true,dropped=true;
+ if(st->page_flip_pending)drained=drm_wait_for_flip(s,1000);
+ if(st->mode_set){
+  if(drmModeSetCrtc(st->fd,st->crtc_id,0,0,0,NULL,0,NULL)<0){
+   fprintf(stderr,"[drm] disabling CRTC for VT release failed: %s\n",strerror(errno));retired=false;
+  }
+  st->mode_set=false;
+ }
+ if(drained&&retired){
+  if(st->current_bo){drm_release_bo(st,st->current_bo);st->current_bo=NULL;}
+  if(st->pending_bo){drm_release_bo(st,st->pending_bo);st->pending_bo=NULL;}
+  st->page_flip_pending=false;
+ }else fprintf(stderr,"[drm] VT release could not retire all scanout buffers; retaining them for cleanup\n");
+ if(st->master){
+  if(drmDropMaster(st->fd)<0){
+   fprintf(stderr,"[drm] drmDropMaster for VT release failed: %s\n",strerror(errno));dropped=false;
+  }
+  /* A failed drop is not proof that master survives the subsequent VT
+   * switch. Always force the next successful acquire through drmSetMaster. */
+  st->master=false;
+ }
+ return drained&&retired&&dropped;
+}
+
+bool backend_drm_acquire_after_vt(Server *s){
+ DrmState *st=drm_state(s);
+ if(!st||st->fd<0)return false;
+ if(!st->master){
+  if(drmSetMaster(st->fd)<0){
+   fprintf(stderr,"[drm] drmSetMaster after VT acquire failed: %s\n",strerror(errno));
+   return false;
+  }
+  st->master=true;
+ }
+ return true;
+}
+
+static void drm_destroy(Server *s,bool inactive){
  DrmState *st=drm_state(s);if(!st)return;
  if(s->evdev_state)backend_evdev_shutdown(s);
  if(st->fd>=0){
-  if(st->page_flip_pending)drm_wait_for_flip(st);
-  drm_restore_crtc(st);
+  if(!inactive){
+   if(st->page_flip_pending)drm_wait_for_flip(s,1000);
+   drm_restore_crtc(st);
+  }else{
+   fprintf(stderr,"[drm] cleaning up while VT is inactive; no CRTC restore or flip wait\n");
+  }
   if(st->current_bo){drm_release_bo(st,st->current_bo);st->current_bo=NULL;}
   if(st->pending_bo){drm_release_bo(st,st->pending_bo);st->pending_bo=NULL;st->page_flip_pending=false;}
  }
@@ -345,4 +431,9 @@ void backend_drm_shutdown(Server *s){
  free(st->saved_connectors);
  if(st->fd>=0){if(st->master)drmDropMaster(st->fd);close(st->fd);}
  free(st);s->drm_state=NULL;
+}
+
+void backend_drm_shutdown(Server *s){
+ drm_destroy(s,backend_vt_is_suspended(s));
+ backend_vt_shutdown(s);
 }
