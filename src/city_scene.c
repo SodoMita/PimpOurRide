@@ -399,11 +399,12 @@ static Vec3 city_ring_center(const Vec3 ring[8]){
 }
 static void city_spline_loft(const float *z,const float *width,const float *top,int count,float bottom){
  /* Every longitudinal span is an actual Catmull-Rom evaluation, including
-  * tapered nose/tail stations. Closed end caps and outward quad normals keep
-  * the generated cars volumetric from every camera, not billboard shells. */
+  * tapered nose/tail stations. Smooth per-vertex normals are derived from the
+  * same rings (central longitudinal/circumferential tangents), so interpolation
+  * rounds the body and cabin lighting without moving a single collision-relevant
+  * vertex. End caps intentionally keep their flat outward normals. */
  const int subdivisions=3,samples=(count-1)*subdivisions;
- Vec3 previous[8],first[8],last[8];bool have_previous=false;
- glBegin(GL_QUADS);
+ Vec3 rings[samples+1][8],normals[samples+1][8];
  for(int sample=0;sample<=samples;sample++){
   int segment=sample/subdivisions;if(segment>=count-1)segment=count-2;
   float t=(float)(sample-segment*subdivisions)/subdivisions;
@@ -413,19 +414,29 @@ static void city_spline_loft(const float *z,const float *width,const float *top,
    v3(-w*.75f,yy,zz),v3(0,yy+.08f,zz),v3(w*.75f,yy,zz),v3(w,shoulder,zz),
    v3(w*.90f,bottom,zz),v3(0,bottom-.04f,zz),v3(-w*.90f,bottom,zz),v3(-w,shoulder,zz)
   };
-  if(sample==0)memcpy(first,ring,sizeof(first));memcpy(last,ring,sizeof(last));
-  if(have_previous)for(int i=0;i<8;i++){
-   int j=(i+1)&7;Vec3 a=previous[i],b=ring[i],c=ring[j],d=previous[j];
-   Vec3 n=vnorm(vcross(vsub(b,a),vsub(d,a)));glNormal3f(n.x,n.y,n.z);
-   glVertex3f(a.x,a.y,a.z);glVertex3f(b.x,b.y,b.z);glVertex3f(c.x,c.y,c.z);glVertex3f(d.x,d.y,d.z);
-  }
-  memcpy(previous,ring,sizeof(previous));have_previous=true;
+  memcpy(rings[sample],ring,sizeof(ring));
+ }
+ for(int sample=0;sample<=samples;sample++)for(int i=0;i<8;i++){
+  int before=sample>0?sample-1:sample,after=sample<samples?sample+1:sample;
+  Vec3 longitudinal=vsub(rings[after][i],rings[before][i]);
+  Vec3 around=vsub(rings[sample][(i+1)&7],rings[sample][(i+7)&7]);
+  normals[sample][i]=vnorm(vcross(longitudinal,around));
+ }
+ glBegin(GL_QUADS);
+ for(int sample=1;sample<=samples;sample++)for(int i=0;i<8;i++){
+  int j=(i+1)&7;
+  Vec3 a=rings[sample-1][i],b=rings[sample][i],c=rings[sample][j],d=rings[sample-1][j];
+  Vec3 na=normals[sample-1][i],nb=normals[sample][i],nc=normals[sample][j],nd=normals[sample-1][j];
+  glNormal3f(na.x,na.y,na.z);glVertex3f(a.x,a.y,a.z);
+  glNormal3f(nb.x,nb.y,nb.z);glVertex3f(b.x,b.y,b.z);
+  glNormal3f(nc.x,nc.y,nc.z);glVertex3f(c.x,c.y,c.z);
+  glNormal3f(nd.x,nd.y,nd.z);glVertex3f(d.x,d.y,d.z);
  }
  glEnd();
- Vec3 centre=city_ring_center(first);glBegin(GL_TRIANGLE_FAN);glNormal3f(0,0,-1);
- glVertex3f(centre.x,centre.y,centre.z);for(int i=0;i<=8;i++){Vec3 p=first[i&7];glVertex3f(p.x,p.y,p.z);}glEnd();
- centre=city_ring_center(last);glBegin(GL_TRIANGLE_FAN);glNormal3f(0,0,1);
- glVertex3f(centre.x,centre.y,centre.z);for(int i=8;i>=0;i--){Vec3 p=last[i&7];glVertex3f(p.x,p.y,p.z);}glEnd();
+ Vec3 centre=city_ring_center(rings[0]);glBegin(GL_TRIANGLE_FAN);glNormal3f(0,0,-1);
+ glVertex3f(centre.x,centre.y,centre.z);for(int i=0;i<=8;i++){Vec3 p=rings[0][i&7];glVertex3f(p.x,p.y,p.z);}glEnd();
+ centre=city_ring_center(rings[samples]);glBegin(GL_TRIANGLE_FAN);glNormal3f(0,0,1);
+ glVertex3f(centre.x,centre.y,centre.z);for(int i=8;i>=0;i--){Vec3 p=rings[samples][i&7];glVertex3f(p.x,p.y,p.z);}glEnd();
 }
 static void city_spline_vehicle(CityVehicleModel m){
  GLboolean was_lit=glIsEnabled(GL_LIGHTING);
