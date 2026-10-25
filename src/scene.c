@@ -280,6 +280,34 @@ static void draw_cog(Server *s){
  if(hot){glEnable(GL_BLEND);glBlendFunc(GL_SRC_ALPHA,GL_ONE);glColor4f(.25,.85,.70,.15);quad(-.12,-.12,.24,.24,.033);glDisable(GL_BLEND);}
  glEnable(GL_LIGHTING);glPopMatrix();
 }
+/* Red EXIT button on the same sloped dash, below and right of the cog.
+ * A real round power switch: recessed bezel, machined red rim, saturated red
+ * cap and a white power glyph. It brightens on hover and pulses while the
+ * two-click guard is armed. Geometry is drawn in plane-local GL only. */
+static void draw_quit_button(Server *s){
+ bool armed=s->time<s->quit_armed_until;
+ bool hot=s->quit_hover||armed;
+ float pulse=armed?.5f+.5f*sinf((float)s->time*12.f):0.f;
+ float rim_r=armed?.70f+.30f*pulse:(hot?.72f:.46f);
+ float rim_g=armed?.12f+.18f*pulse:(hot?.10f:.055f);
+ float rim_b=armed?.08f+.08f*pulse:(hot?.09f:.065f);
+ plane_begin(s->quit_button);
+ color(.035,.030,.045);cylinder(v3(0,0,-.030),v3(0,0,-.006),.108,48); /* recessed bezel */
+ color(.18,.19,.24);torus(.108,.008,64,12);                               /* dark outer rim */
+ color(rim_r,rim_g,rim_b);torus(.099,.011,64,12);                         /* red machined rim */
+ color(armed?.95f+.05f*pulse:.66f,armed?.07f+.16f*pulse:.035f,armed?.05f+.07f*pulse:.045f);
+ cylinder(v3(0,0,-.004),v3(0,0,.014),.088,48);                            /* red cap */
+ if(hot){
+  glDisable(GL_LIGHTING);glEnable(GL_BLEND);glBlendFunc(GL_SRC_ALPHA,GL_ONE);glDepthMask(GL_FALSE);
+  glColor4f(1.f,.20f,.12f,armed?.22f+.20f*pulse:.13f);torus(.104f,.013f,64,10);
+  glDepthMask(GL_TRUE);glDisable(GL_BLEND);glEnable(GL_LIGHTING);
+ }
+ /* White power glyph: broken circle + vertical tick, plane-local. */
+ glDisable(GL_LIGHTING);glColor3f(1,1,1);glLineWidth(hot?3.2f:2.6f);
+ glBegin(GL_LINE_STRIP);for(int i=0;i<=48;i++){float a=(120.f+300.f*(float)i/48.f)*RAD;glVertex3f(cosf(a)*.047f,sinf(a)*.047f,.018f);}glEnd();
+ glBegin(GL_LINES);glVertex3f(0,.010f,.018f);glVertex3f(0,.079f,.018f);glEnd();
+ glLineWidth(1.f);glEnable(GL_LIGHTING);glPopMatrix();
+}
 typedef struct {float scale,w,h,z0,zstep;int layer;} DrawSurface;
 static void transformed_uv(int transform,float x,float y,float *u,float *v){float a=x,b=y;switch(transform&3){case 1:a=1-y;b=x;break;case 2:a=1-x;b=1-y;break;case 3:a=y;b=1-x;break;}if(transform>=4)a=1-a;*u=a;*v=b;}
 static void draw_app_surface(Surface *p,int sx,int sy,void *data){
@@ -439,6 +467,13 @@ void scene_init(Server *s){
   * so the boss reads as recessed into the padding. (The violet strip box
   * at z=.37 is behind this sloped surface from the driver's seat.) */
  s->cog=(Plane){.center={-.30f,-.066f,.610f-VEHICLE_COCKPIT_FORWARD},.width=.24f,.height=.24f,.yaw=0,.pitch=-61};
+ /* EXIT switch on the lower dash, below the cog and clear of both the
+  * leftmost Launch Control tile and the steering wheel. It sits on the same
+  * sloped profile (z .2,y .14 -> z .88,y -.24) with the same -.02 normal
+  * offset and pitch -61 as the cog: slope point (z .84,y -.218) + .02 along
+  * its normal. The .22 m disc is fully in front of the console frame instead
+  * of peeking out between the wheel and the console corner. */
+ s->quit_button=(Plane){.center={-.05f,-.200f,.850f-VEHICLE_COCKPIT_FORWARD},.width=.22f,.height=.22f,.yaw=0,.pitch=-61};
 }
 typedef struct {Vec3 eye,forward,right,up;} SceneCamera;
 static SceneCamera scene_camera(Server *s){
@@ -510,7 +545,7 @@ void scene_render(Server *s){
  /* One physical cockpit in all views. Drawing it before the hull lets opaque
   * bodywork occlude it naturally; cutaway and the late shared glass pass then
   * reveal exactly the same seats, panels, controls and Wayland surfaces. */
- vehicle_seats_render();dashboard(s);draw_buttons(s);draw_cog(s);
+ vehicle_seats_render();dashboard(s);draw_buttons(s);draw_cog(s);draw_quit_button(s);
  for(int i=0;i<CD_MAX_MONITORS;i++)draw_monitor(s,i);
  steering_wheel(s);
  vehicle_render(s,s->camera_mode==VEHICLE_CAMERA_SYSTEMS);
@@ -562,6 +597,8 @@ Hit scene_pick(Server *s,float x,float y,bool grab){
  /* Cog: same pick plane as drawn, then a radial test so only the gear
   * itself (teeth at .115 m of the .12 m half-plane) is clickable. */
  if(plane_hit(s->cog,s->eye,ray,&u,&v,&d,false)&&d<best.distance){float du=u-.5f,dv=v-.5f;if(du*du+dv*dv<=.25f)best=(Hit){.kind=HIT_COG,.distance=d};}
+ /* EXIT switch uses the same circular radial mask as the cog. */
+ if(plane_hit(s->quit_button,s->eye,ray,&u,&v,&d,false)&&d<best.distance){float du=u-.5f,dv=v-.5f;if(du*du+dv*dv<=.25f)best=(Hit){.kind=HIT_QUIT,.distance=d};}
  Plane wheel=steering_plane();
  if(plane_hit(wheel,s->eye,ray,&u,&v,&d,false)&&d<best.distance){
   float dx=(u-.5f)*wheel.width,dy=(v-.5f)*wheel.height;

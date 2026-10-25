@@ -22,7 +22,7 @@ void app_release_input(Server *s,uint32_t time){
  /* Drive keys are compositor-local and therefore are not present in the
   * Wayland seat's s->keys[] bitmap. Both sets must be released on focus loss,
   * otherwise switching windows could leave a client key or motor latched. */
- server_touch_cancel(s);server_release_keys(s,time);clear_drive_controls(s);s->door_shortcut_down=false;s->autopilot_shortcut_down=false;scene_wheel_cancel(s);
+ server_touch_cancel(s);server_release_keys(s,time);clear_drive_controls(s);s->door_shortcut_down=false;s->autopilot_shortcut_down=false;s->quit_shortcut_down=false;scene_wheel_cancel(s);
 }
 /* ---- persistent configuration (chromedrive.conf, edited by the GUI) ----
  * Precedence: built-in defaults < config file < command line. The file is
@@ -244,6 +244,17 @@ void app_open_settings_slot(Server *s,int slot,bool choose_app){
  app_exec(s,cmd);app_notice(s,choose_app?"Opening app picker...":"Opening Settings...");
 }
 void app_open_settings(Server *s){app_open_settings_slot(s,-1,false);}
+/* Quit paths share one function so the keyboard shortcut and the dashboard
+ * button behave predictably. The hotkey is explicit and immediate. The button
+ * is deliberately two-stage: a stray click arms EXIT for three seconds, and a
+ * second click inside that window commits. */
+void app_request_quit(Server *s,bool via_hotkey){
+ if(via_hotkey){fprintf(stderr,"[input] Meta+Shift+Q quit\n");s->running=false;return;}
+ if(s->time<s->quit_armed_until){fprintf(stderr,"[input] EXIT confirmed from dashboard button\n");s->running=false;return;}
+ s->quit_armed_until=s->time+3.0;
+ fprintf(stderr,"[input] EXIT armed from dashboard button (3 s)\n");
+ app_notice(s,"EXIT armed — press the red button again to quit ChromeDrive");
+}
 /* ---- F6 Arrange mode ---------------------------------------------------
  * A modal, session-only transform editor for whole spatial monitors. The
  * selected monitor's Plane is translated along its own right/up axes (and
@@ -544,6 +555,19 @@ bool app_global_key(Server *s,uint32_t evdev,bool down){
    return true;
   }
  }
+ /* Meta+Shift+Q quits from anywhere, including Arrange mode where plain Q
+  * rolls the selected monitor. Track the press like Meta+O/Meta+A so key
+  * auto-repeat cannot retrigger it and an early Meta release cannot leak the
+  * letter release into a Wayland client. Plain Q, Meta+Q and Shift+Q pass
+  * through unchanged. */
+ if(evdev==KEY_Q){
+  if(s->quit_shortcut_down){if(!down)s->quit_shortcut_down=false;return true;}
+  bool shift=s->keys[KEY_LEFTSHIFT]||s->keys[KEY_RIGHTSHIFT];
+  if(down&&meta&&shift&&!s->keys[KEY_Q]){
+   s->quit_shortcut_down=true;app_request_quit(s,true);
+   return true;
+  }
+ }
  if(ctrl&&alt&&(evdev==KEY_ENTER||evdev==KEY_KPENTER||evdev==KEY_Q)){if(down){if(evdev==KEY_Q)s->running=false;else launch_new_terminal(s);}return true;}
  if(evdev==KEY_F6){if(down)arrange_toggle(s);return true;}
  if(s->arrange_mode&&evdev!=KEY_F1&&evdev!=KEY_F2&&evdev!=KEY_F4&&evdev!=KEY_F5&&evdev!=KEY_F7&&evdev!=KEY_F8&&evdev!=KEY_F9&&evdev!=KEY_F10&&evdev!=KEY_F11&&evdev!=KEY_F12){
@@ -647,7 +671,7 @@ static void backend_shutdown(Server *s){
  case CD_BACKEND_FBDEV:backend_fbdev_shutdown(s);break;
  }
 }
-static void usage(const char *name){printf("ChromeDrive " CD_VERSION " \xe2\x80\x94 native, first-person Wayland cockpit\n\nUsage: %s [options]\n  --demo                Start the configured autostart Wayland clients\n  --socket NAME         Wayland socket (default: automatic)\n  --exec COMMAND        Launch an extra Wayland client (repeatable)\n  --size WIDTHxHEIGHT   Framebuffer/host window size (default 1600x1000)\n  --fps N               Frame cap, 1..120 (default 60)\n  --backend MODE        headless (default) | windowed | fbdev\n  --headless            Alias for --backend headless: surfaceless EGL + built-in VNC\n  --windowed            Alias for --backend windowed: SDL2/GLX dev window on X\n  --fbdev [DEVICE]      Direct Linux framebuffer output (default /dev/fb0)\n  --fbdev-device PATH   Framebuffer device for --backend fbdev\n  --fbdev-modeset       Select fbdev backend and request modeset to configured render size\n  --fbdev-mode WxH[@BPP] Select fbdev backend, imply modeset, set size/BPP (BPP in 16,24,32)\n  --no-fbdev-vsync      Do not wait for FBIO_WAITFORVSYNC\n  --no-fbdev-pan        Do not use FBIOPAN_DISPLAY double buffering\n  --fbdev-vnc-mirror    Loopback-only RFB input/output companion for fbdev\n  --vnc-mirror          Alias for --fbdev-vnc-mirror\n  --fbdev-evdev         Enable local evdev input for fbdev (default: on)\n  --no-fbdev-evdev      Disable local evdev input for fbdev\n  --fbdev-grab-input    Grab evdev devices (EVIOCGRAB; warns about VT lockout)\n  --fbdev-input-device PATH Restrict evdev to explicit device (repeatable, max 8)\n  --vnc-port N          VNC port for headless or the fbdev mirror (default 5900)\n  --fullscreen          --windowed only: start fullscreen, F11 to leave\n  --exit-after SECONDS   Useful for automated checks\n  --screenshot PATH     Capture a WebP after 3 seconds\n  --config PATH         Config file (default: ~/.config/chromedrive/chromedrive.conf)\n  --no-config           Ignore the config file entirely\n  --help                Show this help\n\nfbdev adopts the current kernel framebuffer mode by default (no modesetting);\nwith --fbdev-modeset or --fbdev-mode it requests a modeset via FBIOPUT_VSCREENINFO.\nThe original mode is restored on exit. Local evdev input (keyboard/mouse/touchscreen)\nis enabled by default for fbdev; use --no-fbdev-evdev to disable. Explicit devices\nvia --fbdev-input-device replace auto-enumeration. Startup-only enumeration; no hotplug.\n\nF1 help | F2 selected seat | F3 focus/next | F4 neon | F6 arrange | Meta+O doors\nF7 client/drive input | F8 driver/exterior/systems | F9 switch seat | F10 recover car\nF5 is unbound for browser/client restart or reload\nDrive: WASD/arrows + Space + drag wheel\nMiddle-drag/VNC-drag to look | Drag a titlebar to move | HANDLES shows the Arrange gizmo\nArrange: Tab next window, Esc/F6 exit | Ctrl+Alt+Enter new terminal\n",name);}
+static void usage(const char *name){printf("ChromeDrive " CD_VERSION " \xe2\x80\x94 native, first-person Wayland cockpit\n\nUsage: %s [options]\n  --demo                Start the configured autostart Wayland clients\n  --socket NAME         Wayland socket (default: automatic)\n  --exec COMMAND        Launch an extra Wayland client (repeatable)\n  --size WIDTHxHEIGHT   Framebuffer/host window size (default 1600x1000)\n  --fps N               Frame cap, 1..120 (default 60)\n  --backend MODE        headless (default) | windowed | fbdev\n  --headless            Alias for --backend headless: surfaceless EGL + built-in VNC\n  --windowed            Alias for --backend windowed: SDL2/GLX dev window on X\n  --fbdev [DEVICE]      Direct Linux framebuffer output (default /dev/fb0)\n  --fbdev-device PATH   Framebuffer device for --backend fbdev\n  --fbdev-modeset       Select fbdev backend and request modeset to configured render size\n  --fbdev-mode WxH[@BPP] Select fbdev backend, imply modeset, set size/BPP (BPP in 16,24,32)\n  --no-fbdev-vsync      Do not wait for FBIO_WAITFORVSYNC\n  --no-fbdev-pan        Do not use FBIOPAN_DISPLAY double buffering\n  --fbdev-vnc-mirror    Loopback-only RFB input/output companion for fbdev\n  --vnc-mirror          Alias for --fbdev-vnc-mirror\n  --fbdev-evdev         Enable local evdev input for fbdev (default: on)\n  --no-fbdev-evdev      Disable local evdev input for fbdev\n  --fbdev-grab-input    Grab evdev devices (EVIOCGRAB; warns about VT lockout)\n  --fbdev-input-device PATH Restrict evdev to explicit device (repeatable, max 8)\n  --vnc-port N          VNC port for headless or the fbdev mirror (default 5900)\n  --fullscreen          --windowed only: start fullscreen, F11 to leave\n  --exit-after SECONDS   Useful for automated checks\n  --screenshot PATH     Capture a WebP after 3 seconds\n  --config PATH         Config file (default: ~/.config/chromedrive/chromedrive.conf)\n  --no-config           Ignore the config file entirely\n  --help                Show this help\n\nfbdev adopts the current kernel framebuffer mode by default (no modesetting);\nwith --fbdev-modeset or --fbdev-mode it requests a modeset via FBIOPUT_VSCREENINFO.\nThe original mode is restored on exit. Local evdev input (keyboard/mouse/touchscreen)\nis enabled by default for fbdev; use --no-fbdev-evdev to disable. Explicit devices\nvia --fbdev-input-device replace auto-enumeration. Startup-only enumeration; no hotplug.\n\nF1 help | F2 selected seat | F3 focus/next | F4 neon | F6 arrange | Meta+O doors\nF7 client/drive input | F8 driver/exterior/systems | F9 switch seat | F10 recover car\nMeta+Shift+Q quit | red dash EXIT button: press twice\nF5 is unbound for browser/client restart or reload\nDrive: WASD/arrows + Space + drag wheel\nMiddle-drag/VNC-drag to look | Drag a titlebar to move | HANDLES shows the Arrange gizmo\nArrange: Tab next window, Esc/F6 exit | Ctrl+Alt+Enter new terminal\n",name);}
 int main(int argc,char **argv){
   Server s={.width=1600,.height=1000,.fps_limit=60,.running=true,.hud_visible=true,.hover_button=-1,.hover_close=-1,.keymap_fd=-1,.arrange_slot=-1,.frame_drag_slot=-1,.fov=65,.target_fov=65,.backend=CD_BACKEND_HEADLESS,.fbdev_vsync=true,.fbdev_pan=true,.fbdev_evdev=true,.fbdev_grab_input=false,.vnc_port=5900,.telemetry_fd=-1,.fbdev_modeset=false,.fbdev_mode_width=0,.fbdev_mode_height=0,.fbdev_mode_bpp=0,.fbdev_input_device_count=0};
  vehicle_init(&s.vehicle);
@@ -755,7 +779,7 @@ else if(!strcmp(argv[i],"--no-fbdev-vsync"))s.fbdev_vsync=false;
   static bool collision_seen;if(s.vehicle.collision&&!collision_seen)app_notice(&s,"Hover bumper absorbed a garage wall contact");collision_seen=s.vehicle.collision;
   if(!s.wheel_drag)s.wheel_client_angle+=(0-s.wheel_client_angle)*(1.f-expf(-(float)s.dt*9.f));
   float blend=1.f-expf(-(float)s.dt*12.f);s.yaw+=(s.target_yaw-s.yaw)*blend;s.pitch+=(s.target_pitch-s.pitch)*blend;s.fov+=(s.target_fov-s.fov)*blend;
-  Hit hover=scene_pick(&s,s.mouse_x,s.mouse_y,false);s.hover_button=hover.kind==HIT_BUTTON?hover.button:-1;s.hover_close=hover.kind==HIT_CLOSE?hover.slot:-1;s.cog_hover=hover.kind==HIT_COG;s.wheel_hover=hover.kind==HIT_WHEEL;
+  Hit hover=scene_pick(&s,s.mouse_x,s.mouse_y,false);s.hover_button=hover.kind==HIT_BUTTON?hover.button:-1;s.hover_close=hover.kind==HIT_CLOSE?hover.slot:-1;s.cog_hover=hover.kind==HIT_COG;s.quit_hover=hover.kind==HIT_QUIT;s.wheel_hover=hover.kind==HIT_WHEEL;
   s.cog_angle+=((s.time<s.cog_spin_until)?540.f:s.cog_hover?160.f:20.f)*(float)s.dt;if(s.cog_angle>=360.f)s.cog_angle-=360.f;
   /* One thread owns the current GL context for the entire frame: UI texture
    * regeneration, vehicle/cockpit geometry, and Wayland surface textures are

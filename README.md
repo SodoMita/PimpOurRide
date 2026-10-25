@@ -290,6 +290,7 @@ reverse proxy and firewall before exposing them to an untrusted network.
 | Click a dashboard button | Launch/focus that app (or run its built-in action) |
 | Right-click a dashboard button | Choose which app/action that button launches (Settings picker) |
 | Click the dashboard cog | Open Settings (`chromedrive-config`) |
+| Click the red dash EXIT button | First click arms exit for 3 seconds; a second click within that window quits ChromeDrive |
 | Shift + dashboard button | Force a new instance |
 | F1 | Help overlay |
 | F2 | Reset to the selected seat view |
@@ -297,6 +298,7 @@ reverse proxy and firewall before exposing them to an untrusted network.
 | F4 | Cycle underglow color (violet / ice blue / acid lime) |
 | Meta+O | Open or close both full-height hinged doors (sill, glass, roof rail, trim and door displays move too) |
 | Meta+A | Toggle city autopilot; closes the doors first, tours the other garages, and parks at home |
+| Meta+Shift+Q | Quit ChromeDrive immediately (also works in Arrange mode) |
 | F5 | Unbound in the compositor; reserved for browser/client restart or reload |
 | F6 | Toggle Arrange for the selected screen (move / rotate / roll / scale / resize) |
 | F7 | Toggle client input / hover-drive ownership |

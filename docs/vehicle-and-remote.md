@@ -275,6 +275,8 @@ F7 changes the owner of driving input. The native HUD is authoritative.
 | F9 | Switch driver/passenger seat | Same |
 | F10 | Recover pose without refilling battery/resetting odometer | Same |
 | Meta+A | Toggle deterministic city autopilot | Same |
+| Meta+Shift+Q | Quit ChromeDrive immediately | Same |
+| Red dash EXIT button | First press arms exit for 3 s; a second press quits | Same |
 | F2 | Return to the selected seat camera | Same |
 
 Client mode normally commands a parking brake so manipulating an application
