@@ -856,11 +856,11 @@ void scene_monitor_set_plane(Server *s,int slot,Plane plane){
  if(slot<0||slot>=CD_MAX_MONITORS||slot==CD_CLUSTER_SLOT)return;
  s->monitors[slot].custom_transform=true;s->monitors[slot].plane=plane;
 }
-void scene_wheel_cancel(Server *s){s->wheel_drag=false;s->wheel_steer=0;s->wheel_axis_accum=0;}
+void scene_wheel_cancel(Server *s){s->wheel_drag=false;s->wheel_steer=0;}
 bool scene_wheel_button(Server *s,Hit hit,int x,int y,bool down,uint32_t time){
  if(down){
   if(s->wheel_drag||hit.kind!=HIT_WHEEL)return s->wheel_drag;
-  s->wheel_drag=true;s->wheel_last_x=x;s->wheel_last_y=y;s->wheel_axis_accum=0;s->wheel_steer=0;
+  s->wheel_drag=true;s->wheel_last_x=x;s->wheel_last_y=y;s->wheel_steer=0;
   /* A wheel grab is compositor-owned. Send the matching pointer leave before
    * intercepting motion; otherwise the previously hovered client would see a
    * pointer that appears frozen inside its surface. */
@@ -892,13 +892,13 @@ void scene_wheel_motion(Server *s,int x,int y,uint32_t time){
   s->wheel_steer=clampf(s->wheel_steer+dx*.006f,-1,1);
  }else{
   s->wheel_client_angle=clampf(s->wheel_client_angle-dx*.65f,-135,135);
-  /* Coalesce high-frequency pointer samples into detents. This preserves the
-   * familiar wheel-click semantics for toolkits while still accepting smooth
-   * trackpad-style axis values through server_pointer_axis(). */
+  /* Forward every motion sample as a fractional continuous-axis value. The
+   * visual wheel angle above is also analog; do not quantize either path into
+   * binary/detent mouse clicks. Drive steering remains independent. */
   float horizontal,vertical;
-  wheel_client_axis(&s->wheel_axis_accum,dx,&horizontal,&vertical);
+  wheel_client_axis(dx,&horizontal,&vertical);
   if(horizontal!=0.0f||vertical!=0.0f)
-   server_pointer_axis(s,horizontal,vertical,time);
+   server_pointer_axis_continuous(s,horizontal,vertical,time);
  }
 }
 void scene_focus_monitor(Server *s,int slot,bool zoom){

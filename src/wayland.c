@@ -400,13 +400,21 @@ void server_release_pointer_buttons(Server *s,uint32_t time){
  }
  s->held_buttons=0;s->held_button_mask=0;s->pointer_grab=NULL;
 }
-void server_pointer_axis(Server *s,double dx,double dy,uint32_t time){
+static void pointer_axis_events(Server *s,double dx,double dy,uint32_t time,bool continuous){
+ /* axis_source describes all following values until changed; frame ends the
+  * logical pointer event group. Mouse-wheel input pairs axis_discrete clicks
+  * with axis values. Continuous input deliberately has no discrete clicks:
+  * those would re-quantize analog motion (and clients consuming both forms
+  * could apply it twice). Pre-v5 clients still receive fractional wl_fixed
+  * axis values, without source/discrete events unsupported by their version. */
  if(!s->pointer_focus)return;Resource *r;wl_list_for_each(r,&s->pointers,link)if(wl_resource_get_client(r->resource)==wl_resource_get_client(s->pointer_focus->resource)){
-  int ver=wl_resource_get_version(r->resource);if(ver>=5)wl_pointer_send_axis_source(r->resource,WL_POINTER_AXIS_SOURCE_WHEEL);
-  if(dy){if(ver>=5)wl_pointer_send_axis_discrete(r->resource,WL_POINTER_AXIS_VERTICAL_SCROLL,(int)-dy);wl_pointer_send_axis(r->resource,time,WL_POINTER_AXIS_VERTICAL_SCROLL,wl_fixed_from_double(-dy*15));}
-  if(dx){if(ver>=5)wl_pointer_send_axis_discrete(r->resource,WL_POINTER_AXIS_HORIZONTAL_SCROLL,(int)-dx);wl_pointer_send_axis(r->resource,time,WL_POINTER_AXIS_HORIZONTAL_SCROLL,wl_fixed_from_double(-dx*15));}pointer_frame(r->resource);
+  int ver=wl_resource_get_version(r->resource);if(ver>=5)wl_pointer_send_axis_source(r->resource,continuous?WL_POINTER_AXIS_SOURCE_CONTINUOUS:WL_POINTER_AXIS_SOURCE_WHEEL);
+  if(dy){if(!continuous&&ver>=5)wl_pointer_send_axis_discrete(r->resource,WL_POINTER_AXIS_VERTICAL_SCROLL,(int)-dy);wl_pointer_send_axis(r->resource,time,WL_POINTER_AXIS_VERTICAL_SCROLL,wl_fixed_from_double(-dy*15));}
+  if(dx){if(!continuous&&ver>=5)wl_pointer_send_axis_discrete(r->resource,WL_POINTER_AXIS_HORIZONTAL_SCROLL,(int)-dx);wl_pointer_send_axis(r->resource,time,WL_POINTER_AXIS_HORIZONTAL_SCROLL,wl_fixed_from_double(-dx*15));}pointer_frame(r->resource);
  }
 }
+void server_pointer_axis(Server *s,double dx,double dy,uint32_t time){pointer_axis_events(s,dx,dy,time,false);}
+void server_pointer_axis_continuous(Server *s,double dx,double dy,uint32_t time){pointer_axis_events(s,dx,dy,time,true);}
 static CdTouchPoint *touch_point_find(Server *s,int32_t id,bool create){
  CdTouchPoint *free_slot=NULL;
  for(int i=0;i<CD_MAX_TOUCH_POINTS;i++){

@@ -274,7 +274,7 @@ F7 changes the owner of driving input. The native HUD is authoritative.
 | W/up | Sent to focused Wayland client | Accelerate |
 | S/down | Sent to focused Wayland client | Brake while moving forward, reverse at rest |
 | Space | Sent to focused Wayland client | Regenerative/service brake |
-| Left-drag 3D wheel | Vertical pointer-axis wheel input to focused app | Steer |
+| Left-drag 3D wheel | Continuous analog vertical pointer-axis input to focused app | Steer |
 | F8 | Driver/exterior/systems camera | Same |
 | F9 | Switch driver/passenger seat | Same |
 | F10 | Recover pose without refilling battery/resetting odometer | Same |
@@ -340,17 +340,22 @@ pointer surface, enters the active application's surface at its centre, then
 uses the normal sequence for protocol v5+:
 
 ```text
-wl_pointer.axis_source(wheel)
-wl_pointer.axis_discrete(vertical_scroll, detents)
-wl_pointer.axis(vertical_scroll, continuous_value)
+wl_pointer.axis_source(continuous)
+wl_pointer.axis(vertical_scroll, fractional_analog_value)
 wl_pointer.frame
 ```
 
-High-frequency RFB/SDL motion is coalesced into detents before this sequence.
-A detent uses the conventional vertical wheel axis (right = down, left = up)
-so ordinary toolkit clients and the bundled Files app respond; emitting only
-horizontal axis events made those clients appear not to receive the wheel.
-Older pointer resources receive the events supported by their version.
+Every RFB/SDL motion sample is forwarded; it is **not** accumulated into
+28-pixel detents. The former 28-pixel step survives only as a sensitivity
+scale: 28 pixels correspond to 15 axis units, while tiny and fractional drags
+retain Wayland's 24.8 fixed-point precision. No `axis_discrete` event is sent
+on this path, so the client receives an analog stream rather than binary
+clicks. Right = down and left = up on the conventional vertical axis, keeping
+ordinary toolkit clients and the bundled Files app responsive. The Files demo
+accumulates fractional continuous values instead of jumping three rows per
+event; ordinary physical mouse wheels retain their normal source/discrete
+sequence. Older pointer resources receive fractional axis values without the
+source event unsupported by their version.
 
 ## EGL/GL context ownership
 

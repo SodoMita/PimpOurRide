@@ -6,6 +6,7 @@
 #include <wayland-client.h>
 #include "xdg-shell-client.h"
 #include "telemetry.h"
+#include "wheel_input.h"
 #include <cairo/cairo.h>
 #include <xkbcommon/xkbcommon.h>
 #include <dirent.h>
@@ -34,6 +35,9 @@ typedef struct {
  float px,py;double started,last_draw,last_metric,progress;bool playing;int track;
  char directory[4096],workspace[4096],preview_name[256],preview[16000];bool preview_open;
  FileEntry files[MAX_FILES];int file_count,scroll;
+ /* Continuous pointer-axis input is fractional. Keep the sub-step remainder
+  * instead of turning every tiny analog event into a three-row binary jump. */
+ double scroll_axis;uint32_t axis_source;
  double cpu,mem_used,mem_total,cpu_history[80];int history_head;unsigned long long last_total,last_idle;
  CdTelemetry *telemetry;
  uint64_t frames;
@@ -52,7 +56,7 @@ static void folder(cairo_t *c,double x,double y,double size){
  cairo_pattern_t *g=cairo_pattern_create_linear(0,20,0,57);cairo_pattern_add_color_stop_rgb(g,0,.69,.53,.91);cairo_pattern_add_color_stop_rgb(g,1,.37,.27,.56);cairo_set_source(c,g);rr(c,0,23,63,34,5);cairo_fill(c);cairo_pattern_destroy(g);cairo_restore(c);
 }
 static int compare_files(const void *a,const void *b){const FileEntry *aa=a,*bb=b;if(aa->directory!=bb->directory)return bb->directory-aa->directory;return strcasecmp(aa->name,bb->name);}
-static void read_dir(App *a){a->file_count=0;a->scroll=0;a->preview_open=false;DIR *dir=opendir(a->directory);if(!dir){snprintf(a->preview,sizeof(a->preview),"Cannot open directory: %s",strerror(errno));a->preview_open=true;a->dirty=true;return;}struct dirent *de;
+static void read_dir(App *a){a->file_count=0;a->scroll=0;a->scroll_axis=0;a->preview_open=false;DIR *dir=opendir(a->directory);if(!dir){snprintf(a->preview,sizeof(a->preview),"Cannot open directory: %s",strerror(errno));a->preview_open=true;a->dirty=true;return;}struct dirent *de;
  while((de=readdir(dir))&&a->file_count<MAX_FILES){if(de->d_name[0]=='.')continue;char path[4352];snprintf(path,sizeof(path),"%s/%s",a->directory,de->d_name);struct stat st;if(stat(path,&st))continue;FileEntry *e=&a->files[a->file_count++];snprintf(e->name,sizeof(e->name),"%s",de->d_name);e->directory=S_ISDIR(st.st_mode);e->size=st.st_size;}
  closedir(dir);qsort(a->files,a->file_count,sizeof(FileEntry),compare_files);a->dirty=true;
 }
@@ -171,9 +175,22 @@ static void pointer_button(void *data,struct wl_pointer *p,uint32_t serial,uint3
  if(a->mode==0){if(x>889&&y<80){go_up(a);return;}if(x<205){if(y>136&&y<177){snprintf(a->directory,sizeof(a->directory),"%s",a->workspace);read_dir(a);}else if(y>187&&y<228){snprintf(a->directory,sizeof(a->directory),"%s",getenv("HOME")?getenv("HOME"):"/");read_dir(a);}else if(y>238&&y<279)go_up(a);return;}if(!a->preview_open&&x>=240&&x<978&&y>=183&&y<555){int col=(x-240)/246,row=(y-183)/124;open_file(a,a->scroll+row*3+col);}}
  else if(a->mode==1){if(x>620&&x<701&&y>399&&y<466)a->playing=!a->playing;else if(x>566&&x<618&&y>400&&y<455){a->track=(a->track+3)%4;a->progress=0;}else if(x>705&&x<756&&y>400&&y<455){a->track=(a->track+1)%4;a->progress=0;}else if(x>420&&x<904&&y>339&&y<371)a->progress=(x-420)/484*195;a->dirty=true;}
 }
-static void pointer_axis(void *data,struct wl_pointer *p,uint32_t time,uint32_t axis,wl_fixed_t value){App *a=data;if(a->mode==0&&axis==WL_POINTER_AXIS_VERTICAL_SCROLL){a->scroll+=wl_fixed_to_double(value)>0?3:-3;if(a->scroll<0)a->scroll=0;int max=a->file_count>9?((a->file_count-7)/3)*3:0;if(a->scroll>max)a->scroll=max;a->dirty=true;}}
+static void pointer_axis(void *data,struct wl_pointer *p,uint32_t time,uint32_t axis,wl_fixed_t value){
+ App *a=data;if(a->mode!=0||axis!=WL_POINTER_AXIS_VERTICAL_SCROLL)return;
+ double amount=wl_fixed_to_double(value);int old=a->scroll;
+ if(a->axis_source==WL_POINTER_AXIS_SOURCE_CONTINUOUS){
+  /* Row-based Files drawing quantizes only its own presentation, after the
+   * analog events arrive. The shared helper preserves fractional remainder
+   * and exact forward/reverse symmetry. */
+  int steps=wheel_client_scroll_steps(&a->scroll_axis,amount);
+  if(!steps)return;a->scroll+=steps*3;
+ }else{a->scroll_axis=0;a->scroll+=amount>0?3:-3;}
+ if(a->scroll<0)a->scroll=0;int max=a->file_count>9?((a->file_count-7)/3)*3:0;if(a->scroll>max)a->scroll=max;
+ if(a->scroll==0||a->scroll==max)a->scroll_axis=0;
+ if(a->scroll!=old)a->dirty=true;
+}
 static void pointer_frame(void *data,struct wl_pointer *p){}
-static void pointer_source(void *data,struct wl_pointer *p,uint32_t source){}
+static void pointer_source(void *data,struct wl_pointer *p,uint32_t source){((App*)data)->axis_source=source;}
 static void pointer_stop(void *data,struct wl_pointer *p,uint32_t time,uint32_t axis){}
 static void pointer_discrete(void *data,struct wl_pointer *p,uint32_t axis,int32_t discrete){}
 static const struct wl_pointer_listener pointer_listener={.enter=pointer_enter,.leave=pointer_leave,.motion=pointer_motion,.button=pointer_button,.axis=pointer_axis,.frame=pointer_frame,.axis_source=pointer_source,.axis_stop=pointer_stop,.axis_discrete=pointer_discrete};
