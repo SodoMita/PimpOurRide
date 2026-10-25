@@ -134,6 +134,15 @@ SdlTouchFinger sdl_touch[CD_MAX_TOUCH_POINTS];int sdl_touch_chrome_id;
  EGLDisplay egl_display;EGLContext egl_context;        /* EGL backends (surfaceless EGL, no X) */
  GLuint target_fbo,fbo_color_rb,fbo_depth_rb;          /* EGL render target; 0 (default) when windowed */
  uint8_t *readback_pixels;                             /* shared single GL_RGBA readback scratch for EGL present */
+ /* Optional scaled 3D pass. The native-resolution HUD is composited after
+  * the offscreen result is sampled back into target_fbo. */
+ bool render_to_texture;
+ double render_scale;
+ GLuint render_mag_filter,render_min_filter;
+ GLuint rtt_fbo,rtt_color_tex,rtt_depth_rb;
+ int rtt_width,rtt_height;
+ GLuint rtt_mag_filter,rtt_min_filter;
+ int render_width,render_height;                       /* active 3D size; 0 = direct */
  void *vnc_screen;int vnc_port;                        /* rfbScreenInfoPtr, opaque here (see backend_vnc.c) */
  int vnc_prev_mask,vnc_prev_x,vnc_prev_y;              /* RFB pointer edge-detection state (no separate down/up events in the protocol) */
  char fbdev_path[256];bool fbdev_vsync,fbdev_pan,fbdev_vnc_mirror,fbdev_modeset,fbdev_evdev,fbdev_grab_input;int fbdev_mode_width,fbdev_mode_height,fbdev_mode_bpp;void *fbdev_state;char fbdev_input_devices[8][256];int fbdev_input_device_count;void *evdev_state;
@@ -206,6 +215,10 @@ void scene_init(Server *s);
 void city_render(Server *s);
 void scene_render(Server *s);
 void scene_update_mounts(Server *s);
+/* Offscreen 3D pass: begin binds/allocates the scaled render target and
+ * returns true; false selects the direct path. end samples it to target_fbo. */
+bool scene_rtt_begin(Server *s);
+void scene_rtt_end(Server *s);
 void scene_finish(Server *s);
 Hit scene_pick(Server *s,float x,float y,bool grab);
 Hit scene_pick_surface(Server *s,Surface *surface,float x,float y);

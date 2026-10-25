@@ -181,7 +181,8 @@ last until the next file edit, then the file wins for the keys it sets.
 
 ### What's live vs restart
 
-- **Compositor, live:** `display.fps`, `display.fov`, `cockpit.*`
+- **Compositor, live:** `display.fps`, `display.fov`, `display.render_to_texture`,
+  `display.render_scale`, `display.render_upscale`, `display.render_downscale`, `cockpit.*`
   (neon/hud/background), all `[app.*]` menu keys.
   **Restart:** `display.width/height/fullscreen`, and every `session.*` key,
   including `backend`, `headless` (legacy), `fbdev_device`, `fbdev_vsync`,
@@ -199,6 +200,34 @@ last until the next file edit, then the file wins for the keys it sets.
   adjust without a hitch. Edge-triggered care is taken: a reload does not
   unpause a Space-paused scene unless `physics.enabled` itself changed.
 
+### Render scaling
+
+The compositor can draw through an intermediate render-to-texture pass: the
+3D world and cockpit are rendered at `output size x render_scale` (rounded,
+minimum 1x1), then a fullscreen quad samples that texture into the real
+output. The HUD, help and pointer are composited afterward at native output
+resolution so their text stays sharp. That pass runs **only when
+`render_to_texture` is enabled and the
+effective scaled size differs from the output**; at the default
+`render_scale = 1`, or with `render_to_texture = false`, rendering stays on
+the direct-to-output path and the sampling keys have no effect.
+`render_upscale` maps to `GL_TEXTURE_MAG_FILTER`; `render_downscale`
+maps to `GL_TEXTURE_MIN_FILTER`, so you can pick a different sampler for
+magnifying and minifying. Values below 1 render fewer pixels (useful for slow
+software GPUs); values above 1 supersample. Mipmap downscale tokens generate
+mipmaps each frame; the others do not.
+
+The configured scale is accepted from `0.001` through `100` inclusive. The
+effective allocation is clamped to the driver's `GL_MAX_TEXTURE_SIZE` and
+`GL_MAX_RENDERBUFFER_SIZE`; if either dimension would exceed a cap, **both**
+dimensions are scaled by the same factor so the aspect ratio is preserved.
+Allocation/FBO failures log a warning and fall back to the direct-to-output
+path instead of black-screening. Hand-edited non-numeric, non-finite or
+out-of-range values (and unknown filter names) are warned about and ignored,
+keeping the previous/default setting. Pointer picking still uses output
+window coordinates, and F12/`--screenshot` capture the final output at the
+configured output size after the blit.
+
 ## Full schema
 
 ### chromedrive.conf
@@ -209,6 +238,10 @@ width = 1600          # 640..7680            (restart)
 height = 1000         # 400..4320            (restart)
 fps = 60              # 1..120 frame cap
 fov = 65              # 1..100 driver FOV; background scroll clamps to 1..75
+render_to_texture = true # gate for the scaled 3D pass; HUD stays native (live)
+render_scale = 1      # 0.001..100, 1 = 100%; typed field in GUI (live)
+render_upscale = linear   # nearest | linear (live)
+render_downscale = linear # nearest | linear | *_mipmap_nearest | *_mipmap_linear (live)
 fullscreen = false    # --windowed only      (restart)
 
 [cockpit]

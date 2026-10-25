@@ -35,6 +35,33 @@ void app_release_input(Server *s,uint32_t time){
 static char config_path[4096];
 static time_t config_mtime_seen;
 static bool config_enabled=true;
+/* Render sampling tokens map straight to GL filters. Upscale only accepts
+ * the two non-mipmap modes; downscale additionally accepts mipmap modes. */
+static bool config_filter(const char *value,bool mipmaps,GLuint *out){
+ if(!strcmp(value,"nearest")){*out=GL_NEAREST;return true;}
+ if(!strcmp(value,"linear")){*out=GL_LINEAR;return true;}
+ if(!mipmaps)return false;
+ if(!strcmp(value,"nearest_mipmap_nearest")){*out=GL_NEAREST_MIPMAP_NEAREST;return true;}
+ if(!strcmp(value,"linear_mipmap_nearest")){*out=GL_LINEAR_MIPMAP_NEAREST;return true;}
+ if(!strcmp(value,"nearest_mipmap_linear")){*out=GL_NEAREST_MIPMAP_LINEAR;return true;}
+ if(!strcmp(value,"linear_mipmap_linear")){*out=GL_LINEAR_MIPMAP_LINEAR;return true;}
+ return false;
+}
+static void apply_render_config(Server *s,const CdConfig *cfg){
+ s->render_to_texture=cd_config_get_bool(cfg,"display","render_to_texture",s->render_to_texture);
+ const char *v=cd_config_get_string(cfg,"display","render_scale",NULL);
+ if(v){
+  char *end=NULL;errno=0;double n=strtod(v,&end);
+  if(errno==0&&end!=v&&end&&!*end&&isfinite(n)&&n>=0.001&&n<=100.0)s->render_scale=n;
+  else fprintf(stderr,"[config] ignoring render_scale '%s' (want finite 0.001..100)\n",v);
+ }
+ v=cd_config_get_string(cfg,"display","render_upscale",NULL);
+ if(v){GLuint f;if(config_filter(v,false,&f))s->render_mag_filter=f;
+  else fprintf(stderr,"[config] ignoring render_upscale '%s' (want nearest|linear)\n",v);}
+ v=cd_config_get_string(cfg,"display","render_downscale",NULL);
+ if(v){GLuint f;if(config_filter(v,true,&f))s->render_min_filter=f;
+  else fprintf(stderr,"[config] ignoring render_downscale '%s' (want nearest|linear|nearest_mipmap_nearest|linear_mipmap_nearest|nearest_mipmap_linear|linear_mipmap_linear)\n",v);}
+}
 static bool parse_backend(const char *name,Backend *out){
  if(!strcmp(name,"headless")){*out=CD_BACKEND_HEADLESS;return true;}
  if(!strcmp(name,"windowed")){*out=CD_BACKEND_WINDOWED;return true;}
@@ -95,6 +122,7 @@ static void apply_config(Server *s,const CdConfig *cfg,bool startup,const char *
  s->fps_limit=(int)clampf((float)cd_config_get_int(cfg,"display","fps",s->fps_limit),1,120);
  s->target_fov=clampf((float)cd_config_get_double(cfg,"display","fov",s->target_fov),CD_DRIVER_FOV_MIN,CD_DRIVER_FOV_MAX);
  if(startup)s->fov=s->target_fov;
+ apply_render_config(s,cfg);
  long neon=cd_config_get_int(cfg,"cockpit","neon",s->theme);neon=((neon%3)+3)%3;
  if((int)neon!=s->theme){s->theme=(int)neon;s->rebuild_scene=true;}
  s->hud_visible=cd_config_get_bool(cfg,"cockpit","hud",s->hud_visible);
@@ -649,7 +677,7 @@ static void backend_shutdown(Server *s){
 }
 static void usage(const char *name){printf("ChromeDrive " CD_VERSION " \xe2\x80\x94 native, first-person Wayland cockpit\n\nUsage: %s [options]\n  --demo                Start the configured autostart Wayland clients\n  --socket NAME         Wayland socket (default: automatic)\n  --exec COMMAND        Launch an extra Wayland client (repeatable)\n  --size WIDTHxHEIGHT   Framebuffer/host window size (default 1600x1000)\n  --fps N               Frame cap, 1..120 (default 60)\n  --backend MODE        headless (default) | windowed | fbdev\n  --headless            Alias for --backend headless: surfaceless EGL + built-in VNC\n  --windowed            Alias for --backend windowed: SDL2/GLX dev window on X\n  --fbdev [DEVICE]      Direct Linux framebuffer output (default /dev/fb0)\n  --fbdev-device PATH   Framebuffer device for --backend fbdev\n  --fbdev-modeset       Select fbdev backend and request modeset to configured render size\n  --fbdev-mode WxH[@BPP] Select fbdev backend, imply modeset, set size/BPP (BPP in 16,24,32)\n  --no-fbdev-vsync      Do not wait for FBIO_WAITFORVSYNC\n  --no-fbdev-pan        Do not use FBIOPAN_DISPLAY double buffering\n  --fbdev-vnc-mirror    Loopback-only RFB input/output companion for fbdev\n  --vnc-mirror          Alias for --fbdev-vnc-mirror\n  --fbdev-evdev         Enable local evdev input for fbdev (default: on)\n  --no-fbdev-evdev      Disable local evdev input for fbdev\n  --fbdev-grab-input    Grab evdev devices (EVIOCGRAB; warns about VT lockout)\n  --fbdev-input-device PATH Restrict evdev to explicit device (repeatable, max 8)\n  --vnc-port N          VNC port for headless or the fbdev mirror (default 5900)\n  --fullscreen          --windowed only: start fullscreen, F11 to leave\n  --exit-after SECONDS   Useful for automated checks\n  --screenshot PATH     Capture a WebP after 3 seconds\n  --config PATH         Config file (default: ~/.config/chromedrive/chromedrive.conf)\n  --no-config           Ignore the config file entirely\n  --help                Show this help\n\nfbdev adopts the current kernel framebuffer mode by default (no modesetting);\nwith --fbdev-modeset or --fbdev-mode it requests a modeset via FBIOPUT_VSCREENINFO.\nThe original mode is restored on exit. Local evdev input (keyboard/mouse/touchscreen)\nis enabled by default for fbdev; use --no-fbdev-evdev to disable. Explicit devices\nvia --fbdev-input-device replace auto-enumeration. Startup-only enumeration; no hotplug.\n\nF1 help | F2 selected seat | F3 focus/next | F4 neon | F6 arrange | Meta+O doors\nF7 client/drive input | F8 driver/exterior/systems | F9 switch seat | F10 recover car\nF5 is unbound for browser/client restart or reload\nDrive: WASD/arrows + Space + drag wheel\nMiddle-drag/VNC-drag to look | Drag a titlebar to move | HANDLES shows the Arrange gizmo\nArrange: Tab next window, Esc/F6 exit | Ctrl+Alt+Enter new terminal\n",name);}
 int main(int argc,char **argv){
-  Server s={.width=1600,.height=1000,.fps_limit=60,.running=true,.hud_visible=true,.hover_button=-1,.hover_close=-1,.keymap_fd=-1,.arrange_slot=-1,.frame_drag_slot=-1,.fov=65,.target_fov=65,.backend=CD_BACKEND_HEADLESS,.fbdev_vsync=true,.fbdev_pan=true,.fbdev_evdev=true,.fbdev_grab_input=false,.vnc_port=5900,.telemetry_fd=-1,.fbdev_modeset=false,.fbdev_mode_width=0,.fbdev_mode_height=0,.fbdev_mode_bpp=0,.fbdev_input_device_count=0};
+ Server s={.width=1600,.height=1000,.fps_limit=60,.running=true,.hud_visible=true,.hover_button=-1,.hover_close=-1,.keymap_fd=-1,.arrange_slot=-1,.frame_drag_slot=-1,.fov=65,.target_fov=65,.backend=CD_BACKEND_HEADLESS,.fbdev_vsync=true,.fbdev_pan=true,.fbdev_evdev=true,.fbdev_grab_input=false,.vnc_port=5900,.telemetry_fd=-1,.fbdev_modeset=false,.fbdev_mode_width=0,.fbdev_mode_height=0,.fbdev_mode_bpp=0,.fbdev_input_device_count=0,.render_to_texture=true,.render_scale=1,.render_mag_filter=GL_LINEAR,.render_min_filter=GL_LINEAR};
  vehicle_init(&s.vehicle);
  const char *socket_name=NULL;double exit_after=0;bool auto_screenshot=false;
  /* Config pre-scan: --config/--no-config must be known before the file is
@@ -760,8 +788,14 @@ else if(!strcmp(argv[i],"--no-fbdev-vsync"))s.fbdev_vsync=false;
   /* One thread owns the current GL context for the entire frame: UI texture
    * regeneration, vehicle/cockpit geometry, and Wayland surface textures are
    * rendered into one FBO. No web worker or physics callback touches GL. */
-  glBindFramebuffer(GL_FRAMEBUFFER,s.target_fbo);
-  ui_update(&s);scene_render(&s);ui_draw_overlay(&s);
+  ui_update(&s);
+  bool rtt=scene_rtt_begin(&s);
+  scene_render(&s);
+  if(rtt)scene_rtt_end(&s);
+  else{glBindFramebuffer(GL_FRAMEBUFFER,s.target_fbo);glViewport(0,0,s.width,s.height);}
+  /* Keep text and pointer pixels sharp: only the 3D world uses render_scale;
+   * the HUD is composited after the offscreen sample at output resolution. */
+  ui_draw_overlay(&s);
   if(auto_screenshot&&s.time>3){s.screenshot_requested=true;auto_screenshot=false;}if(s.screenshot_requested){scene_save_screenshot(&s,s.screenshot_path);s.screenshot_requested=false;app_notice(&s,"Screenshot saved");}
   backend_present(&s);
   /* Frame callback render loop pattern:

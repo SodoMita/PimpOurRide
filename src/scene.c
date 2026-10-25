@@ -500,9 +500,120 @@ void scene_update_mounts(Server *s){
   }
  }
 }
+/* ---------------------------------------------------- render-to-texture */
+/* The offscreen pass exists so display.render_scale can render below or
+ * above the output size with independent magnification/minification
+ * sampling. It only runs when enabled and the effective scaled size differs
+ * from the output (so scale 1 keeps the historical direct path and its MSAA
+ * in windowed mode). It is intentionally not multisampled, and it falls back
+ * to direct-to-output whenever allocation/FBO setup fails. */
+static bool rtt_mipmapped(GLuint f){
+ return f==GL_NEAREST_MIPMAP_NEAREST||f==GL_LINEAR_MIPMAP_NEAREST||
+        f==GL_NEAREST_MIPMAP_LINEAR||f==GL_LINEAR_MIPMAP_LINEAR;
+}
+static const char *rtt_filter_name(GLuint f){
+ switch(f){
+ case GL_NEAREST:return "nearest";
+ case GL_LINEAR:return "linear";
+ case GL_NEAREST_MIPMAP_NEAREST:return "nearest_mipmap_nearest";
+ case GL_LINEAR_MIPMAP_NEAREST:return "linear_mipmap_nearest";
+ case GL_NEAREST_MIPMAP_LINEAR:return "nearest_mipmap_linear";
+ case GL_LINEAR_MIPMAP_LINEAR:return "linear_mipmap_linear";
+ default:return "invalid";
+ }
+}
+static int rtt_max_dim(void){
+ GLint tex=0,rb=0;glGetIntegerv(GL_MAX_TEXTURE_SIZE,&tex);glGetIntegerv(GL_MAX_RENDERBUFFER_SIZE,&rb);
+ int max=tex>0?tex:4096;
+ if(rb>0&&rb<max)max=rb;
+ return max;
+}
+static void rtt_release(Server *s){
+ if(s->rtt_color_tex)glDeleteTextures(1,&s->rtt_color_tex);
+ if(s->rtt_depth_rb)glDeleteRenderbuffers(1,&s->rtt_depth_rb);
+ if(s->rtt_fbo)glDeleteFramebuffers(1,&s->rtt_fbo);
+ s->rtt_color_tex=s->rtt_depth_rb=s->rtt_fbo=0;
+ s->render_width=s->render_height=0;
+}
+bool scene_rtt_begin(Server *s){
+ if(!s->render_to_texture){s->render_width=s->render_height=0;return false;}
+ int max=rtt_max_dim();double fw=(double)s->width*s->render_scale,fh=(double)s->height*s->render_scale;
+ double limit=fmax(1.0,(double)max),factor=1.0;
+ if(fw>limit)factor=fmin(factor,limit/fw);
+ if(fh>limit)factor=fmin(factor,limit/fh);
+ int w=(int)floor(fw*factor+.5),h=(int)floor(fh*factor+.5);
+ if(w<1)w=1;if(h<1)h=1;if(w>max)w=max;if(h>max)h=max;
+ if(w==s->width&&h==s->height){s->render_width=s->render_height=0;return false;}
+ GLuint mag=s->render_mag_filter,min=s->render_min_filter;
+ if(w==s->rtt_width&&h==s->rtt_height&&mag==s->rtt_mag_filter&&min==s->rtt_min_filter){
+  if(!s->rtt_fbo){s->render_width=s->render_height=0;return false;}
+  s->render_width=w;s->render_height=h;
+  glBindFramebuffer(GL_FRAMEBUFFER,s->rtt_fbo);glViewport(0,0,w,h);
+  return true;
+ }
+ rtt_release(s);
+ s->rtt_width=w;s->rtt_height=h;s->rtt_mag_filter=mag;s->rtt_min_filter=min;
+ GLint prev_tex=0;glGetIntegerv(GL_TEXTURE_BINDING_2D,&prev_tex);
+ while(glGetError()!=GL_NO_ERROR){}
+ GLuint tex=0,rb=0,fbo=0;
+ glGenTextures(1,&tex);glBindTexture(GL_TEXTURE_2D,tex);
+ glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_WRAP_S,GL_CLAMP_TO_EDGE);glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_WRAP_T,GL_CLAMP_TO_EDGE);
+ glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MAG_FILTER,(GLint)mag);glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MIN_FILTER,(GLint)min);
+ glTexImage2D(GL_TEXTURE_2D,0,GL_RGBA8,w,h,0,GL_RGBA,GL_UNSIGNED_BYTE,NULL);
+ if(rtt_mipmapped(min))glGenerateMipmap(GL_TEXTURE_2D);
+ glGenRenderbuffers(1,&rb);glBindRenderbuffer(GL_RENDERBUFFER,rb);glRenderbufferStorage(GL_RENDERBUFFER,GL_DEPTH24_STENCIL8,w,h);
+ glGenFramebuffers(1,&fbo);glBindFramebuffer(GL_FRAMEBUFFER,fbo);
+ glFramebufferTexture2D(GL_FRAMEBUFFER,GL_COLOR_ATTACHMENT0,GL_TEXTURE_2D,tex,0);
+ glFramebufferRenderbuffer(GL_FRAMEBUFFER,GL_DEPTH_ATTACHMENT,GL_RENDERBUFFER,rb);
+ glFramebufferRenderbuffer(GL_FRAMEBUFFER,GL_STENCIL_ATTACHMENT,GL_RENDERBUFFER,rb);
+ GLenum status=glCheckFramebufferStatus(GL_FRAMEBUFFER),err=glGetError();
+ glBindTexture(GL_TEXTURE_2D,(GLuint)prev_tex);
+ if(!tex||!rb||!fbo||status!=GL_FRAMEBUFFER_COMPLETE||err!=GL_NO_ERROR){
+  fprintf(stderr,"[rtt] allocation failed %dx%d (output %dx%d, scale %g, mag %s, min %s): status 0x%x error 0x%x\n",
+          w,h,s->width,s->height,s->render_scale,rtt_filter_name(mag),rtt_filter_name(min),status,err);
+  if(tex)glDeleteTextures(1,&tex);if(rb)glDeleteRenderbuffers(1,&rb);if(fbo)glDeleteFramebuffers(1,&fbo);
+  s->render_width=s->render_height=0;
+  glBindFramebuffer(GL_FRAMEBUFFER,s->target_fbo);glViewport(0,0,s->width,s->height);
+  return false;
+ }
+ s->rtt_color_tex=tex;s->rtt_depth_rb=rb;s->rtt_fbo=fbo;
+ s->render_width=w;s->render_height=h;
+ fprintf(stderr,"[rtt] render target %dx%d (output %dx%d, scale %g, mag %s, min %s)\n",
+         w,h,s->width,s->height,s->render_scale,rtt_filter_name(mag),rtt_filter_name(min));
+ glBindFramebuffer(GL_FRAMEBUFFER,s->rtt_fbo);glViewport(0,0,w,h);
+ return true;
+}
+void scene_rtt_end(Server *s){
+ if(!s->rtt_fbo){glBindFramebuffer(GL_FRAMEBUFFER,s->target_fbo);glViewport(0,0,s->width,s->height);return;}
+ GLint prev_tex=0;GLfloat color[4];
+ GLboolean depth=glIsEnabled(GL_DEPTH_TEST),light=glIsEnabled(GL_LIGHTING),blend=glIsEnabled(GL_BLEND);
+ GLboolean tex2d=glIsEnabled(GL_TEXTURE_2D),stencil=glIsEnabled(GL_STENCIL_TEST),fog=glIsEnabled(GL_FOG),cull=glIsEnabled(GL_CULL_FACE);
+ glGetIntegerv(GL_TEXTURE_BINDING_2D,&prev_tex);glGetFloatv(GL_CURRENT_COLOR,color);
+ if(rtt_mipmapped(s->rtt_min_filter)){glBindTexture(GL_TEXTURE_2D,s->rtt_color_tex);glGenerateMipmap(GL_TEXTURE_2D);}
+ glBindFramebuffer(GL_FRAMEBUFFER,s->target_fbo);glViewport(0,0,s->width,s->height);
+ glDisable(GL_DEPTH_TEST);glDisable(GL_LIGHTING);glDisable(GL_BLEND);glDisable(GL_STENCIL_TEST);glDisable(GL_FOG);glDisable(GL_CULL_FACE);
+ glEnable(GL_TEXTURE_2D);glBindTexture(GL_TEXTURE_2D,s->rtt_color_tex);
+ glMatrixMode(GL_PROJECTION);glPushMatrix();glLoadIdentity();glMatrixMode(GL_MODELVIEW);glPushMatrix();glLoadIdentity();
+ glColor4f(1,1,1,1);
+ glBegin(GL_QUADS);
+ glTexCoord2f(0,0);glVertex2f(-1,-1);glTexCoord2f(1,0);glVertex2f(1,-1);
+ glTexCoord2f(1,1);glVertex2f(1,1);glTexCoord2f(0,1);glVertex2f(-1,1);
+ glEnd();
+ glPopMatrix();glMatrixMode(GL_PROJECTION);glPopMatrix();glMatrixMode(GL_MODELVIEW);
+ if(depth)glEnable(GL_DEPTH_TEST);else glDisable(GL_DEPTH_TEST);
+ if(light)glEnable(GL_LIGHTING);else glDisable(GL_LIGHTING);
+ if(blend)glEnable(GL_BLEND);else glDisable(GL_BLEND);
+ if(tex2d)glEnable(GL_TEXTURE_2D);else glDisable(GL_TEXTURE_2D);
+ if(stencil)glEnable(GL_STENCIL_TEST);else glDisable(GL_STENCIL_TEST);
+ if(fog)glEnable(GL_FOG);else glDisable(GL_FOG);
+ if(cull)glEnable(GL_CULL_FACE);else glDisable(GL_CULL_FACE);
+ glBindTexture(GL_TEXTURE_2D,(GLuint)prev_tex);glColor4f(color[0],color[1],color[2],color[3]);
+ glBindFramebuffer(GL_FRAMEBUFFER,s->target_fbo);
+}
 void scene_render(Server *s){
- glViewport(0,0,s->width,s->height);glClear(GL_COLOR_BUFFER_BIT|GL_DEPTH_BUFFER_BIT|GL_STENCIL_BUFFER_BIT);glEnable(GL_DEPTH_TEST);
- glMatrixMode(GL_PROJECTION);glLoadIdentity();double t=tan(s->fov*RAD/2)*.05;glFrustum(-t*s->width/s->height,t*s->width/s->height,-t,t,.05,150);
+ int rw=s->render_width>0?s->render_width:s->width,rh=s->render_height>0?s->render_height:s->height;
+ glViewport(0,0,rw,rh);glClear(GL_COLOR_BUFFER_BIT|GL_DEPTH_BUFFER_BIT|GL_STENCIL_BUFFER_BIT);glEnable(GL_DEPTH_TEST);
+ glMatrixMode(GL_PROJECTION);glLoadIdentity();double t=tan(s->fov*RAD/2)*.05;glFrustum(-t*(double)rw/rh,t*(double)rw/rh,-t,t,.05,150);
  glMatrixMode(GL_MODELVIEW);glLoadIdentity();SceneCamera camera=scene_camera(s);scene_camera_view(camera);
  lighting();environment(s);
  glPushMatrix();vehicle_model_transform(s);lighting();
@@ -642,7 +753,7 @@ void scene_focus_monitor(Server *s,int slot,bool zoom){
 }
 void scene_reset_camera(Server *s){s->camera_mode=VEHICLE_CAMERA_DRIVER;s->eye=vehicle_seat_eye(s->camera_seat);s->target_yaw=roundf(s->yaw/360)*360;s->target_pitch=-6;s->target_fov=65;s->focus_view=false;}
 void scene_save_screenshot(Server *s,const char *path){
- int w=s->width,h=s->height;uint8_t *pixels=malloc((size_t)w*h*4);if(!pixels)return;glReadPixels(0,0,w,h,GL_BGRA,GL_UNSIGNED_BYTE,pixels);
+ int w=s->width,h=s->height;uint8_t *pixels=malloc((size_t)w*h*4);if(!pixels)return;glBindFramebuffer(GL_FRAMEBUFFER,s->target_fbo);glReadPixels(0,0,w,h,GL_BGRA,GL_UNSIGNED_BYTE,pixels);
  uint8_t *flipped=malloc((size_t)w*h*4);
  if(!flipped){free(pixels);return;}
  for(int y=0;y<h;y++){memcpy(flipped+(size_t)y*w*4,pixels+(size_t)(h-1-y)*w*4,(size_t)w*4);for(int x=0;x<w;x++)flipped[(size_t)y*w*4+x*4+3]=255;}
@@ -657,4 +768,5 @@ void scene_finish(Server *s){
  if(s->city_list)glDeleteLists(s->city_list,1);
  for(int i=0;i<4;i++)if(s->city_signs[i])glDeleteTextures(1,&s->city_signs[i]);
  GLuint textures[]={s->garage_tex,s->carbon_tex,s->console_tex,s->hub_tex,s->hud_tex,s->windshield_tex,s->help_tex,s->plate_tex,s->handles_tex};glDeleteTextures(sizeof(textures)/sizeof(textures[0]),textures);for(int i=0;i<6;i++)glDeleteTextures(1,&s->buttons[i].texture);for(int i=0;i<CD_MAX_MONITORS;i++)glDeleteTextures(1,&s->monitors[i].label);
+ rtt_release(s);
 }
