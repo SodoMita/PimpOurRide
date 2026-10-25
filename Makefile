@@ -7,7 +7,7 @@ LDLIBS = $(shell pkg-config --libs $(PKGS)) -lm
 PROTO_DIR := $(shell pkg-config --variable=pkgdatadir wayland-protocols)
 GEN = .generated
 BIN = bin
-SOURCES = src/main.c src/wayland.c src/scene.c src/city_scene.c src/vehicle.c src/city.c src/vehicle_scene.c src/vehicle_seat.c src/keymap.c src/wheel_input.c src/ui.c src/math3d.c src/telemetry.c src/dmabuf.c src/cdconfig.c src/backend_sdl.c src/backend_headless.c src/backend_egl.c src/backend_vnc.c src/backend_fbdev.c src/backend_evdev.c src/evdev_util.c src/fbdev_pixfmt.c
+SOURCES = src/main.c src/wayland.c src/scene.c src/city_scene.c src/vehicle.c src/city.c src/vehicle_scene.c src/vehicle_seat.c src/keymap.c src/wheel_input.c src/ui.c src/math3d.c src/telemetry.c src/dmabuf.c src/cdconfig.c src/i18n.c src/backend_sdl.c src/backend_headless.c src/backend_egl.c src/backend_vnc.c src/backend_fbdev.c src/backend_evdev.c src/evdev_util.c src/fbdev_pixfmt.c
 PROTOCOLS = $(GEN)/xdg-shell-protocol.c $(GEN)/xdg-decoration-protocol.c $(GEN)/linux-dmabuf-protocol.c
 HEADERS = $(GEN)/xdg-shell-server.h $(GEN)/xdg-decoration-server.h $(GEN)/linux-dmabuf-server.h
 .PHONY: all clean test sanitize garage3d garage3d-test garage3d-clean
@@ -30,7 +30,7 @@ $(GEN)/linux-dmabuf-protocol.c: | $(GEN)
 	wayland-scanner private-code $(PROTO_DIR)/stable/linux-dmabuf/linux-dmabuf-v1.xml $@
 $(GEN)/linux-dmabuf-client.h: | $(GEN)
 	wayland-scanner client-header $(PROTO_DIR)/stable/linux-dmabuf/linux-dmabuf-v1.xml $@
-$(BIN)/chromedrive: $(SOURCES) include/chrome.h include/math3d.h include/vehicle.h include/city.h include/vehicle_seat.h include/wheel_input.h include/telemetry.h include/cdconfig.h include/fbdev_pixfmt.h $(HEADERS) $(PROTOCOLS) | $(BIN)
+$(BIN)/chromedrive: $(SOURCES) include/chrome.h include/math3d.h include/vehicle.h include/city.h include/vehicle_seat.h include/wheel_input.h include/telemetry.h include/cdconfig.h include/i18n.h include/fbdev_pixfmt.h $(HEADERS) $(PROTOCOLS) | $(BIN)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(SOURCES) $(PROTOCOLS) -o $@ $(LDLIBS)
 $(BIN)/chromedrive-demo: clients/demo.c include/telemetry.h $(GEN)/xdg-shell-client.h $(GEN)/xdg-shell-protocol.c | $(BIN)
 	$(CC) -Iinclude -I$(GEN) $(CFLAGS) $(shell pkg-config --cflags wayland-client cairo xkbcommon) clients/demo.c $(GEN)/xdg-shell-protocol.c -o $@ $(shell pkg-config --libs wayland-client cairo xkbcommon) -lm
@@ -38,8 +38,8 @@ $(BIN)/chromedrive-demo: clients/demo.c include/telemetry.h $(GEN)/xdg-shell-cli
 # the demo, linking the same INI store the compositor reads. No new deps
 # beyond what the compositor already needs (libwebp included), so it is
 # part of `all`.
-$(BIN)/chromedrive-config: clients/config.c src/cdconfig.c include/cdconfig.h $(GEN)/xdg-shell-client.h $(GEN)/xdg-shell-protocol.c | $(BIN)
-	$(CC) -Iinclude -I$(GEN) $(CFLAGS) $(shell pkg-config --cflags wayland-client cairo xkbcommon libwebp) clients/config.c src/cdconfig.c $(GEN)/xdg-shell-protocol.c -o $@ $(shell pkg-config --libs wayland-client cairo xkbcommon libwebp) -lm
+$(BIN)/chromedrive-config: clients/config.c src/cdconfig.c src/i18n.c include/cdconfig.h include/i18n.h $(GEN)/xdg-shell-client.h $(GEN)/xdg-shell-protocol.c | $(BIN)
+	$(CC) -Iinclude -I$(GEN) $(CFLAGS) $(shell pkg-config --cflags wayland-client cairo xkbcommon libwebp) clients/config.c src/cdconfig.c src/i18n.c $(GEN)/xdg-shell-protocol.c -o $@ $(shell pkg-config --libs wayland-client cairo xkbcommon libwebp) -lm
 $(BIN)/test-math: tests/test_math.c src/math3d.c include/math3d.h | $(BIN)
 	$(CC) -Iinclude $(CFLAGS) tests/test_math.c src/math3d.c -o $@ -lm
 $(BIN)/protocol-probe: tests/protocol_probe.c $(GEN)/xdg-shell-client.h $(GEN)/xdg-shell-protocol.c $(GEN)/linux-dmabuf-protocol.c $(GEN)/linux-dmabuf-client.h | $(BIN)
@@ -65,7 +65,9 @@ $(BIN)/test-wheel-input: tests/test_wheel_input.c src/wheel_input.c include/whee
 	$(CC) -Iinclude $(CFLAGS) tests/test_wheel_input.c src/wheel_input.c -o $@ -lm
 $(BIN)/test-fbdev: tests/test_fbdev.c src/fbdev_pixfmt.c src/evdev_util.c include/fbdev_pixfmt.h include/evdev_util.h | $(BIN)
 	$(CC) -Iinclude $(CFLAGS) tests/test_fbdev.c src/fbdev_pixfmt.c src/evdev_util.c -o $@
-test: $(BIN)/test-math $(BIN)/test-config $(BIN)/test-vehicle $(BIN)/test-telemetry $(BIN)/test-keymap $(BIN)/test-wheel-input $(BIN)/test-fbdev $(BIN)/chromedrive-config
+$(BIN)/test-i18n: tests/test_i18n.c src/i18n.c include/i18n.h | $(BIN)
+	$(CC) -Iinclude $(CFLAGS) tests/test_i18n.c src/i18n.c -o $@
+test: $(BIN)/test-math $(BIN)/test-config $(BIN)/test-vehicle $(BIN)/test-telemetry $(BIN)/test-keymap $(BIN)/test-wheel-input $(BIN)/test-fbdev $(BIN)/test-i18n $(BIN)/chromedrive-config
 	./$(BIN)/test-math
 	./$(BIN)/test-config
 	./$(BIN)/test-vehicle
@@ -73,6 +75,7 @@ test: $(BIN)/test-math $(BIN)/test-config $(BIN)/test-vehicle $(BIN)/test-teleme
 	./$(BIN)/test-keymap
 	./$(BIN)/test-wheel-input
 	./$(BIN)/test-fbdev
+	./$(BIN)/test-i18n
 	./$(BIN)/chromedrive-config --selftest
 sanitize:
 	$(MAKE) clean

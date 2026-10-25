@@ -70,6 +70,38 @@ buttons. That's it, by design.
   all plain C. A `.js`/`.ts` file appearing under any of those paths is a
   sign something went wrong.
 
+## 2b. User-facing text — go through `tr()`
+
+ChromeDrive speaks one thing at runtime and ships it in several languages.
+The rule is the same shape as the PNG ban: there is exactly one right way.
+
+- **Every string the user can see** — HUD, Driver's Manual, Launch Control
+  labels, `app_notice()` messages, the settings GUI — is passed through
+  `tr()` from `include/i18n.h`. A bare `"Some Label"` handed to `text()`,
+  `mono()`, `txt()` or `app_notice()` is a bug.
+- **The English text is the key** (gettext model). No key constants, no
+  generated header, no extraction tool. Catalog: `assets/locale/<tag>.lang`.
+- **Translate at draw time, never in a table.** `Def.sec/key` are config keys
+  and, when `enum_is_string`, the stored value is the English label itself —
+  translating those in place would corrupt the user's config file and break
+  hot reload. Labels, group headings and enum *display* values are translated
+  where they are drawn.
+- **Editable text fields keep raw bytes.** The settings GUI shows the
+  user's stored value in inputs (only read-only summaries are translated), so
+  a translated label can never be written back into the config.
+- Keys are matched exactly: same case, same spacing (the HUD aligns columns
+  with doubled spaces), and **no `=` in a key** — it separates key from value
+  in the catalog format.
+- Bake-time, not frame-time: textures with text in them are built once. If
+  you add a new baked-with-text texture, add it to `ui_refresh_text()` in
+  `src/ui.c` or it will keep the old language until restart.
+- `make test` runs `tests/test_i18n.c`, which fails if a shipped catalog key
+  no longer appears verbatim in the sources. Rewording an English string
+  means updating `assets/locale/ru.lang` in the same commit.
+- A missing catalog or key **must** fall back to English silently. Never
+  print blanks or key names on screen; a partially translated install is a
+  supported state.
+
 ## 3. Build artifacts & generated files
 
 - Never commit `bin/`, `.generated/`, `*.o`, or any other `make`-produced

@@ -36,6 +36,7 @@
  *    resource. This throttles client rendering to the compositor's actual
  *    presentation rate and prevents background clients from spinning at 100% CPU. */
 #include "chrome.h"
+#include "i18n.h"
 #include "xdg-shell-server.h"
 #include "xdg-decoration-server.h"
 #include <errno.h>
@@ -131,7 +132,7 @@ static void surface_map(Surface *p){
   if(preferred>=0&&!s->monitors[preferred].surface)slot=preferred;
   if(slot<0)for(int i=0;i<CD_APP_BAYS;i++)if(!s->monitors[i].surface){slot=i;break;}
  }
- if(slot<0){app_notice(s,cluster?"The instrument cluster is already occupied":"All eight car-part display mounts are occupied");xdg_toplevel_send_close(p->toplevel);return;}
+ if(slot<0){app_notice(s,cluster?tr("The instrument cluster is already occupied"):tr("All eight car-part display mounts are occupied"));xdg_toplevel_send_close(p->toplevel);return;}
  /* Arrange transforms belong to one mapped window, never to the bay itself. */
  scene_monitor_reset(s,slot);
  p->slot=slot;p->mapped=true;Monitor *m=&s->monitors[slot];m->surface=p;
@@ -140,7 +141,7 @@ static void surface_map(Surface *p){
  send_surface_enter(p);send_configure(p);
  fprintf(stderr,"[wayland] mapped %s [%s] -> CD-%02d / %s (%dx%d)\n",p->title,p->app_id,slot+1,monitor_mount_name(slot),p->width,p->height);
  /* A passive instrument must never steal app focus merely by starting up. */
- if(!cluster){server_focus(s,p);if(s->time>3.5){scene_focus_monitor(s,slot,false);app_notice(s,"CD-%02d / %s / %s",slot+1,monitor_mount_name(slot),p->title);}}
+ if(!cluster){server_focus(s,p);if(s->time>3.5){scene_focus_monitor(s,slot,false);app_notice(s,tr("CD-%02d / %s / %s"),slot+1,monitor_mount_name(slot),p->title);}}
 }
 static bool effective_sync(Surface *p){for(int i=0;p&&p->parent&&i<32;i++,p=p->parent)if(p->subsurface&&p->sub_sync)return true;return false;}
 static void surface_apply(Surface *p){

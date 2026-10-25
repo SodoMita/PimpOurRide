@@ -247,6 +247,11 @@ void ui_init(Server *s);
 /* Re-renders the six Launch Control button textures from current
  * name/sub/icon/enabled - called after a config (re)load changes the menu. */
 void ui_refresh_buttons(Server *s);
+/* Re-bakes every texture with text drawn into it (buttons, console, plate,
+ * hub, HANDLES chip, driver's manual, HUD, windshield HUD, titlebars). Called
+ * when the UI language changes: the language is applied at bake time, so a
+ * texture built under the old language has to be thrown away. */
+void ui_refresh_text(Server *s);
 void ui_update(Server *s);
 void ui_monitor_label(Server *s,int slot);
 void ui_draw_overlay(Server *s);
