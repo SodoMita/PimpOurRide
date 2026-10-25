@@ -245,7 +245,7 @@ DC/DC converter, contactor box, low-voltage battery, cooling loop, and four
 hover pods. A single heave spring/damper replaces wheel simulation by design.
 
 In **client mode** (the default), dragging the 3D steering wheel sends
-horizontal `wl_pointer.axis` input to the focused app and W/A/S/D remain app
+vertical `wl_pointer.axis` wheel input to the focused app and W/A/S/D remain app
 keys. In **drive mode**, W/up accelerates, S/down brakes then reverses,
 A/D/left/right steer, Space brakes, and dragging the wheel steers directly.
 Client mode applies a parking brake. The web viewer includes hold-to-drive

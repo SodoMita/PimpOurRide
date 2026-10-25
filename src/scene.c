@@ -1,5 +1,6 @@
 #include "chrome.h"
 #include "vehicle_seat.h"
+#include "wheel_input.h"
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>
@@ -719,7 +720,14 @@ bool scene_wheel_button(Server *s,Hit hit,int x,int y,bool down,uint32_t time){
   }
   return true;
  }
- if(s->wheel_drag){scene_wheel_cancel(s);return true;}
+ if(s->wheel_drag){
+  scene_wheel_cancel(s);
+  /* The physical pointer is still over the compositor-owned wheel, not at the
+   * synthetic client-centre position used for the axis grab. Balance that
+   * enter with a leave on release instead of leaving stale pointer focus. */
+  server_pointer_motion(s,(Hit){0},time);
+  return true;
+ }
  return false;
 }
 void scene_wheel_motion(Server *s,int x,int y,uint32_t time){
@@ -732,11 +740,10 @@ void scene_wheel_motion(Server *s,int x,int y,uint32_t time){
   /* Coalesce high-frequency pointer samples into detents. This preserves the
    * familiar wheel-click semantics for toolkits while still accepting smooth
    * trackpad-style axis values through server_pointer_axis(). */
-  s->wheel_axis_accum+=dx;
-  if(fabsf(s->wheel_axis_accum)>=28){
-   float detents=truncf(s->wheel_axis_accum/28);s->wheel_axis_accum-=detents*28;
-   server_pointer_axis(s,-detents,0,time);
-  }
+  float horizontal,vertical;
+  wheel_client_axis(&s->wheel_axis_accum,dx,&horizontal,&vertical);
+  if(horizontal!=0.0f||vertical!=0.0f)
+   server_pointer_axis(s,horizontal,vertical,time);
  }
 }
 void scene_focus_monitor(Server *s,int slot,bool zoom){

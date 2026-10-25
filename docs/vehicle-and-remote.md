@@ -181,7 +181,8 @@ real side walls, roofs, service benches, two-sided illuminated signs, and clear
 drive-through lanes. Sixteen towers, lit windows, sidewalks, lane markings,
 crosswalks, streetlights, rooftop beacons, rain, and eight moving hover cars
 provide actual 3D surroundings and ambient activity. Static city geometry is
-cached in a GL display list; traffic and weather remain time-dependent.
+cached in a GL display list; weather uses render time, while traffic uses the
+same authoritative fixed-step simulation clock as control and collision.
 
 Meta+A toggles autopilot in either input-ownership mode. Engagement requests
 both doors to close and holds the parking brake until they have physically
@@ -191,8 +192,11 @@ battery/thermal telemetry, and collision path as manual input. There is no
 render-time translation of the car along a spline. The deterministic route
 visits all three remote garages and parks at home. Starting another run after
 parking nose-in first reverses out of the home doorway, then resumes forward
-driving. Ambient traffic is independent closed-form animation; it is not a
-substitute for the main car's simulated controls.
+driving. Ambient traffic follows deterministic closed-form routes on that same
+clock; it is not a substitute for the main car's simulated controls. Rendering,
+predictive yielding/braking, and collision fallback use identical traffic poses
+and body dimensions. Crossing reservations protect corners and Home exits;
+last-resort contact resolution remains enabled rather than hiding traffic.
 
 In Drive mode, pressing a driving key immediately disengages autopilot and
 returns manual control. In Client mode those keys still go to the focused
@@ -270,7 +274,7 @@ F7 changes the owner of driving input. The native HUD is authoritative.
 | W/up | Sent to focused Wayland client | Accelerate |
 | S/down | Sent to focused Wayland client | Brake while moving forward, reverse at rest |
 | Space | Sent to focused Wayland client | Regenerative/service brake |
-| Left-drag 3D wheel | Horizontal pointer-axis/scroll input to focused app | Steer |
+| Left-drag 3D wheel | Vertical pointer-axis wheel input to focused app | Steer |
 | F8 | Driver/exterior/systems camera | Same |
 | F9 | Switch driver/passenger seat | Same |
 | F10 | Recover pose without refilling battery/resetting odometer | Same |
@@ -335,12 +339,15 @@ uses the normal sequence for protocol v5+:
 
 ```text
 wl_pointer.axis_source(wheel)
-wl_pointer.axis_discrete(horizontal_scroll, detents)
-wl_pointer.axis(horizontal_scroll, continuous_value)
+wl_pointer.axis_discrete(vertical_scroll, detents)
+wl_pointer.axis(vertical_scroll, continuous_value)
 wl_pointer.frame
 ```
 
 High-frequency RFB/SDL motion is coalesced into detents before this sequence.
+A detent uses the conventional vertical wheel axis (right = down, left = up)
+so ordinary toolkit clients and the bundled Files app respond; emitting only
+horizontal axis events made those clients appear not to receive the wheel.
 Older pointer resources receive the events supported by their version.
 
 ## EGL/GL context ownership
