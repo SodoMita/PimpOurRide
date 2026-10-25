@@ -135,9 +135,6 @@ static const Def G3_DEFS[] = {
 /* Row 0 is filled in at runtime by gui_load_languages(): its choices are the
  * catalogs actually installed, which is not knowable at compile time. */
 #define CD_LANGUAGE_ROW 0
-/* Filled in at runtime by gui_load_post_shaders(): bundled shader presets plus
- * a currently stored custom path so it stays selected in the row. */
-#define CD_POST_SHADER_ROW 9
 static Def CD_DEFS[] = {
     { "Interface", "ui", "language", "Interface language", K_ENUM, 0, 0, 1, NULL, "auto", {0}, 0, true, false },
     { "Display", "display", "width", "Framebuffer width", K_INT, 640, 3840, 10, "%.0f", "1600", {0}, 0, false, true },
@@ -148,7 +145,12 @@ static Def CD_DEFS[] = {
     { "Display", "display", "render_scale", "3D render scale (HUD stays native)", K_FLOAT_INPUT, 0.001, 100, 0, "%.6g", "1", {0}, 0, false, false },
     { "Display", "display", "render_upscale", "Render upscale sampling", K_ENUM, 0, 1, 1, NULL, "linear", { "nearest", "linear" }, 2, true, false },
     { "Display", "display", "render_downscale", "Render downscale sampling", K_ENUM, 0, 5, 1, NULL, "linear_mipmap_linear", { "nearest", "linear", "nearest_mipmap_nearest", "linear_mipmap_nearest", "nearest_mipmap_linear", "linear_mipmap_linear" }, 6, true, false },
-    { "Display", "display", "post_shader", "Post shader (.frag, 3D world only)", K_ENUM, 0, 0, 1, NULL, "off", {0}, 0, true, false },
+    /* Four preset toggles share display.post_shader; fmt holds the path and
+     * toggles write the whole ';'-chain in canonical row order. */
+    { "Display", "display", "post_shader", "Post FX: Hermite downscale", K_BOOL, 0, 0, 0, "shaders/hermite-downscale.frag", "off", {0}, 0, false, false },
+    { "Display", "display", "post_shader", "Post FX: Hermite downscale (mipmap)", K_BOOL, 0, 0, 0, "shaders/hermite-downscale-mipmap.frag", "off", {0}, 0, false, false },
+    { "Display", "display", "post_shader", "Post FX: SSIM downscale", K_BOOL, 0, 0, 0, "shaders/ssim-downscale.frag", "off", {0}, 0, false, false },
+    { "Display", "display", "post_shader", "Post FX: Khronos PBR Neutral tone map", K_BOOL, 0, 0, 0, "shaders/khronos-pbr-neutral.frag", "off", {0}, 0, false, false },
     { "Display", "display", "fullscreen", "Start fullscreen (windowed)", K_BOOL, 0, 0, 0, NULL, "false", {0}, 0, false, true },
     { "Cockpit", "cockpit", "neon", "Underglow colour", K_ENUM, 0, 2, 1, NULL, "0", { "Ultraviolet", "Ice Blue", "Acid Lime" }, 3, false, false },
     { "Cockpit", "cockpit", "hud", "HUD overlay", K_BOOL, 0, 0, 0, NULL, "true", {0}, 0, false, false },
@@ -278,6 +280,88 @@ typedef struct {
 static CdConfig *store_of(Gui *g, int file) { return g->store[file]; }
 static void gui_sync_language(Gui *g);
 
+/* ---- display.post_shader chain helpers ---------------------------------
+ * The config value is a ';'-separated list of .frag paths (engine side: empty
+ * tokens and "off" skipped, max eight stages). The GUI exposes four preset
+ * booleans that all write the same key; fmt carries each preset's path and
+ * def_get_bool answers membership in the parsed list. Recomputing a write
+ * puts known presets first in canonical row order, then preserves any custom
+ * (non-preset) entries in their existing relative order. */
+#define CD_POST_PRESET_COUNT 4
+static const char *const post_shader_presets[CD_POST_PRESET_COUNT] = {
+    "shaders/hermite-downscale.frag",
+    "shaders/hermite-downscale-mipmap.frag",
+    "shaders/ssim-downscale.frag",
+    "shaders/khronos-pbr-neutral.frag",
+};
+#define CD_POST_LIST_CAP 2048
+static bool post_shader_token_live(const char *tok, size_t len) {
+    return len > 0 && !(len == 3 && memcmp(tok, "off", 3) == 0);
+}
+static bool post_shader_token_is_preset(const char *tok, size_t len) {
+    for (int i = 0; i < CD_POST_PRESET_COUNT; i++)
+        if (strlen(post_shader_presets[i]) == len &&
+            memcmp(tok, post_shader_presets[i], len) == 0)
+            return true;
+    return false;
+}
+/* Trimmed token iterator over a ';' list. Empty tokens are skipped; returns
+ * the next scan position, or NULL when the list is exhausted. */
+static const char *post_shader_next_token(const char *p, const char **tok, size_t *len) {
+    while (*p) {
+        const char *end = strchr(p, ';');
+        if (!end) end = p + strlen(p);
+        const char *s = p;
+        while (s < end && isspace((unsigned char)*s)) s++;
+        const char *e = end;
+        while (e > s && isspace((unsigned char)e[-1])) e--;
+        bool more = (*end == ';');
+        p = more ? end + 1 : end;
+        if (e > s) { *tok = s; *len = (size_t)(e - s); return p; }
+    }
+    return NULL;
+}
+static bool post_shader_contains(const char *list, const char *path) {
+    size_t want = strlen(path);
+    const char *tok = NULL, *p = list;
+    size_t len = 0;
+    while ((p = post_shader_next_token(p, &tok, &len)) != NULL)
+        if (post_shader_token_live(tok, len) && len == want &&
+            memcmp(tok, path, len) == 0)
+            return true;
+    return false;
+}
+static void post_shader_append(char *out, size_t *used, const char *tok, size_t len) {
+    if (!len) return;
+    if (*used && *used + 1 < CD_POST_LIST_CAP) out[(*used)++] = ';';
+    if (*used + len >= CD_POST_LIST_CAP) len = CD_POST_LIST_CAP - 1 - *used;
+    memcpy(out + *used, tok, len);
+    *used += len;
+    out[*used] = 0;
+}
+static void post_shader_toggle(CdConfig *st, const char *toggled, bool on) {
+    const char *cur = cd_config_get_string(st, "display", "post_shader", "");
+    char out[CD_POST_LIST_CAP];
+    size_t used = 0;
+    out[0] = 0;
+    for (int i = 0; i < CD_POST_PRESET_COUNT; i++) {
+        const char *preset = post_shader_presets[i];
+        bool want = strcmp(preset, toggled) == 0 ? on : post_shader_contains(cur, preset);
+        if (want) post_shader_append(out, &used, preset, strlen(preset));
+    }
+    const char *tok = NULL, *p = cur;
+    size_t len = 0;
+    while ((p = post_shader_next_token(p, &tok, &len)) != NULL) {
+        if (!post_shader_token_live(tok, len) || post_shader_token_is_preset(tok, len))
+            continue;
+        post_shader_append(out, &used, tok, len);
+    }
+    cd_config_set_string(st, "display", "post_shader", used ? out : "off");
+}
+static void post_shader_reset(CdConfig *st) {
+    cd_config_set_string(st, "display", "post_shader", "off");
+}
+
 static void touch_file(Gui *g, int file) {
     g->save_pending[file] = true;
     g->last_change = now_s();
@@ -313,6 +397,9 @@ static double def_get_num(Gui *g, int file, const Def *d) {
     return cd_config_get_double(store_of(g, file), d->sec, d->key, atof(d->def));
 }
 static bool def_get_bool(Gui *g, int file, const Def *d) {
+    if (d->kind == K_BOOL && !strcmp(d->key, "post_shader"))
+        return post_shader_contains(
+            cd_config_get_string(store_of(g, file), d->sec, d->key, d->def), d->fmt);
     return cd_config_get_bool(store_of(g, file), d->sec, d->key,
                               strcmp(d->def, "true") == 0);
 }
@@ -1744,7 +1831,11 @@ static void gui_press(Gui *g, double x, double y) {
     case H_TOGGLE: {
         defs = hit->a == FILE_G3 ? G3_DEFS : CD_DEFS;
         const Def *d = &defs[hit->b];
-        cd_config_set_bool(store_of(g, hit->a), d->sec, d->key, !def_get_bool(g, hit->a, d));
+        bool on = !def_get_bool(g, hit->a, d);
+        if (d->kind == K_BOOL && !strcmp(d->key, "post_shader"))
+            post_shader_toggle(store_of(g, hit->a), d->fmt, on);
+        else
+            cd_config_set_bool(store_of(g, hit->a), d->sec, d->key, on);
         touch_file(g, hit->a); flush_saves(g, true);
         break;
     }
@@ -1801,8 +1892,20 @@ static void gui_press(Gui *g, double x, double y) {
         int file = g->tab == TAB_CD ? FILE_CD : FILE_G3;
         const Def *dd = file == FILE_CD ? CD_DEFS : G3_DEFS;
         int nd = file == FILE_CD ? N_CD_DEFS : N_G3_DEFS;
-        for (int i = 0; i < nd; i++)
+        bool post_reset = false;
+        for (int i = 0; i < nd; i++) {
+            /* The four post-FX rows share display.post_shader. Reset means
+             * defaults, so write "off" once (dropping custom entries) and skip
+             * the sibling rows; otherwise each generic write would race the
+             * others and could resurrect a previously stored chain. */
+            if (dd[i].kind == K_BOOL && !strcmp(dd[i].key, "post_shader")) {
+                if (post_reset) continue;
+                post_shader_reset(store_of(g, file));
+                post_reset = true;
+                continue;
+            }
             cd_config_set_string(store_of(g, file), dd[i].sec, dd[i].key, dd[i].def);
+        }
         touch_file(g, file); flush_saves(g, true);
         break;
     }
@@ -2069,44 +2172,6 @@ static void gui_load_languages(Gui *g) {
     d->min = 0;
 }
 
-/* Backing store for the post-shader row's labels, same lifetime rule as
- * language_tags: Def keeps bare pointers, so these must outlive the table. */
-static char post_shader_paths[8][1024];
-
-/* The built-in presets are fixed; a hand-edited custom path is appended when
- * it is non-empty and not already a preset, so the row shows it instead of
- * silently falling back to "off". Picking another choice overwrites it. */
-static void gui_load_post_shaders(Gui *g) {
-    static const char *const presets[] = {
-        "off",
-        "shaders/khronos-pbr-neutral.frag",
-        "shaders/ssim-downscale.frag",
-        "shaders/hermite-downscale.frag",
-        "shaders/hermite-downscale-mipmap.frag",
-    };
-    Def *d = &CD_DEFS[CD_POST_SHADER_ROW];
-    int n = 0;
-    for (size_t i = 0; i < sizeof presets / sizeof presets[0]; i++) {
-        snprintf(post_shader_paths[n], sizeof post_shader_paths[0], "%s", presets[i]);
-        d->enums[n] = post_shader_paths[n];
-        n++;
-    }
-    const char *cur = cd_config_get_string(g->store[FILE_CD], d->sec, d->key, d->def);
-    if (cur && *cur && strcmp(cur, "off") != 0) {
-        bool known = false;
-        for (int i = 0; i < n; i++)
-            if (!strcmp(cur, d->enums[i])) { known = true; break; }
-        if (!known && n < (int)(sizeof d->enums / sizeof d->enums[0])) {
-            snprintf(post_shader_paths[n], sizeof post_shader_paths[0], "%s", cur);
-            d->enums[n] = post_shader_paths[n];
-            n++;
-        }
-    }
-    d->enum_count = n;
-    d->max = (double)(n - 1);
-    d->min = 0;
-}
-
 /* The GUI edits the config file live and the compositor reloads it, but this
  * process has to relabel itself too. Cheap enough to poll once a frame: it is
  * one string compare. */
@@ -2147,7 +2212,6 @@ static bool gui_init(Gui *g, const char *config_dir) {
                                      : cd_config_get_string(g->store[FILE_CD], "ui", "language", "auto"));
     i18n_set_language(g->root, g->language_applied);
     gui_load_languages(g);
-    gui_load_post_shaders(g);
     /* Translated text into a fixed buffer: snprintf would cut at a byte count
      * and can leave a half-written code point, which makes cairo drop every
      * later draw call in the frame. */
@@ -2359,31 +2423,47 @@ static int selftest(const char *config_dir_arg) {
     img = render_tab_image(&g, TAB_CD); cairo_surface_destroy(img);
     for (int i = 0; i < N_CD_DEFS; i++)
         if (!strcmp(CD_DEFS[i].key, "background")) def_set_enum(&g, FILE_CD, &CD_DEFS[i], 1);
-    /* Post shader row: bundled presets cycle through the real widget, and a
-     * hand-edited custom path is injected so it displays (and is preserved). */
-    int psi = -1;
-    for (int i = 0; i < N_CD_DEFS; i++) if (!strcmp(CD_DEFS[i].key, "post_shader")) psi = i;
-    CHECK(psi >= 0 && CD_DEFS[psi].kind == K_ENUM && CD_DEFS[psi].enum_is_string &&
-          CD_DEFS[psi].enum_count == 5 &&
-          !strcmp(CD_DEFS[psi].enums[0], "off") &&
-          !strcmp(CD_DEFS[psi].enums[4], "shaders/hermite-downscale-mipmap.frag"),
-          "post_shader presets missing");
+    /* Post FX chain: four K_BOOL rows share display.post_shader. Exercise the
+     * real toggle path for canonical ordering, custom preservation and the
+     * all-off value. */
+    int herm = -1, mip = -1, ssm = -1, khr = -1;
+    for (int i = 0; i < N_CD_DEFS; i++) {
+        if (strcmp(CD_DEFS[i].key, "post_shader") || CD_DEFS[i].kind != K_BOOL) continue;
+        if (!strcmp(CD_DEFS[i].fmt, "shaders/hermite-downscale.frag")) herm = i;
+        else if (!strcmp(CD_DEFS[i].fmt, "shaders/hermite-downscale-mipmap.frag")) mip = i;
+        else if (!strcmp(CD_DEFS[i].fmt, "shaders/ssim-downscale.frag")) ssm = i;
+        else if (!strcmp(CD_DEFS[i].fmt, "shaders/khronos-pbr-neutral.frag")) khr = i;
+    }
+    CHECK(herm >= 0 && mip >= 0 && ssm >= 0 && khr >= 0 &&
+          herm < mip && mip < ssm && ssm < khr, "post_shader preset rows missing/out of order");
+    g.scroll[TAB_CD] = 0;
+    cd_config_set_string(g.store[FILE_CD], "display", "post_shader", "off");
     img = render_tab_image(&g, TAB_CD); cairo_surface_destroy(img);
-    CHECK(click_box(&g, H_ENUM_INC, FILE_CD, psi), "no post_shader enum + hitbox");
+    CHECK(click_box(&g, H_TOGGLE, FILE_CD, khr), "no Khronos tone-map toggle");
+    CHECK(click_box(&g, H_TOGGLE, FILE_CD, herm), "no Hermite toggle");
     CHECK(!strcmp(cd_config_get_string(g.store[FILE_CD], "display", "post_shader", ""),
-                  "shaders/khronos-pbr-neutral.frag"),
-          "post_shader cycle did not write next preset");
-    cd_config_set_string(g.store[FILE_CD], "display", "post_shader", "custom/hello.frag");
-    gui_load_post_shaders(&g);
-    CHECK(CD_DEFS[psi].enum_count == 6 &&
-          !strcmp(CD_DEFS[psi].enums[5], "custom/hello.frag") &&
-          def_get_enum(&g, FILE_CD, &CD_DEFS[psi]) == 5,
-          "custom post_shader path not injected/selected");
-    def_set_enum(&g, FILE_CD, &CD_DEFS[psi], 0);
+                  "shaders/hermite-downscale.frag;shaders/khronos-pbr-neutral.frag"),
+          "post_shader toggle did not write canonical row order");
+    cd_config_set_string(g.store[FILE_CD], "display", "post_shader",
+                         "shaders/hermite-downscale.frag;custom/hello.frag");
+    img = render_tab_image(&g, TAB_CD); cairo_surface_destroy(img);
+    CHECK(click_box(&g, H_TOGGLE, FILE_CD, herm), "cannot toggle Hermite off");
+    CHECK(!strcmp(cd_config_get_string(g.store[FILE_CD], "display", "post_shader", ""),
+                  "custom/hello.frag"), "preset toggle dropped a custom entry");
+    CHECK(click_box(&g, H_TOGGLE, FILE_CD, herm), "cannot toggle Hermite on");
+    CHECK(!strcmp(cd_config_get_string(g.store[FILE_CD], "display", "post_shader", ""),
+                  "shaders/hermite-downscale.frag;custom/hello.frag"),
+          "preset re-toggle lost custom ordering");
+    CHECK(click_box(&g, H_TOGGLE, FILE_CD, ssm), "cannot toggle SSIM on");
+    CHECK(!strcmp(cd_config_get_string(g.store[FILE_CD], "display", "post_shader", ""),
+                  "shaders/hermite-downscale.frag;shaders/ssim-downscale.frag;custom/hello.frag"),
+          "custom entry not kept after canonical presets");
+    cd_config_set_string(g.store[FILE_CD], "display", "post_shader", "off");
+    img = render_tab_image(&g, TAB_CD); cairo_surface_destroy(img);
+    CHECK(click_box(&g, H_TOGGLE, FILE_CD, herm), "cannot toggle Hermite on for all-off test");
+    CHECK(click_box(&g, H_TOGGLE, FILE_CD, herm), "cannot toggle Hermite off for all-off test");
     CHECK(!strcmp(cd_config_get_string(g.store[FILE_CD], "display", "post_shader", ""), "off"),
-          "post_shader off not written");
-    gui_load_post_shaders(&g);
-    CHECK(CD_DEFS[psi].enum_count == 5, "post_shader custom value not dropped after reset");
+          "all-off chain did not write off");
     /* VNC port is a typed input, never a 1024..65535 slider. */
     int pi = -1;
     for (int i = 0; i < N_CD_DEFS; i++) if (!strcmp(CD_DEFS[i].key, "vnc_port")) pi = i;
@@ -2462,6 +2542,14 @@ static int selftest(const char *config_dir_arg) {
     float rgb[3];
     CHECK(v && cd_config_get_color(v, "scene", "neon_left", rgb) && rgb[0] > 0.99, "neon color not saved");
     cd_config_free(v);
+    /* Reset-tab-to-defaults writes "off" once for the shared post_shader key
+     * and drops custom entries instead of letting four row writes race. */
+    cd_config_set_string(g.store[FILE_CD], "display", "post_shader",
+                         "shaders/hermite-downscale.frag;custom/hello.frag");
+    img = render_tab_image(&g, TAB_CD); cairo_surface_destroy(img);
+    CHECK(click_box(&g, H_RESET_TAB, 0, 0), "no reset-tab box");
+    CHECK(!strcmp(cd_config_get_string(g.store[FILE_CD], "display", "post_shader", ""), "off"),
+          "reset tab did not drop custom post_shader entries");
     gui_free(&g);
 
     /* Installed-app catalog fixture: user-over-system masking, recursive

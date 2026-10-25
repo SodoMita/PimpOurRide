@@ -237,7 +237,7 @@ from the system's desktop-entry databases. You can still hand-tune the command
 instance instead of relaunching, toggle entries on/off, and choose the
 `--demo` autostart set. The other tabs cover every Garage3D tunable (neon
 colours, fog, rain, physics…) and every compositor setting (size/FPS/FOV,
-render scale, upscale/downscale sampling, post shader selection, underglow,
+render scale, upscale/downscale sampling, post-effect chain toggles, underglow,
 3D-vs-texture backdrop, and the VNC port as an exact typed number—not a
 slider). `render_scale` is a
 typed number (`0.001`–`100`, `1` = 100%) rather than a slider, and the two
@@ -262,21 +262,37 @@ scale `1` (or with the toggle off) it renders directly, with no offscreen
 pass. The HUD, help and pointer remain at native output resolution. Requests
 larger than the GL texture/renderbuffer limits are proportionally clamped.
 
-`display.post_shader` names a fragment-only GLSL 1.20 file applied to the 3D
-world after the RTT resolve and before the native-resolution HUD. It is
-selectable in Settings (Display > Post shader: `off` plus the bundled shaders).
-Arbitrary `.frag` paths still go in the config file; when one is set the GUI
-shows that custom path in the row so it stays selected. While it is
-loaded the compositor forces the offscreen path even at `render_scale = 1`,
-bypassing the direct/windowed-MSAA path; the shader samples the finished world
-image through `u_src`/`u_size` and the scaled world image through
+`display.post_shader` is an optional ordered `;`-separated list of
+fragment-only GLSL 1.20 files applied to the 3D world after the RTT resolve
+and before the native-resolution HUD. Stages run left to right: the first
+samples the resolved world image, and each later stage samples the previous
+stage's output. Up to eight stages are loaded; extra entries log a warning and
+are ignored. For example:
+
+```ini
+render_scale = 2
+post_shader = shaders/hermite-downscale.frag;shaders/khronos-pbr-neutral.frag
+```
+
+Settings > Display exposes four preset checkboxes (Hermite downscale, Hermite
+downscale mipmap, SSIM downscale, Khronos PBR Neutral tone map). They write the
+chain in top-to-bottom order and keep any custom (non-preset) paths already
+stored in the file. Arbitrary `.frag` paths still go in the config file; the
+GUI toggles only its bundled presets. `off`, empty or missing means no post;
+empty entries and an `off` token anywhere in the list are skipped, so a single
+path without `;` behaves exactly as before. While at least one stage is loaded
+the compositor forces the offscreen path even at `render_scale = 1`, bypassing
+the direct/windowed-MSAA path. Every stage receives `u_src`/`u_size` (the
+previous stage's output for later stages), the original scaled world image via
 `u_world`/`u_world_size` (texture unit 1, native render resolution, mipmap
-filter intact) with `gl_TexCoord[0].xy`, may use `u_time`, and writes
-`gl_FragColor`. `shaders/khronos-pbr-neutral.frag`,
+filter intact) and may use `u_time`; it writes `gl_FragColor` with
+`gl_TexCoord[0].xy`. Because `u_world` is always the original world texture,
+stacking two downscalers means the last one's `u_world` result wins; the usual
+chain is one downscaler plus a tone map. `shaders/khronos-pbr-neutral.frag`,
 `shaders/ssim-downscale.frag` and the two `shaders/hermite-downscale*.frag`
-shaders are runnable examples. Empty or missing turns it
-off; an unreadable or non-compiling file logs one warning and renders normally
-until the path changes.
+shaders are runnable examples. If any stage is unreadable or fails to compile
+or link, the whole chain is disabled with one warning per failing file and
+rendering continues normally until the config value changes.
 
 It edits `~/.config/chromedrive/chromedrive.conf` and
 `~/.config/garage3d/garage3d.conf` (plain INI, hand-editable). Both programs

@@ -99,11 +99,12 @@ CdConfig *cd_config_load(const char *path) {
         *eq = '\0';
         char *key = trim(s);
         char *value = trim(eq + 1);
-        /* Tolerate an inline comment on plain string values; our own writer
-         * never emits one, and known value shapes (numbers, #RRGGBB, words)
-         * contain neither " #" nor " ;". */
+        /* Tolerate an inline '#' comment on plain string values; our own
+         * writer never emits one. ';' is a full-line comment only: values such
+         * as display.post_shader are ';'-separated lists and may put spaces
+         * around the separators, which must not truncate the list. */
         for (char *p = value; *p; p++) {
-            if ((p[0] == '#' || p[0] == ';') && p > value && p[-1] == ' ') {
+            if (p[0] == '#' && p > value && p[-1] == ' ') {
                 p[-1] = '\0';
                 break;
             }

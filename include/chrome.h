@@ -157,15 +157,18 @@ SdlTouchFinger sdl_touch[CD_MAX_TOUCH_POINTS];int sdl_touch_chrome_id;
  int rtt_width,rtt_height;
  GLuint rtt_mag_filter,rtt_min_filter;
  int render_width,render_height;                       /* active 3D size; 0 = direct */
- /* display.post_shader: a runtime fullscreen fragment shader applied to the
-  * 3D world only. apply_render_config copies the path and sets post_dirty;
-  * scene.c owns all loading/compiling, keyed off the path. Empty = off. */
- char post_shader_path[1024];
+ /* display.post_shader: an ordered ';'-separated list of runtime fullscreen
+  * fragment shaders applied to the 3D world only. apply_render_config copies
+  * the raw list and sets post_dirty; scene.c owns parsing, loading and
+  * compiling, keyed off the string. Empty/all-"off" = no stages. */
+#define CD_POST_MAX_STAGES 8
+ char post_shader_path[2048];
  bool post_dirty;                                      /* path changed; scene.c loads lazily with the GL context current */
- bool post_ready;                                      /* program compiled for the current path */
- bool post_failed;                                     /* current path failed; retry only when the path changes */
- GLuint post_prog;
- GLuint post_temp_tex,post_temp_fbo;                   /* output-size RGBA8 resolve destination while a post shader is active */
+ bool post_ready;                                      /* every stage compiled for the current list */
+ bool post_failed;                                     /* current list failed; retry only when it changes */
+ GLuint post_progs[CD_POST_MAX_STAGES];                /* compiled stages in chain order */
+ int post_count;                                       /* active stages, 0..CD_POST_MAX_STAGES */
+ GLuint post_temp_tex[2],post_temp_fbo[2];             /* output-size RGBA8 ping-pong destinations while a chain is active */
  int post_temp_w,post_temp_h;
  void *vnc_screen;int vnc_port;                        /* rfbScreenInfoPtr, opaque here (see backend_vnc.c) */
  void *headless_state;                                 /* asynchronous pixel-pack ring, owned by backend_headless.c */

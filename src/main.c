@@ -65,14 +65,15 @@ static void apply_render_config(Server *s,const CdConfig *cfg){
   if(config_filter(v,true,&f))s->render_min_filter=f;
   else fprintf(stderr,"[config] ignoring render_downscale '%s' (want nearest|linear|nearest_mipmap_nearest|linear_mipmap_nearest|nearest_mipmap_linear|linear_mipmap_linear)\n",v);
  }
- /* display.post_shader is just a path here: apply_render_config runs before
-  * (and independently of) GL context setup. scene.c notices post_dirty and
-  * loads/compiles lazily in scene_rtt_begin when the context is current.
-  * A missing key clears the setting, so removing it from the file turns the
-  * effect off on the next reload. */
+ /* display.post_shader is just a raw ';'-separated list here:
+  * apply_render_config runs before (and independently of) GL context setup.
+  * scene.c notices post_dirty and parses/loads/compiles the stages lazily in
+  * scene_rtt_begin when the context is current. A missing key clears the
+  * setting, so removing it from the file turns the chain off on the next
+  * reload; scene.c also skips empty entries and per-stage "off" tokens. */
  v=cd_config_get_string(cfg,"display","post_shader",NULL);
  if(!v)v="";
- if(!strcmp(v,"off"))v="";   /* settings GUI's explicit "off" preset */
+ if(!strcmp(v,"off"))v="";   /* settings GUI's explicit whole-chain "off" */
  if(strcmp(v,s->post_shader_path)){
   snprintf(s->post_shader_path,sizeof(s->post_shader_path),"%s",v);
   s->post_dirty=true;

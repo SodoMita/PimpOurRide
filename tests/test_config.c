@@ -49,6 +49,7 @@ int main(void) {
         "height = 1080\n"
         "fps = not-a-number\n"
         "fov = 55.5 trailing\n"
+        "post_shader = a.frag ; b.frag\n"
         "[cockpit]\n"
         "hud = off\n"
         "neon = 2\n"
@@ -61,6 +62,8 @@ int main(void) {
     CHECK(cd_config_get_int(cfg, "display", "height", 0) == 1080);
     CHECK(cd_config_get_int(cfg, "display", "fps", 60) == 60); /* malformed -> default */
     CHECK(fabs(cd_config_get_double(cfg, "display", "fov", 0) - 55.5) < 1e-9);
+    CHECK(strcmp(cd_config_get_string(cfg, "display", "post_shader", ""),
+                 "a.frag ; b.frag") == 0); /* spaces around ';' are data, not a comment */
     CHECK(cd_config_get_bool(cfg, "cockpit", "hud", true) == false);
     CHECK(cd_config_get_int(cfg, "cockpit", "neon", 0) == 2);
     CHECK(cd_config_get_int(cfg, "scene", "rain", 0) == 137);

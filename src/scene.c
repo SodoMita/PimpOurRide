@@ -1,6 +1,7 @@
 #include "chrome.h"
 #include "vehicle_seat.h"
 #include "wheel_input.h"
+#include <ctype.h>
 #include <errno.h>
 #include <math.h>
 #include <stdlib.h>
@@ -791,65 +792,112 @@ static GLuint rtt_post_link(const char *path,const char *fs_src){
  return prog;
 }
 static void rtt_post_release_temp(Server *s){
- if(s->post_temp_tex)glDeleteTextures(1,&s->post_temp_tex);
- if(s->post_temp_fbo)glDeleteFramebuffers(1,&s->post_temp_fbo);
- s->post_temp_tex=s->post_temp_fbo=0;s->post_temp_w=s->post_temp_h=0;
+ for(int i=0;i<2;i++){
+  if(s->post_temp_tex[i])glDeleteTextures(1,&s->post_temp_tex[i]);
+  if(s->post_temp_fbo[i])glDeleteFramebuffers(1,&s->post_temp_fbo[i]);
+  s->post_temp_tex[i]=s->post_temp_fbo[i]=0;
+ }
+ s->post_temp_w=s->post_temp_h=0;
 }
-static void rtt_post_release_program(Server *s){
- if(s->post_prog)glDeleteProgram(s->post_prog);
- s->post_prog=0;
+static void rtt_post_release_programs(Server *s){
+ for(int i=0;i<CD_POST_MAX_STAGES;i++){
+  if(s->post_progs[i])glDeleteProgram(s->post_progs[i]);
+  s->post_progs[i]=0;
+ }
+ s->post_count=0;
+}
+/* Split the ';'-separated config value into trimmed stage paths. Empty tokens
+ * and the literal token "off" are skipped, so a single path (the legacy
+ * format) still works and "off;foo.frag" means just foo.frag. */
+static int rtt_post_split(const char *spec,char paths[][2048],int max){
+ int n=0;bool warned=false;
+ const char *p=spec;
+ while(*p){
+  const char *end=strchr(p,';');if(!end)end=p+strlen(p);
+  const char *s=p;while(s<end&&isspace((unsigned char)*s))s++;
+  const char *e=end;while(e>s&&isspace((unsigned char)e[-1]))e--;
+  size_t len=(size_t)(e-s);
+  bool off=len==3&&!strncmp(s,"off",3);
+  if(len&&!off){
+   if(n<max){memcpy(paths[n],s,len);paths[n][len]='\0';n++;}
+   else if(!warned){
+    fprintf(stderr,"[post] more than %d shader stages; truncating to %d\n",max,max);
+    warned=true;
+   }
+  }
+  if(*end!=';')break;
+  p=end+1;
+ }
+ return n;
+}
+static GLuint rtt_post_compile(const char *path){
+ char *raw=rtt_post_read(path);
+ if(!raw)return 0;
+ char *full=raw;bool allocated=false;
+ if(!strstr(raw,"#version")){
+  const char *prefix="#version 120\n";size_t p=strlen(prefix),n=strlen(raw);
+  full=malloc(p+n+1);
+  if(!full){fprintf(stderr,"[post] out of memory preparing '%s'; rendering without post\n",path);free(raw);return 0;}
+  memcpy(full,prefix,p);memcpy(full+p,raw,n+1);allocated=true;
+ }
+ GLuint prog=rtt_post_link(path,full);
+ if(allocated)free(full);
+ free(raw);
+ return prog;
 }
 static void rtt_post_ensure(Server *s){
  if(!s->post_shader_path[0]){
-  if(s->post_prog)rtt_post_release_program(s);
+  rtt_post_release_programs(s);
   s->post_ready=false;s->post_failed=false;s->post_dirty=false;
   return;
  }
  if(!s->post_dirty&&(s->post_ready||s->post_failed))return;
  s->post_dirty=false;
- if(s->post_prog)rtt_post_release_program(s);
+ rtt_post_release_programs(s);
  s->post_ready=false;s->post_failed=false;
- char *raw=rtt_post_read(s->post_shader_path);
- if(!raw){s->post_failed=true;return;}
- char *full=raw;bool allocated=false;
- if(!strstr(raw,"#version")){
-  const char *prefix="#version 120\n";size_t p=strlen(prefix),n=strlen(raw);
-  full=malloc(p+n+1);
-  if(!full){fprintf(stderr,"[post] out of memory preparing '%s'; rendering without post\n",s->post_shader_path);free(raw);s->post_failed=true;return;}
-  memcpy(full,prefix,p);memcpy(full+p,raw,n+1);allocated=true;
+ char paths[CD_POST_MAX_STAGES][2048];
+ int count=rtt_post_split(s->post_shader_path,paths,CD_POST_MAX_STAGES);
+ if(!count)return; /* empty list / only "off": clean off */
+ for(int i=0;i<count;i++){
+  GLuint prog=rtt_post_compile(paths[i]);
+  if(!prog){rtt_post_release_programs(s);s->post_failed=true;return;}
+  s->post_progs[i]=prog;
+  fprintf(stderr,"[post] loaded '%s'\n",paths[i]);
  }
- GLuint prog=rtt_post_link(s->post_shader_path,full);
- if(allocated)free(full);
- free(raw);
- if(!prog){s->post_failed=true;return;}
- s->post_prog=prog;s->post_ready=true;
- fprintf(stderr,"[post] loaded '%s'\n",s->post_shader_path);
+ s->post_count=count;s->post_ready=true;
 }
 static bool rtt_post_target(Server *s,int w,int h){
- if(s->post_temp_tex&&s->post_temp_fbo&&s->post_temp_w==w&&s->post_temp_h==h)return true;
+ if(s->post_temp_tex[0]&&s->post_temp_fbo[0]&&
+    s->post_temp_tex[1]&&s->post_temp_fbo[1]&&
+    s->post_temp_w==w&&s->post_temp_h==h)return true;
  rtt_post_release_temp(s);
  GLint prev_tex=0,prev_fbo=0;
  glGetIntegerv(GL_TEXTURE_BINDING_2D,&prev_tex);
  glGetIntegerv(GL_FRAMEBUFFER_BINDING,&prev_fbo);
  while(glGetError()!=GL_NO_ERROR){}
- GLuint tex=0,fbo=0;
- glGenTextures(1,&tex);glBindTexture(GL_TEXTURE_2D,tex);
- glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_WRAP_S,GL_CLAMP_TO_EDGE);glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_WRAP_T,GL_CLAMP_TO_EDGE);
- glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MAG_FILTER,GL_LINEAR);glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MIN_FILTER,GL_LINEAR);
- glTexImage2D(GL_TEXTURE_2D,0,GL_RGBA8,w,h,0,GL_RGBA,GL_UNSIGNED_BYTE,NULL);
- glGenFramebuffers(1,&fbo);
- if(tex&&fbo){
-  glBindFramebuffer(GL_FRAMEBUFFER,fbo);
-  glFramebufferTexture2D(GL_FRAMEBUFFER,GL_COLOR_ATTACHMENT0,GL_TEXTURE_2D,tex,0);
+ bool ok=true;
+ for(int i=0;i<2&&ok;i++){
+  GLuint tex=0,fbo=0;
+  glGenTextures(1,&tex);glBindTexture(GL_TEXTURE_2D,tex);
+  glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_WRAP_S,GL_CLAMP_TO_EDGE);glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_WRAP_T,GL_CLAMP_TO_EDGE);
+  glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MAG_FILTER,GL_LINEAR);glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MIN_FILTER,GL_LINEAR);
+  glTexImage2D(GL_TEXTURE_2D,0,GL_RGBA8,w,h,0,GL_RGBA,GL_UNSIGNED_BYTE,NULL);
+  glGenFramebuffers(1,&fbo);
+  if(tex&&fbo){
+   glBindFramebuffer(GL_FRAMEBUFFER,fbo);
+   glFramebufferTexture2D(GL_FRAMEBUFFER,GL_COLOR_ATTACHMENT0,GL_TEXTURE_2D,tex,0);
+  }
+  GLenum status=fbo?glCheckFramebufferStatus(GL_FRAMEBUFFER):GL_FRAMEBUFFER_UNSUPPORTED;
+  GLenum err=glGetError();
+  if(!tex||!fbo||status!=GL_FRAMEBUFFER_COMPLETE||err!=GL_NO_ERROR){
+   if(tex)glDeleteTextures(1,&tex);if(fbo)glDeleteFramebuffers(1,&fbo);
+   ok=false;break;
+  }
+  s->post_temp_tex[i]=tex;s->post_temp_fbo[i]=fbo;
  }
- GLenum status=fbo?glCheckFramebufferStatus(GL_FRAMEBUFFER):GL_FRAMEBUFFER_UNSUPPORTED;
- GLenum err=glGetError();
  glBindTexture(GL_TEXTURE_2D,(GLuint)prev_tex);glBindFramebuffer(GL_FRAMEBUFFER,(GLuint)prev_fbo);
- if(!tex||!fbo||status!=GL_FRAMEBUFFER_COMPLETE||err!=GL_NO_ERROR){
-  if(tex)glDeleteTextures(1,&tex);if(fbo)glDeleteFramebuffers(1,&fbo);
-  return false;
- }
- s->post_temp_tex=tex;s->post_temp_fbo=fbo;s->post_temp_w=w;s->post_temp_h=h;
+ if(!ok){rtt_post_release_temp(s);return false;}
+ s->post_temp_w=w;s->post_temp_h=h;
  return true;
 }
 static void rtt_release(Server *s){
@@ -867,8 +915,9 @@ static void post_quad(void){
  glTexCoord2f(1,1);glVertex2f(1,1);glTexCoord2f(0,1);glVertex2f(-1,1);
  glEnd();
 }
-static bool rtt_post_apply(Server *s,GLuint src,int ow,int oh){
- if(!s->post_prog||!s->post_ready)return false;
+static bool rtt_post_apply(Server *s,GLuint prog,GLuint src,GLuint dest){
+ if(!prog||!s->post_ready)return false;
+ int ow=s->width,oh=s->height;
  GLint prev_prog=0,prev_active=GL_TEXTURE0,prev_tex0=0,prev_tex1=0,prev_mm=GL_MODELVIEW,prev_fbo=0,prev_view[4]={0,0,ow,oh};
  GLint src_min=GL_LINEAR,src_mag=GL_LINEAR;
  GLfloat color[4]={1,1,1,1};
@@ -895,16 +944,20 @@ static bool rtt_post_apply(Server *s,GLuint src,int ow,int oh){
  glActiveTexture(GL_TEXTURE0);glBindTexture(GL_TEXTURE_2D,src);
  /* Unit 1 exposes the scaled world image at its native render size. Its
   * sampler state is deliberately left alone: a mipmap min filter then gives
-  * shaders implicit-LOD prefiltering instead of a forced bilinear sample. */
+  * shaders implicit-LOD prefiltering instead of a forced bilinear sample.
+  * u_world is bound to the original RTT texture for EVERY stage (never to the
+  * previous stage's output), so downscalers keep reading the scaled world.
+  * Stacking two downscalers therefore means the last one's u_world result
+  * wins; a typical chain is one downscaler plus a tone map. */
  glActiveTexture(GL_TEXTURE1);glBindTexture(GL_TEXTURE_2D,s->rtt_color_tex);
  glActiveTexture(GL_TEXTURE0);
- glUseProgram(s->post_prog);
- glUniform1i(glGetUniformLocation(s->post_prog,"u_src"),0);
- glUniform2f(glGetUniformLocation(s->post_prog,"u_size"),(GLfloat)ow,(GLfloat)oh);
- glUniform1f(glGetUniformLocation(s->post_prog,"u_time"),(GLfloat)s->time);
- glUniform1i(glGetUniformLocation(s->post_prog,"u_world"),1);
- glUniform2f(glGetUniformLocation(s->post_prog,"u_world_size"),(GLfloat)s->rtt_width,(GLfloat)s->rtt_height);
- glBindFramebuffer(GL_FRAMEBUFFER,s->target_fbo);glViewport(0,0,ow,oh);
+ glUseProgram(prog);
+ glUniform1i(glGetUniformLocation(prog,"u_src"),0);
+ glUniform2f(glGetUniformLocation(prog,"u_size"),(GLfloat)ow,(GLfloat)oh);
+ glUniform1f(glGetUniformLocation(prog,"u_time"),(GLfloat)s->time);
+ glUniform1i(glGetUniformLocation(prog,"u_world"),1);
+ glUniform2f(glGetUniformLocation(prog,"u_world_size"),(GLfloat)s->rtt_width,(GLfloat)s->rtt_height);
+ glBindFramebuffer(GL_FRAMEBUFFER,dest);glViewport(0,0,ow,oh);
  post_quad();
  bool ok=true;GLenum err=glGetError();
  if(err!=GL_NO_ERROR){while(glGetError()!=GL_NO_ERROR){}ok=false;
@@ -933,7 +986,7 @@ static bool rtt_post_apply(Server *s,GLuint src,int ow,int oh){
 }
 bool scene_rtt_begin(Server *s){
  rtt_post_ensure(s);
- bool post=s->post_ready;
+ bool post=s->post_ready&&s->post_count>0;
  /* An active post shader needs an offscreen source even at scale 1, so it
   * bypasses the historical direct/windowed-MSAA path while it is active
   * (this also lets it run with render_to_texture off). When the shader is
@@ -1015,14 +1068,15 @@ static void rtt_resolve_legacy(Server *s,GLuint dest,int dw,int dh){
 }
 void scene_rtt_end(Server *s){
  if(!s->rtt_fbo){glBindFramebuffer(GL_FRAMEBUFFER,s->target_fbo);glViewport(0,0,s->width,s->height);return;}
- /* Resolve into an output-size temporary when a post shader is active so the
-  * user program can sample the finished world image before the HUD pass. The
-  * legacy filter writes to that destination directly; the post program then
-  * samples it and the scaled world texture and writes the real output. */
- bool post=s->post_ready&&s->post_prog;
+ /* Resolve into output-size temporary 0 when a post chain is active so the
+  * first program can sample the finished world image before the HUD pass. The
+  * legacy filter writes to that destination directly; each stage then reads
+  * the previous temp (or that resolve) and writes the other temp, except the
+  * last stage, which writes the real output. */
+ bool post=s->post_ready&&s->post_count>0;
  GLuint dest=s->target_fbo;bool post_dest=false;
  if(post){
-  if(rtt_post_target(s,s->width,s->height)){dest=s->post_temp_fbo;post_dest=true;}
+  if(rtt_post_target(s,s->width,s->height)){dest=s->post_temp_fbo[0];post_dest=true;}
   else{
    fprintf(stderr,"[post] output-size framebuffer allocation failed; rendering without post\n");
    s->post_ready=false;s->post_failed=true;post=false;
@@ -1030,7 +1084,13 @@ void scene_rtt_end(Server *s){
  }
  rtt_resolve_legacy(s,dest,s->width,s->height);
  if(post_dest){
-  if(!rtt_post_apply(s,s->post_temp_tex,s->width,s->height)){
+  bool ok=true;int cur=0;
+  for(int i=0;i<s->post_count;i++){
+   GLuint stage_dest=(i==s->post_count-1)?s->target_fbo:s->post_temp_fbo[1-cur];
+   if(!rtt_post_apply(s,s->post_progs[i],s->post_temp_tex[cur],stage_dest)){ok=false;break;}
+   cur=1-cur;
+  }
+  if(!ok){
    s->post_ready=false;s->post_failed=true;
    rtt_resolve_legacy(s,s->target_fbo,s->width,s->height);
   }
@@ -1212,5 +1272,5 @@ void scene_finish(Server *s){
  city_finish(s);vehicle_scene_finish();if(seat_list)glDeleteLists(seat_list,1);seat_list=0;
  GLuint textures[]={s->garage_tex,s->carbon_tex,s->console_tex,s->hub_tex,s->hud_tex,s->windshield_tex,s->help_tex,s->plate_tex,s->handles_tex};glDeleteTextures(sizeof(textures)/sizeof(textures[0]),textures);for(int i=0;i<6;i++)glDeleteTextures(1,&s->buttons[i].texture);for(int i=0;i<CD_MAX_MONITORS;i++)glDeleteTextures(1,&s->monitors[i].label);
  rtt_release(s);
- rtt_post_release_program(s);
+ rtt_post_release_programs(s);
 }

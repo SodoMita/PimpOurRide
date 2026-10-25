@@ -164,8 +164,10 @@ Notes and caveats:
 | Compositor | `$XDG_CONFIG_HOME/chromedrive/chromedrive.conf` (fallback `~/.config/...`) |
 | Garage3D | `$XDG_CONFIG_HOME/garage3d/garage3d.conf` |
 
-Format (both files): `[section]`, `key = value`, `#`/`;` comments, booleans
-as `true/false` (`yes/no/on/off/1/0` accepted), colours as `#RRGGBB`.
+Format (both files): `[section]`, `key = value`, full-line `#`/`;` comments
+(an inline `#` after a space also starts a comment; `;` is reserved for list
+values such as `post_shader`), booleans as `true/false`
+(`yes/no/on/off/1/0` accepted), colours as `#RRGGBB`.
 The GUI saves atomically (tmp file + rename) and **preserves unknown keys**
 it doesn't know about; comments/blank lines are not preserved through a GUI
 save (hand-edits without the GUI are of course untouched). Missing file =
@@ -215,8 +217,8 @@ resolution so their text stays sharp. That pass runs **only when
 effective scaled size differs from the output**; at the default
 `render_scale = 1`, or with `render_to_texture = false`, rendering stays on
 the direct-to-output path and the sampling keys have no effect. The one
-exception is an active `display.post_shader`, which needs an offscreen image
-and therefore forces the RTT path even at scale 1 (see below).
+exception is an active `display.post_shader` chain, which needs an offscreen
+image and therefore forces the RTT path even at scale 1 (see below).
 `render_upscale` maps to `GL_TEXTURE_MAG_FILTER`; `render_downscale`
 maps to `GL_TEXTURE_MIN_FILTER`, so you can pick a different sampler for
 magnifying and minifying. The default `linear_mipmap_linear` is trilinear
@@ -240,45 +242,66 @@ keeping the previous/default setting. Pointer picking still uses output
 window coordinates, and F12/`--screenshot` capture the final output at the
 configured output size after the blit.
 
-### Post shader
+### Post shader chain
 
-`display.post_shader` is a filesystem path to a **fragment-only GLSL 1.20**
-shader applied to the 3D world only, after the legacy filter resolve and
-before the native-resolution HUD. Settings exposes it under
-Display > Post shader: `off` plus the bundled shaders. Arbitrary `.frag` paths
-are still set in the config file (the GUI has no free-text field for them);
-when one is stored, the row shows that custom path so it stays selected.
-`off`, empty or missing means disabled.
+`display.post_shader` is an ordered `;`-separated list of paths to
+**fragment-only GLSL 1.20** shaders applied to the 3D world only, after the
+legacy filter resolve and before the native-resolution HUD. Stages run
+left-to-right: the first samples the resolved world image, each later stage
+samples the previous stage's output, and the last writes the real output.
+Empty entries and an `off` token anywhere in the list are skipped, so a single
+path without `;` works exactly as before. At most eight stages run; a longer
+list logs one warning and uses the first eight. `off`, empty or missing means
+no post.
 
-The compositor supplies the vertex shader (the post quad) and these uniforms:
+```ini
+render_scale = 2
+post_shader = shaders/hermite-downscale.frag;shaders/khronos-pbr-neutral.frag
+```
 
-- `sampler2D u_src` — the world image, already at output size (texture unit 0).
+Settings > Display exposes four preset checkboxes, in chain order: Hermite
+downscale, Hermite downscale (mipmap), SSIM downscale, and Khronos PBR Neutral
+tone map. Each writes the full list with the known presets in that
+top-to-bottom order; custom (non-preset) entries already in the file are kept
+after the presets in their existing relative order. Arbitrary `.frag` paths
+are still set in the config file (the GUI has no free-text field for them).
+"Reset tab to defaults" writes `off` and drops custom entries.
+
+The compositor supplies the vertex shader (the post quad) and these uniforms
+to every stage:
+
+- `sampler2D u_src` — the previous stage's output at output size (texture unit
+  0). For the first stage this is the resolved world image.
 - `vec2 u_size` — output size in pixels.
 - `float u_time` — seconds since startup (`Server.time`).
-- `sampler2D u_world` — the scaled world image at its native render size
-  (texture unit 1). Its configured min filter is left untouched, so a mipmap
-  filter gives shaders implicit-LOD prefiltering; a non-mipmap filter exposes
-  the unblurred full-resolution samples.
+- `sampler2D u_world` — the original scaled world image at its native render
+  size (texture unit 1), identical for every stage. Its configured min filter
+  is left untouched, so a mipmap filter gives shaders implicit-LOD
+  prefiltering; a non-mipmap filter exposes the unblurred full-resolution
+  samples. Downscalers read `u_world`, so stacking two downscalers means the
+  last one's `u_world` result wins; a typical chain is one downscaler plus a
+  tone map.
 - `vec2 u_world_size` — `u_world` size in pixels (`rtt_width`/`rtt_height`).
 
-`gl_TexCoord[0].xy` carries the UV and the shader writes `gl_FragColor`. If the
+`gl_TexCoord[0].xy` carries the UV and the shader writes `gl_FragColor`. If a
 file has no `#version` line, `#version 120` is prepended; if it has one, the
-file is used as-is. Files larger than 256 KiB are rejected. The program is
-loaded/compiled lazily on the render thread when the path changes. On an open,
-compile or link failure the compositor logs one clear warning (including the
-GL info log for compile/link errors) and renders exactly as it would without
-the setting: no black screen. The same failing path is not retried until the
-config path changes.
+file is used as-is. Files larger than 256 KiB are rejected. Stages are
+loaded/compiled lazily on the render thread when the list changes. If any
+stage cannot be opened, compiled or linked, the compositor logs the per-file
+warning (including the GL info log for compile/link errors), frees all stages
+and renders exactly as it would without post: no black screen. The same
+failing list is not retried until the config value changes.
 
-An active post shader forces the offscreen RTT path even at `render_scale = 1`
-(and even if `render_to_texture = false`), because it needs an output-size
-source image. This bypasses the historical direct path and its windowed-mode
-MSAA only while the shader is loaded; once it is off or failed, behavior is
-identical to the direct path again. With `render_scale > 1` the world is
-rendered at the scaled size, resolved with the configured legacy filter into
-an output-size RGBA8 temporary, then the user program samples that temporary
-as `u_src` and, when it wants full-resolution detail, the scaled world texture
-as `u_world`, writing the real output.
+An active chain forces the offscreen RTT path even at `render_scale = 1` (and
+even if `render_to_texture = false`), because it needs an output-size source
+image. This bypasses the historical direct path and its windowed-mode MSAA
+only while at least one stage is loaded; once the chain is off or failed,
+behavior is identical to the direct path again. With `render_scale > 1` the
+world is rendered at the scaled size and resolved with the configured legacy
+filter into output-size RGBA8 temporary 0. Stage 0 reads that temporary as
+`u_src`; later stages ping-pong between the two temporaries; the last stage
+writes the real output. If a draw fails mid-chain, the chain is disabled and
+the resolved image is written straight to the output.
 
 `shaders/khronos-pbr-neutral.frag` is a runnable example implementing Khronos
 PBR Neutral tone mapping (KhronosGroup/ToneMapping, Apache-2.0). Because
@@ -322,7 +345,7 @@ passes `u_src` through. Both Hermite shaders are cheaper than the SSIM
 footprint loop at high ratios, with the mipmap variant bounded regardless of
 ratio.
 
-Point `display.post_shader` at either a relative path (resolved from the
+Each `display.post_shader` entry is either a relative path (resolved from the
 working directory) or an absolute path.
 
 ## Full schema
@@ -339,7 +362,7 @@ render_to_texture = true # gate for the scaled 3D pass; HUD stays native (live)
 render_scale = 1      # 0.001..100, 1 = 100%; typed field in GUI (live)
 render_upscale = linear   # nearest | linear (live)
 render_downscale = linear_mipmap_linear # nearest | linear | *_mipmap_nearest | *_mipmap_linear (live)
-post_shader =         # GLSL 1.20 fragment file for the 3D world; off/empty = off (live)
+post_shader =         # ';'-separated GLSL 1.20 chain for the 3D world, max 8; off/empty = none (live)
 fullscreen = false    # --windowed only      (restart)
 
 [ui]
