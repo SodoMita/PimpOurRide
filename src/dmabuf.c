@@ -38,7 +38,7 @@ static void destroy_request(struct wl_client *c,struct wl_resource *r){wl_resour
 
 void dmabuf_probe(Server *s){
  s->dmabuf_supported=false;s->dmabuf_format_count=0;
- if(s->egl_display==EGL_NO_DISPLAY){fprintf(stderr,"[dmabuf] windowed/GLX backend has no EGL context — dma-buf import is only wired up in --headless (EGL) mode\n");return;}
+ if(s->egl_display==EGL_NO_DISPLAY){fprintf(stderr,"[dmabuf] SDL/GLX windowed backend has no EGL context — dma-buf import is only wired up for the EGL backends (headless/fbdev)\n");return;}
  const char *egl_ext=eglQueryString(s->egl_display,EGL_EXTENSIONS);
  if(!egl_ext||!strstr(egl_ext,"EGL_EXT_image_dma_buf_import")){fprintf(stderr,"[dmabuf] EGL_EXT_image_dma_buf_import not available on this driver\n");return;}
  create_image=(PFNEGLCREATEIMAGEKHRPROC)eglGetProcAddress("eglCreateImageKHR");

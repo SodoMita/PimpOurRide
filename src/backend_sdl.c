@@ -1,6 +1,7 @@
 /* --windowed dev/debug backend: a real SDL2 window + GLX context on an X
- * server. Kept for local debugging with eyes on a real display; the default
- * production path is backend_headless.c (no X, no window, VNC output).
+ * server. Kept for local debugging with eyes on a real display; the production
+ * paths are backend_headless.c (no X, no window, VNC output) and
+ * backend_fbdev.c (direct framebuffer output), both EGL-based.
  * NOTE: dma-buf/EGLImage import is NOT available here — EGLImage does not
  * interoperate with a GLX-created GL context, only with EGL-created ones.
  * s->target_fbo stays 0 (the window's own default framebuffer). */

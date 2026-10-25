@@ -84,8 +84,8 @@ int main(void){
  struct wl_surface *ps=wl_compositor_create_surface(compositor);struct xdg_surface *px=xdg_wm_base_get_xdg_surface(wm,ps);xdg_surface_add_listener(px,&xdg_listener,NULL);struct xdg_positioner *pos=xdg_wm_base_create_positioner(wm);xdg_positioner_set_size(pos,200,120);xdg_positioner_set_anchor_rect(pos,50,50,30,30);xdg_positioner_set_anchor(pos,XDG_POSITIONER_ANCHOR_BOTTOM_RIGHT);xdg_positioner_set_gravity(pos,XDG_POSITIONER_GRAVITY_BOTTOM_RIGHT);struct xdg_popup *popup=xdg_surface_get_popup(px,xdg,pos);xdg_popup_add_listener(popup,&popup_listener,NULL);wl_surface_commit(ps);assert(wl_display_roundtrip(display)>=0);struct wl_buffer *pb=wl_shm_pool_create_buffer(pool,0,200,120,800,WL_SHM_FORMAT_XRGB8888);wl_buffer_add_listener(pb,&buffer_listener,NULL);commit(ps,pb);wait_frames(5);xdg_popup_destroy(popup);xdg_positioner_destroy(pos);xdg_surface_destroy(px);wl_surface_destroy(ps);wl_buffer_destroy(pb);
  /* Unmap/remap the same toplevel. A fresh configure handshake is required. */
  wl_surface_attach(surface,NULL,0,0);wl_surface_commit(surface);assert(wl_display_roundtrip(display)>=0);wl_surface_commit(surface);assert(wl_display_roundtrip(display)>=0);commit(surface,buffer);wait_frames(6);assert(enters==2&&keyboard_enters>=2&&releases>=6);
- /* zwp_linux_dmabuf_v1: only advertised by the headless/EGL backend (see README —
-  * EGLImage doesn't interoperate with the --windowed GLX dev backend). */
+ /* zwp_linux_dmabuf_v1: only advertised by the EGL backends (headless/fbdev;
+  * see README — EGLImage doesn't interoperate with the --windowed GLX dev backend). */
  if(dmabuf){
   assert(wl_display_roundtrip(display)>=0);
   if(dmabuf_formats>0)printf("PASS: zwp_linux_dmabuf_v1 negotiated %d format(s)/%d modifier event(s)\n",dmabuf_formats,dmabuf_modifiers);
@@ -115,7 +115,7 @@ int main(void){
   xdg_toplevel_destroy(dt);xdg_surface_destroy(dx);wl_surface_destroy(ds);wl_buffer_destroy(dbuf);zwp_linux_buffer_params_v1_destroy(dp);assert(wl_display_roundtrip(display)>=0);
  }
  if(touch)printf("PASS: wl_seat advertised touch and wl_touch resource created (touch events down=%d up=%d motion=%d frame=%d cancel=%d)\n",touch_downs,touch_ups,touch_motions,touch_frames,touch_cancels);
- else printf("INFO: wl_touch not advertised by this backend (headless/RFB is a single pointer; --windowed/SDL advertises touchscreen touch)\n");
+ else printf("INFO: wl_touch not advertised by this backend (headless/fbdev without SDL input is pointer-only; --windowed/SDL advertises touchscreen touch)\n");
  printf("PASS: outputs=%d, configures=%d, frames=%d, buffer_releases=%d, output_enters=%d, keyboard_enters=%d, keymaps=%d; synchronized subsurface + xdg popup + unmap/remap\n",outputs,configured,frames,releases,enters,keyboard_enters,keymaps);fflush(stdout);
  xdg_toplevel_destroy(top);xdg_surface_destroy(xdg);wl_surface_destroy(surface);wl_buffer_destroy(buffer);wl_shm_pool_destroy(pool);if(touch)wl_touch_release(touch);wl_keyboard_release(keyboard);wl_seat_release(seat);assert(wl_display_roundtrip(display)>=0);munmap(pixels,size);close(fd);
  /* Structural dma-buf parameter validation runs entirely in our own code

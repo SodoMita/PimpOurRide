@@ -7,7 +7,7 @@ LDLIBS = $(shell pkg-config --libs $(PKGS)) -lm
 PROTO_DIR := $(shell pkg-config --variable=pkgdatadir wayland-protocols)
 GEN = .generated
 BIN = bin
-SOURCES = src/main.c src/wayland.c src/scene.c src/vehicle.c src/vehicle_scene.c src/vehicle_seat.c src/keymap.c src/ui.c src/math3d.c src/telemetry.c src/dmabuf.c src/cdconfig.c src/backend_sdl.c src/backend_headless.c
+SOURCES = src/main.c src/wayland.c src/scene.c src/vehicle.c src/vehicle_scene.c src/vehicle_seat.c src/keymap.c src/ui.c src/math3d.c src/telemetry.c src/dmabuf.c src/cdconfig.c src/backend_sdl.c src/backend_headless.c src/backend_egl.c src/backend_vnc.c src/backend_fbdev.c src/fbdev_pixfmt.c
 PROTOCOLS = $(GEN)/xdg-shell-protocol.c $(GEN)/xdg-decoration-protocol.c $(GEN)/linux-dmabuf-protocol.c
 HEADERS = $(GEN)/xdg-shell-server.h $(GEN)/xdg-decoration-server.h $(GEN)/linux-dmabuf-server.h
 .PHONY: all clean test sanitize garage3d garage3d-test garage3d-clean
@@ -30,7 +30,7 @@ $(GEN)/linux-dmabuf-protocol.c: | $(GEN)
 	wayland-scanner private-code $(PROTO_DIR)/stable/linux-dmabuf/linux-dmabuf-v1.xml $@
 $(GEN)/linux-dmabuf-client.h: | $(GEN)
 	wayland-scanner client-header $(PROTO_DIR)/stable/linux-dmabuf/linux-dmabuf-v1.xml $@
-$(BIN)/chromedrive: $(SOURCES) include/chrome.h include/math3d.h include/vehicle.h include/vehicle_seat.h include/telemetry.h include/cdconfig.h $(HEADERS) $(PROTOCOLS) | $(BIN)
+$(BIN)/chromedrive: $(SOURCES) include/chrome.h include/math3d.h include/vehicle.h include/vehicle_seat.h include/telemetry.h include/cdconfig.h include/fbdev_pixfmt.h $(HEADERS) $(PROTOCOLS) | $(BIN)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(SOURCES) $(PROTOCOLS) -o $@ $(LDLIBS)
 $(BIN)/chromedrive-demo: clients/demo.c include/telemetry.h $(GEN)/xdg-shell-client.h $(GEN)/xdg-shell-protocol.c | $(BIN)
 	$(CC) -Iinclude -I$(GEN) $(CFLAGS) $(shell pkg-config --cflags wayland-client cairo xkbcommon) clients/demo.c $(GEN)/xdg-shell-protocol.c -o $@ $(shell pkg-config --libs wayland-client cairo xkbcommon) -lm
@@ -61,12 +61,15 @@ $(BIN)/test-telemetry: tests/test_telemetry.c src/telemetry.c src/vehicle.c src/
 	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_telemetry.c src/telemetry.c src/vehicle.c src/math3d.c -o $@ -lm
 $(BIN)/test-keymap: tests/test_keymap.c src/keymap.c include/keymap.h | $(BIN)
 	$(CC) -Iinclude $(CFLAGS) tests/test_keymap.c src/keymap.c -o $@
-test: $(BIN)/test-math $(BIN)/test-config $(BIN)/test-vehicle $(BIN)/test-telemetry $(BIN)/test-keymap $(BIN)/chromedrive-config
+$(BIN)/test-fbdev: tests/test_fbdev.c src/fbdev_pixfmt.c include/fbdev_pixfmt.h | $(BIN)
+	$(CC) -Iinclude $(CFLAGS) tests/test_fbdev.c src/fbdev_pixfmt.c -o $@
+test: $(BIN)/test-math $(BIN)/test-config $(BIN)/test-vehicle $(BIN)/test-telemetry $(BIN)/test-keymap $(BIN)/test-fbdev $(BIN)/chromedrive-config
 	./$(BIN)/test-math
 	./$(BIN)/test-config
 	./$(BIN)/test-vehicle
 	./$(BIN)/test-telemetry
 	./$(BIN)/test-keymap
+	./$(BIN)/test-fbdev
 	./$(BIN)/chromedrive-config --selftest
 sanitize:
 	$(MAKE) clean
