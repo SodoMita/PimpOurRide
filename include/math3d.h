@@ -30,9 +30,16 @@ void plane_window_pixels(Plane start,Plane resized,int start_w,int start_h,int *
 Plane plane_resize_window_pixels(Plane start,Plane base,Vec3 eye,int start_w,int start_h,int win_w,int win_h,int fixed_x,int fixed_y);
 Plane plane_resize_window_pixels_aspect(Plane start,Plane base,Vec3 eye,int start_w,int start_h,int win_w,int win_h,int fixed_x,int fixed_y);
 typedef enum {MOUNT_WINDSHIELD,MOUNT_DASH_SLIDE,MOUNT_DOOR_SLIDE,MOUNT_ROOF_FLIP,MOUNT_REAR_FIXED,MOUNT_CLUSTER} MonitorMount;
+typedef struct {
+ Vec3 base,shoulder,elbow,wrist;
+ Vec3 piston_base,piston_rod;
+ Vec3 claws[4];
+ float upper_len,fore_len;
+} MonitorManipulator;
 Plane monitor_plane(int index); /* fully deployed transform */
 Plane windshield_hud_plane(void); /* fitted projection on the shared windshield */
 Plane monitor_plane_at(int index,float reveal); /* shared by drawing and picking */
+MonitorManipulator monitor_manipulator_at(int index,float reveal);
 MonitorMount monitor_mount(int index);
 const char *monitor_mount_name(int index);
 float clampf(float v,float lo,float hi);

@@ -163,7 +163,7 @@ SdlTouchFinger sdl_touch[CD_MAX_TOUCH_POINTS];int sdl_touch_chrome_id;
  /* KWin-like titlebar/frame drag outside Arrange mode: just translation,
   * without making the whole input path modal. */
  bool frame_dragging;int frame_drag_slot,frame_last_x,frame_last_y;
- float yaw,pitch,target_yaw,target_pitch,fov,target_fov;
+ float yaw,pitch,target_yaw,target_pitch,fov,target_fov,base_fov;
  Vec3 eye;
  /* Native electric hover-car rig and input routing. In CLIENT mode drive keys
   * continue to Wayland clients and the wheel emits pointer-axis input; in
