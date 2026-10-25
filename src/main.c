@@ -61,12 +61,9 @@ static void apply_render_config(Server *s,const CdConfig *cfg){
   else fprintf(stderr,"[config] ignoring render_upscale '%s' (want nearest|linear)\n",v);}
  v=cd_config_get_string(cfg,"display","render_downscale",NULL);
  if(v){
-  if(!strcmp(v,"ssim"))s->render_downscale_ssim=true;
-  else{
-   GLuint f; s->render_downscale_ssim=false;
-   if(config_filter(v,true,&f))s->render_min_filter=f;
-   else fprintf(stderr,"[config] ignoring render_downscale '%s' (want nearest|linear|ssim|nearest_mipmap_nearest|linear_mipmap_nearest|nearest_mipmap_linear|linear_mipmap_linear)\n",v);
-  }
+  GLuint f;
+  if(config_filter(v,true,&f))s->render_min_filter=f;
+  else fprintf(stderr,"[config] ignoring render_downscale '%s' (want nearest|linear|nearest_mipmap_nearest|linear_mipmap_nearest|nearest_mipmap_linear|linear_mipmap_linear)\n",v);
  }
  /* display.post_shader is just a path here: apply_render_config runs before
   * (and independently of) GL context setup. scene.c notices post_dirty and

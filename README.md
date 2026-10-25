@@ -221,13 +221,12 @@ typed number (`0.001`–`100`, `1` = 100%) rather than a slider, and the two
 sampling keys take `nearest`/`linear` (upscale) or those plus the four
 `*_mipmap_*` combinations (downscale). The default downscale filter is
 `linear_mipmap_linear` (trilinear); mipmaps are generated each frame.
-Downscale also accepts `ssim`, an SSIM-guided resolve ported from igv's
-LGPL SSimDownscaler (our own GLSL, not an mpv hook). It is **experimental**:
-it adds four fullscreen passes and three RGBA16F intermediates, and costs more
-GPU time than plain trilinear supersampling, so `linear_mipmap_linear` is
-generally the better default for SSAA. SSIM is only used for supersampled
-`render_scale > 1` at ratios up to 8x, not for upscaling. When
-`render_to_texture` is on and the
+SSIM is not a sampling token: an SSIM-guided downscaler ships as the post
+effect `shaders/ssim-downscale.frag`. Use `render_scale = 2` (or greater) and
+`post_shader = shaders/ssim-downscale.frag`; it is an experimental
+single-pass approximation of igv's LGPL SSimDownscaler and costs a footprint
+loop per output pixel, so plain trilinear supersampling is usually cheaper.
+When `render_to_texture` is on and the
 effective scaled size differs from the output, the compositor renders the
 scene into a scaled offscreen target, then samples it into the output; at
 scale `1` (or with the toggle off) it renders directly, with no offscreen
@@ -239,10 +238,13 @@ world after the RTT resolve and before the native-resolution HUD. It is
 config-file-only (the settings GUI has no free-text field for it). While it is
 loaded the compositor forces the offscreen path even at `render_scale = 1`,
 bypassing the direct/windowed-MSAA path; the shader samples the finished world
-image through `u_src`/`u_size` and `gl_TexCoord[0].xy`, may use `u_time`, and
-writes `gl_FragColor`. `shaders/khronos-pbr-neutral.frag` is a runnable example.
-Empty or missing turns it off; an unreadable or non-compiling file logs one
-warning and renders normally until the path changes.
+image through `u_src`/`u_size` and the scaled world image through
+`u_world`/`u_world_size` (texture unit 1, native render resolution, mipmap
+filter intact) with `gl_TexCoord[0].xy`, may use `u_time`, and writes
+`gl_FragColor`. `shaders/khronos-pbr-neutral.frag` and
+`shaders/ssim-downscale.frag` are runnable examples. Empty or missing turns it
+off; an unreadable or non-compiling file logs one warning and renders normally
+until the path changes.
 
 It edits `~/.config/chromedrive/chromedrive.conf` and
 `~/.config/garage3d/garage3d.conf` (plain INI, hand-editable). Both programs

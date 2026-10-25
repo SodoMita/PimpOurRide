@@ -12,9 +12,11 @@
 //
 // Contract: fragment-only GLSL 1.20. ChromeDrive supplies the vertex shader
 // and sets gl_TexCoord[0].xy. Uniforms:
-//   sampler2D u_src - world image at output size
-//   vec2 u_size     - output size in pixels
-//   float u_time    - seconds
+//   sampler2D u_src        - world image at output size
+//   vec2 u_size            - output size in pixels
+//   float u_time           - seconds
+//   sampler2D u_world      - scaled world image at native render size (unit 1)
+//   vec2 u_world_size      - render size in pixels
 // The result must be written to gl_FragColor.
 
 uniform sampler2D u_src;

@@ -222,18 +222,11 @@ magnifying and minifying. The default `linear_mipmap_linear` is trilinear
 filtering and generates mipmaps each frame, which generally gives the cleanest
 supersampled downscale. Values below 1 render fewer pixels (useful for slow
 software GPUs); values above 1 supersample. Mipmap downscale tokens generate
-mipmaps each frame; the others do not. `render_downscale = ssim` is the
-exception: it is not a GL filter at all. It selects an SSIM-guided resolve
-(a port of igv's SSimDownscaler, LGPL-3.0-or-later; this is our own GLSL for
-the compositor, not an mpv hook) only when both scaled dimensions are larger
-than the output and neither ratio exceeds 8x. It is **experimental**: it costs
-four extra fullscreen passes and three RGBA16F intermediates, so in field use
-it is usually slower than plain trilinear SSAA and is not generally a better
-choice; trilinear (`linear_mipmap_linear`) is the recommended default. SSIM is
-intended for `render_scale > 1` supersampling, not for low-resolution
-rendering; when upscaling, or beyond 8x, the configured `render_min_filter`
-fallback is used. Compile/allocation failure warns once and disables SSIM for
-that session.
+mipmaps each frame; the others do not. SSIM is no longer a sampling token:
+the optional SSIM-guided downscaler is a post effect
+(`shaders/ssim-downscale.frag`), enabled with `render_scale > 1` plus
+`post_shader` (see below). `render_downscale = ssim` is now an unknown value:
+it is warned about and ignored, leaving the previous/default filter in place.
 
 The configured scale is accepted from `0.001` through `100` inclusive. The
 effective allocation is clamped to the driver's `GL_MAX_TEXTURE_SIZE` and
@@ -249,16 +242,21 @@ configured output size after the blit.
 ### Post shader
 
 `display.post_shader` is a filesystem path to a **fragment-only GLSL 1.20**
-shader applied to the 3D world only, after the legacy/SSIM resolve and before
-the native-resolution HUD. It is set in the config file only: the settings GUI
-has no free-text field for it this round. Empty or missing means off.
+shader applied to the 3D world only, after the legacy filter resolve and
+before the native-resolution HUD. It is set in the config file only: the
+settings GUI has no free-text field for it this round. Empty or missing means
+off.
 
-The compositor supplies the vertex shader (the same quad used by the SSIM
-resolve) and these uniforms:
+The compositor supplies the vertex shader (the post quad) and these uniforms:
 
-- `sampler2D u_src` — the world image, already at output size.
+- `sampler2D u_src` — the world image, already at output size (texture unit 0).
 - `vec2 u_size` — output size in pixels.
 - `float u_time` — seconds since startup (`Server.time`).
+- `sampler2D u_world` — the scaled world image at its native render size
+  (texture unit 1). Its configured min filter is left untouched, so a mipmap
+  filter gives shaders implicit-LOD prefiltering; a non-mipmap filter exposes
+  the unblurred full-resolution samples.
+- `vec2 u_world_size` — `u_world` size in pixels (`rtt_width`/`rtt_height`).
 
 `gl_TexCoord[0].xy` carries the UV and the shader writes `gl_FragColor`. If the
 file has no `#version` line, `#version 120` is prepended; if it has one, the
@@ -274,16 +272,32 @@ An active post shader forces the offscreen RTT path even at `render_scale = 1`
 source image. This bypasses the historical direct path and its windowed-mode
 MSAA only while the shader is loaded; once it is off or failed, behavior is
 identical to the direct path again. With `render_scale > 1` the world is
-rendered at the scaled size, resolved (legacy filter or SSIM) into an
-output-size RGBA8 temporary, then the user program draws that temporary into
-the real output.
+rendered at the scaled size, resolved with the configured legacy filter into
+an output-size RGBA8 temporary, then the user program samples that temporary
+as `u_src` and, when it wants full-resolution detail, the scaled world texture
+as `u_world`, writing the real output.
 
 `shaders/khronos-pbr-neutral.frag` is a runnable example implementing Khronos
 PBR Neutral tone mapping (KhronosGroup/ToneMapping, Apache-2.0). Because
 ChromeDrive's world is already display-referred LDR rather than scene-linear
 HDR, it acts there as a gentle highlight rolloff and framework demo, not as a
-full HDR tone mapper. Point the key at either a relative path (resolved from
-the working directory) or an absolute path.
+full HDR tone mapper.
+
+`shaders/ssim-downscale.frag` is the SSIM-guided downscaler. Enable it with
+`render_scale = 2` (or greater) and
+`post_shader = shaders/ssim-downscale.frag`, with a mipmap
+`render_downscale` filter (the default `linear_mipmap_linear`). It is adapted
+from igv's SSimDownscaler (LGPL-3.0-or-later) but is a single-pass
+approximation of the multi-pass original; the R ratio is smoothed once through
+the 3x3 locality neighbourhood. It costs a Catmull-Rom footprint loop per
+output pixel (up to 4x ratio; above that it falls back to the centre sample),
+so plain trilinear supersampling is usually cheaper. At ratio <= 1 it passes
+`u_src` through. The footprint uses GLSL 1.20 `texture2D` with a large
+negative bias to force base-LOD samples; see the shader header for that
+driver-dependent trick.
+
+Point `display.post_shader` at either a relative path (resolved from the
+working directory) or an absolute path.
 
 ## Full schema
 
@@ -298,7 +312,7 @@ fov = 65              # 1..100 driver FOV; background scroll clamps to 1..75
 render_to_texture = true # gate for the scaled 3D pass; HUD stays native (live)
 render_scale = 1      # 0.001..100, 1 = 100%; typed field in GUI (live)
 render_upscale = linear   # nearest | linear (live)
-render_downscale = linear_mipmap_linear # nearest | linear | ssim | *_mipmap_nearest | *_mipmap_linear (live)
+render_downscale = linear_mipmap_linear # nearest | linear | *_mipmap_nearest | *_mipmap_linear (live)
 post_shader =         # GLSL 1.20 fragment file for the 3D world; empty = off (live)
 fullscreen = false    # --windowed only      (restart)
 
