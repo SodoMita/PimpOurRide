@@ -1,5 +1,6 @@
 #include "fbdev_pixfmt.h"
 
+#include <stdlib.h>
 #include <string.h>
 
 static bool field_ok(unsigned offset,unsigned length,int bits_per_pixel,bool required){
@@ -112,7 +113,36 @@ size_t cd_fb_visible_offset(size_t line_length,int xoffset,int yoffset,int bytes
  return (size_t)yoffset*line_length+(size_t)xoffset*(size_t)bytes_per_pixel;
 }
 size_t cd_fb_page_offset(size_t line_length,int xoffset,int page,int yres,int bytes_per_pixel){
- if(page<0)page=0;
- if(yres<0)yres=0;
- return cd_fb_visible_offset(line_length,xoffset,page*yres,bytes_per_pixel);
+  if(page<0)page=0;
+  if(yres<0)yres=0;
+  return cd_fb_visible_offset(line_length,xoffset,page*yres,bytes_per_pixel);
+}
+
+bool cd_fb_mode_parse(const char *str,int *out_width,int *out_height,int *out_bpp){
+  if(!str||!out_width||!out_height||!out_bpp)return false;
+  *out_width=0;*out_height=0;*out_bpp=0;
+  if(*str=='\0')return false;
+  if(*str==' '||*str=='\t'||*str=='\n'||*str=='\r')return false;
+  char *end;
+  long w=strtol(str,&end,10);
+  if(w<=0||w>7680||end==str||*end!='x')return false;
+  str=end+1;
+  if(*str=='\0')return false;
+  if(*str==' '||*str=='\t'||*str=='\n'||*str=='\r')return false;
+  long h=strtol(str,&end,10);
+  if(h<=0||h>4320||end==str)return false;
+  int bpp=0;
+  if(*end=='@'){
+    str=end+1;
+    if(*str=='\0')return false;
+    if(*str==' '||*str=='\t'||*str=='\n'||*str=='\r')return false;
+    long b=strtol(str,&end,10);
+    if(b!=16&&b!=24&&b!=32)return false;
+    bpp=(int)b;
+  }
+  if(*end!='\0')return false;
+  *out_width=(int)w;
+  *out_height=(int)h;
+  *out_bpp=bpp;
+  return true;
 }

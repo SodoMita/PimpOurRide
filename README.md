@@ -45,10 +45,17 @@ as aliases):
   default). It reuses the same surfaceless-EGL renderer, does one
   `glReadPixels` per frame, and converts/blits that RGBA frame into the
   framebuffer's current packed truecolor mode. This is **CPU readback/blit to
-  the kernel's existing fb mode, not DRM/KMS GPU scanout**, and phase 1 does
-  no `FBIOPUT_VSCREENINFO` modesetting. It is output-only by default because
-  local evdev input is future work; `--fbdev-vnc-mirror` adds an explicit,
-  loopback-only RFB control/output companion sharing the same readback.
+  the kernel's existing fb mode, not DRM/KMS GPU scanout**. By default it
+  adopts the current kernel mode (phase 1 behavior). Opt-in modesetting via
+  `FBIOPUT_VSCREENINFO` is available with `--fbdev-modeset` (uses the
+  configured render size) or `--fbdev-mode WIDTHxHEIGHT[@BPP]` (explicit
+  size/BPP). The original mode is restored on exit. Local evdev input
+  (keyboard, mouse, touchscreen) is enabled by default for fbdev; use
+  `--no-fbdev-evdev` to disable. `--fbdev-grab-input` opts in to `EVIOCGRAB`
+  (warns about VT/console lockout). Explicit device restriction via
+  `--fbdev-input-device PATH` (repeatable, max 8). `--fbdev-vnc-mirror` adds
+  an explicit, loopback-only RFB control/output companion sharing the same
+  readback.
 - **`--windowed`: a real SDL2/GLX window on an X server**, kept only as a
   local dev/debug path with eyes on a real display. `zwp_linux_dmabuf_v1` is
   **not** advertised here — see "GPU / dma-buf" below for why.
@@ -132,6 +139,8 @@ against a live `chromedrive` instance (see below).
 ./bin/chromedrive --demo --windowed      # dev/debug: a real SDL2 window on an X server
 ./bin/chromedrive --demo --fbdev         # direct /dev/fb0 output (current kernel mode)
 ./bin/chromedrive --demo --fbdev /dev/fb1 --fbdev-vnc-mirror  # another fb + loopback RFB control
+./bin/chromedrive --demo --fbdev-modeset --size 1920x1080       # modeset to configured size
+./bin/chromedrive --demo --fbdev-mode 1280x720@32               # explicit modeset to 1280x720@32bpp
 ```
 
 Either way it launches a terminal, Files, and Audio demo as real Wayland
@@ -384,9 +393,11 @@ consistent look.
 `--demo`, `--socket NAME`, `--exec COMMAND` (repeatable), `--size WxH`,
 `--fps N`, `--backend headless|windowed|fbdev`, `--headless` (default)/
 `--windowed` aliases, `--fbdev [DEVICE]`, `--fbdev-device PATH`,
-`--no-fbdev-vsync`, `--no-fbdev-pan`, `--fbdev-vnc-mirror` (`--vnc-mirror`
-alias), `--vnc-port N`, `--fullscreen` (`--windowed` only), `--exit-after
-SECONDS`, `--screenshot PATH`.
+`--fbdev-modeset`, `--fbdev-mode WxH[@BPP]`, `--no-fbdev-vsync`,
+`--no-fbdev-pan`, `--fbdev-vnc-mirror` (`--vnc-mirror` alias),
+`--fbdev-evdev`, `--no-fbdev-evdev`, `--fbdev-grab-input`,
+`--fbdev-input-device PATH`, `--vnc-port N`, `--fullscreen` (`--windowed` only),
+`--exit-after SECONDS`, `--screenshot PATH`.
 
 Launch commands for the dashboard buttons can be overridden with the
 `CHROMEDRIVE_TERMINAL`, `CHROMEDRIVE_FILES`, `CHROMEDRIVE_AUDIO`, and
@@ -412,6 +423,8 @@ src/backend_egl.c             shared surfaceless EGL context + FBO renderer
 src/backend_vnc.c             embedded RFB server + RFB input (headless/fbdev mirror)
 src/backend_headless.c        --headless (default): shared EGL renderer + VNC presentation
 src/backend_fbdev.c           --fbdev: direct /dev/fb* output, pan/vsync best effort
+src/backend_evdev.c           --fbdev evdev: raw /dev/input/event* input (keyboard/mouse/touch)
+src/evdev_util.c              pure evdev helpers: abs scaling, touch-id pool
 src/fbdev_pixfmt.c            pure packed 16/24/32bpp conversion + fb geometry helpers
 include/fbdev_pixfmt.h         device-free fbdev format/geometry API (unit-tested)
 clients/demo.c                 native Wayland Files/Audio/host-Meters/EV-cluster modes
@@ -426,7 +439,7 @@ tests/test_config.c           INI store round-trip tests
 tests/test_vehicle.c          spline, EV dynamics, transform and fixed-step tests
 tests/test_telemetry.c        shared cluster telemetry and seqlock tests
 tests/test_keymap.c           RFB typing/WASD/function-key mapping regressions
-tests/test_fbdev.c            pure fbdev pixel packing/flip/stride/geometry/page tests
+tests/test_fbdev.c            pure fbdev pixel packing/flip/stride/geometry/page tests + evdev_util (abs scaling, touch-id pool)
 tests/protocol_probe.c        end-to-end Wayland protocol conformance test (incl. dma-buf)
 tools/run-web.sh              one-command native backend + browser bridge
 tools/viewer/                 static noVNC remote desktop + safe hold-to-drive controls
@@ -435,13 +448,22 @@ tools/viewer/                 static noVNC remote desktop + safe hold-to-drive c
 ## Known limitations / next steps
 
 - No DRM/KMS scanout backend. `--fbdev` is a real Linux framebuffer output but
-  it CPU-reads back the GL frame and blits it into the mode the kernel already
-  programmed; it does not call `FBIOPUT_VSCREENINFO`, own a DRM plane, or
-  provide GPU scanout. `--headless` and `--windowed` remain nested/VNC paths.
-- fbdev phase 1 is output-only: no local evdev/keyboard/touch handling, no
-  hotplug/mode-change support, and the control companion is the explicit,
-  loopback-only `--fbdev-vnc-mirror`. A getty/fbcon on the same VT can still
-  fight over the console; run it on a dedicated VT or redirect console output.
+  it CPU-reads back the GL frame and blits it into the kernel's fb mode. By
+  default (phase 1 behavior) it adopts the current mode; with
+  `--fbdev-modeset` or `--fbdev-mode` it requests a modeset via
+  `FBIOPUT_VSCREENINFO` and restores the original mode on exit. The driver may
+  adjust timings or reject the request. It does not own a DRM plane or provide
+  GPU scanout. `--headless` and `--windowed` remain nested/VNC paths.
+- fbdev phase 2B adds raw evdev input (keyboard, relative/absolute pointer,
+  multitouch type B, single-touch) for local keyboard/mouse/touchscreen
+  control. Enumeration is startup-only; no hotplug rescans. Non-direct
+  multitouch devices (touchpads) are treated as pointer-only; raw touchpad
+  motion is not translated to `wl_touch`. `wl_touch` is advertised only when
+  a direct-touch device is present at startup. Grab via `--fbdev-grab-input`
+  warns about VT lockout; ungrabbed keys can still reach the VT console. A
+  getty/fbcon on the same VT can still fight over the console; run it on a
+  dedicated VT or redirect console output. VT/fbcon mode is still unmanaged
+  (no `KD_GRAPHICS`).
 - No layer-shell (so panels/launchers built for wlroots-style shells won't run).
 - dma-buf import works on the EGL backends (`--headless` and `--fbdev`); not
   on `--windowed` (GLX) — by design, see "GPU / dma-buf" above.

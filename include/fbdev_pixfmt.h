@@ -41,8 +41,14 @@ void cd_fb_convert_rgba(const CdFbFormat *fmt,const uint8_t *src,size_t src_stri
  int width,int height,bool bottom_up,uint8_t *dst,size_t dst_stride);
 
 bool cd_fb_geometry_init(CdFbGeometry *geo,int width,int height,int bits_per_pixel,
- unsigned line_length,size_t smem_len,int yres_virtual);
+  unsigned line_length,size_t smem_len,int yres_virtual);
 size_t cd_fb_visible_offset(size_t line_length,int xoffset,int yoffset,int bytes_per_pixel);
 size_t cd_fb_page_offset(size_t line_length,int xoffset,int page,int yres,int bytes_per_pixel);
+
+/* Pure mode-string parser (no <linux/fb.h> dependency). Parses "WIDTHxHEIGHT[@BPP]".
+ * BPP must be 16, 24, or 32. Returns true on success, fills out width/height/bpp
+ * (bpp = 0 if not specified). Returns false on any syntax error, overflow,
+ * zero/negative values, extra characters, or invalid BPP. */
+bool cd_fb_mode_parse(const char *str,int *out_width,int *out_height,int *out_bpp);
 
 #endif

@@ -7,7 +7,7 @@ LDLIBS = $(shell pkg-config --libs $(PKGS)) -lm
 PROTO_DIR := $(shell pkg-config --variable=pkgdatadir wayland-protocols)
 GEN = .generated
 BIN = bin
-SOURCES = src/main.c src/wayland.c src/scene.c src/vehicle.c src/vehicle_scene.c src/vehicle_seat.c src/keymap.c src/ui.c src/math3d.c src/telemetry.c src/dmabuf.c src/cdconfig.c src/backend_sdl.c src/backend_headless.c src/backend_egl.c src/backend_vnc.c src/backend_fbdev.c src/fbdev_pixfmt.c
+SOURCES = src/main.c src/wayland.c src/scene.c src/vehicle.c src/vehicle_scene.c src/vehicle_seat.c src/keymap.c src/ui.c src/math3d.c src/telemetry.c src/dmabuf.c src/cdconfig.c src/backend_sdl.c src/backend_headless.c src/backend_egl.c src/backend_vnc.c src/backend_fbdev.c src/backend_evdev.c src/evdev_util.c src/fbdev_pixfmt.c
 PROTOCOLS = $(GEN)/xdg-shell-protocol.c $(GEN)/xdg-decoration-protocol.c $(GEN)/linux-dmabuf-protocol.c
 HEADERS = $(GEN)/xdg-shell-server.h $(GEN)/xdg-decoration-server.h $(GEN)/linux-dmabuf-server.h
 .PHONY: all clean test sanitize garage3d garage3d-test garage3d-clean
@@ -61,8 +61,8 @@ $(BIN)/test-telemetry: tests/test_telemetry.c src/telemetry.c src/vehicle.c src/
 	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_telemetry.c src/telemetry.c src/vehicle.c src/math3d.c -o $@ -lm
 $(BIN)/test-keymap: tests/test_keymap.c src/keymap.c include/keymap.h | $(BIN)
 	$(CC) -Iinclude $(CFLAGS) tests/test_keymap.c src/keymap.c -o $@
-$(BIN)/test-fbdev: tests/test_fbdev.c src/fbdev_pixfmt.c include/fbdev_pixfmt.h | $(BIN)
-	$(CC) -Iinclude $(CFLAGS) tests/test_fbdev.c src/fbdev_pixfmt.c -o $@
+$(BIN)/test-fbdev: tests/test_fbdev.c src/fbdev_pixfmt.c src/evdev_util.c include/fbdev_pixfmt.h include/evdev_util.h | $(BIN)
+	$(CC) -Iinclude $(CFLAGS) tests/test_fbdev.c src/fbdev_pixfmt.c src/evdev_util.c -o $@
 test: $(BIN)/test-math $(BIN)/test-config $(BIN)/test-vehicle $(BIN)/test-telemetry $(BIN)/test-keymap $(BIN)/test-fbdev $(BIN)/chromedrive-config
 	./$(BIN)/test-math
 	./$(BIN)/test-config

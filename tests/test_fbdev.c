@@ -1,4 +1,5 @@
 #include "fbdev_pixfmt.h"
+#include "evdev_util.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -139,20 +140,91 @@ static void test_geometry(void){
 }
 
 static void test_offsets(void){
- CHECK(cd_fb_visible_offset(20,2,3,2)==64);
- CHECK(cd_fb_page_offset(20,2,1,3,2)==64);
- CHECK(cd_fb_page_offset(20,0,2,3,4)==120);
- CHECK(cd_fb_visible_offset(100,5,7,3)==715);
- CHECK(cd_fb_page_offset(100,0,1,10,3)==1000);
+  CHECK(cd_fb_visible_offset(20,2,3,2)==64);
+  CHECK(cd_fb_page_offset(20,2,1,3,2)==64);
+  CHECK(cd_fb_page_offset(20,0,2,3,4)==120);
+  CHECK(cd_fb_visible_offset(100,5,7,3)==715);
+  CHECK(cd_fb_page_offset(100,0,1,10,3)==1000);
+}
+
+static void test_mode_parse(void){
+  int w,h,bpp;
+  CHECK(cd_fb_mode_parse("800x600",&w,&h,&bpp));
+  CHECK(w==800&&h==600&&bpp==0);
+  CHECK(cd_fb_mode_parse("1920x1080@32",&w,&h,&bpp));
+  CHECK(w==1920&&h==1080&&bpp==32);
+  CHECK(cd_fb_mode_parse("1280x720@16",&w,&h,&bpp));
+  CHECK(w==1280&&h==720&&bpp==16);
+  CHECK(cd_fb_mode_parse("640x400@24",&w,&h,&bpp));
+  CHECK(w==640&&h==400&&bpp==24);
+
+  CHECK(!cd_fb_mode_parse("",&w,&h,&bpp));
+  CHECK(!cd_fb_mode_parse("800",&w,&h,&bpp));
+  CHECK(!cd_fb_mode_parse("800x",&w,&h,&bpp));
+  CHECK(!cd_fb_mode_parse("x600",&w,&h,&bpp));
+  CHECK(!cd_fb_mode_parse("0x600",&w,&h,&bpp));
+  CHECK(!cd_fb_mode_parse("800x0",&w,&h,&bpp));
+  CHECK(!cd_fb_mode_parse("-1x600",&w,&h,&bpp));
+  CHECK(!cd_fb_mode_parse("800x-1",&w,&h,&bpp));
+  CHECK(!cd_fb_mode_parse("7681x600",&w,&h,&bpp));
+  CHECK(!cd_fb_mode_parse("800x4321",&w,&h,&bpp));
+  CHECK(!cd_fb_mode_parse("800x600@",&w,&h,&bpp));
+  CHECK(!cd_fb_mode_parse("800x600@8",&w,&h,&bpp));
+  CHECK(!cd_fb_mode_parse("800x600@15",&w,&h,&bpp));
+  CHECK(!cd_fb_mode_parse("800x600@33",&w,&h,&bpp));
+  CHECK(!cd_fb_mode_parse("800x600@32x",&w,&h,&bpp));
+  CHECK(!cd_fb_mode_parse("800x600@32garbage",&w,&h,&bpp));
+  CHECK(!cd_fb_mode_parse(" 800x600",&w,&h,&bpp));
+  CHECK(!cd_fb_mode_parse("800x600 ",&w,&h,&bpp));
+  CHECK(!cd_fb_mode_parse("800X600",&w,&h,&bpp));
+  CHECK(!cd_fb_mode_parse("800x600@", &w,&h,&bpp));
+  CHECK(!cd_fb_mode_parse("1000000x600",&w,&h,&bpp));
+}
+
+static void test_evdev_scale_abs(void){
+  CHECK(evdev_util_scale_abs(0, 0, 100, 800) == 0);
+  CHECK(evdev_util_scale_abs(100, 0, 100, 800) == 799);
+  CHECK(evdev_util_scale_abs(50, 0, 100, 800) == 399);
+  CHECK(evdev_util_scale_abs(-10, 0, 100, 800) == 0);
+  CHECK(evdev_util_scale_abs(110, 0, 100, 800) == 799);
+  CHECK(evdev_util_scale_abs(500, 0, 1000, 1920) == 959);
+  CHECK(evdev_util_scale_abs(0, 100, 100, 800) == 0); /* degenerate */
+  CHECK(evdev_util_scale_abs(0, 200, 100, 800) == 0); /* degenerate */
+  CHECK(evdev_util_scale_abs(0, 0, 100, 0) == 0); /* degenerate */
+  CHECK(evdev_util_scale_abs(0, 0, 100, -1) == 0); /* degenerate */
+}
+
+static void test_evdev_touch_id_pool(void){
+  evdev_util_touch_id_reset();
+  int id0 = evdev_util_touch_id_alloc(); CHECK(id0 == 0);
+  int id1 = evdev_util_touch_id_alloc(); CHECK(id1 == 1);
+  int id2 = evdev_util_touch_id_alloc(); CHECK(id2 == 2);
+  evdev_util_touch_id_release(1);
+  int id3 = evdev_util_touch_id_alloc(); CHECK(id3 == 1); /* reuse lowest free */
+  evdev_util_touch_id_release(0);
+  evdev_util_touch_id_release(2);
+  evdev_util_touch_id_release(1); /* double release safe */
+  for(int i=0;i<10;i++){
+    int id = evdev_util_touch_id_alloc();
+    CHECK(id == i);
+  }
+  int id_exhaust = evdev_util_touch_id_alloc(); CHECK(id_exhaust == -1);
+  evdev_util_touch_id_release(5);
+  int id_reuse = evdev_util_touch_id_alloc(); CHECK(id_reuse == 5);
+  evdev_util_touch_id_reset();
+  int id_after_reset = evdev_util_touch_id_alloc(); CHECK(id_after_reset == 0);
 }
 
 int main(void){
- test_rejects();
- test_packing();
- test_convert_flip_stride();
- test_geometry();
- test_offsets();
- if(failures)return 1;
- puts("PASS: fbdev pixel formats (16/24/32bpp packing, LUT quantization, row flip, independent strides/padding, geometry, page offsets)");
- return 0;
+  test_rejects();
+  test_packing();
+  test_convert_flip_stride();
+  test_geometry();
+  test_offsets();
+  test_mode_parse();
+  test_evdev_scale_abs();
+  test_evdev_touch_id_pool();
+  if(failures)return 1;
+  puts("PASS: fbdev pixel formats (16/24/32bpp packing, LUT quantization, row flip, independent strides/padding, geometry, page offsets, mode parsing) + evdev_util (abs scaling, touch-id pool)");
+  return 0;
 }

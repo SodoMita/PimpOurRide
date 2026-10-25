@@ -37,6 +37,7 @@ typedef enum { CD_BACKEND_HEADLESS=0,CD_BACKEND_WINDOWED=1,CD_BACKEND_FBDEV=2 } 
 #define CD_VERSION "0.3.0"
 #define CD_DMABUF_MAX_FORMATS 8
 #define CD_DMABUF_MAX_MODIFIERS 16
+#include <linux/input.h>
 typedef struct Server Server;
 typedef struct Surface Surface;
 typedef struct DataSource DataSource;
@@ -118,8 +119,9 @@ struct Server {
  Surface *keyboard_focus,*pointer_focus,*pointer_grab;int held_buttons;uint32_t held_button_mask;
  float pointer_sx,pointer_sy;int mouse_x,mouse_y;
  bool touch_available;CdTouchPoint touch_points[CD_MAX_TOUCH_POINTS];
- SdlTouchFinger sdl_touch[CD_MAX_TOUCH_POINTS];int sdl_touch_chrome_id;
- Monitor monitors[CD_MAX_MONITORS];DashButton buttons[6];
+SdlTouchFinger sdl_touch[CD_MAX_TOUCH_POINTS];int sdl_touch_chrome_id;
+  int evdev_chrome_touch_id;
+  Monitor monitors[CD_MAX_MONITORS];DashButton buttons[6];
  /* The settings cog: a slowly spinning 3D gear medallioned into the sloped
   * dash between wheel and console (scene.c draw_cog). Clicking it opens
   * bin/chromedrive-config. Picked by ray against cog's plane + radial test,
@@ -134,7 +136,7 @@ struct Server {
  uint8_t *readback_pixels;                             /* shared single GL_RGBA readback scratch for EGL present */
  void *vnc_screen;int vnc_port;                        /* rfbScreenInfoPtr, opaque here (see backend_vnc.c) */
  int vnc_prev_mask,vnc_prev_x,vnc_prev_y;              /* RFB pointer edge-detection state (no separate down/up events in the protocol) */
- char fbdev_path[256];bool fbdev_vsync,fbdev_pan,fbdev_vnc_mirror;void *fbdev_state;
+ char fbdev_path[256];bool fbdev_vsync,fbdev_pan,fbdev_vnc_mirror,fbdev_modeset,fbdev_evdev,fbdev_grab_input;int fbdev_mode_width,fbdev_mode_height,fbdev_mode_bpp;void *fbdev_state;char fbdev_input_devices[8][256];int fbdev_input_device_count;void *evdev_state;
  bool dmabuf_supported;int dmabuf_format_count;DmabufFormat dmabuf_formats[CD_DMABUF_MAX_FORMATS];
  int width,height,fps_limit,theme,hover_button,hover_close,active_slot;
  int bg_mode; /* CD_BG_*: which environment() backdrop to draw */
@@ -271,4 +273,59 @@ bool backend_fbdev_init(Server *s);
 void backend_fbdev_poll(Server *s);
 void backend_fbdev_present(Server *s);
 void backend_fbdev_shutdown(Server *s);
+/* backend_evdev.c: raw evdev input for fbdev backend (keyboard, pointer, touch). */
+bool backend_evdev_init(Server *s);
+void backend_evdev_poll(Server *s);
+void backend_evdev_shutdown(Server *s);
+
+#define EVDEV_MAX_DEVICES 8
+#define EVDEV_MAX_SLOTS 16
+typedef enum {
+    EVDEV_DEV_NONE = 0,
+    EVDEV_DEV_KEYBOARD,
+    EVDEV_DEV_REL_POINTER,
+    EVDEV_DEV_ABS_POINTER,
+    EVDEV_DEV_MULTITOUCH,
+    EVDEV_DEV_SINGLE_TOUCH
+} EvdevDevType;
+typedef struct {
+    int tracking_id;
+    int x, y;
+    bool active;
+    int touch_id;
+    int route;
+    int last_x, last_y;
+    bool is_chrome_owner;
+} EvdevFinger;
+typedef struct {
+    int fd;
+    char path[256];
+    char name[256];
+    EvdevDevType type;
+    bool grabbed;
+    bool has_rel_x, has_rel_y;
+    bool has_abs_x, has_abs_y;
+    bool has_keys;
+    struct input_absinfo abs_x, abs_y;
+    struct input_absinfo abs_mt_x, abs_mt_y;
+    bool is_direct;
+    EvdevFinger mt_fingers[EVDEV_MAX_SLOTS];
+    EvdevFinger st_finger;
+    int current_slot;
+    int rel_accum_x, rel_accum_y;
+    int abs_x_val, abs_y_val;
+    int wheel_accum, hwheel_accum;
+    uint32_t held_button_mask;
+    uint32_t sent_button_mask;
+    bool btn_left, btn_right, btn_middle, btn_side, btn_extra;
+    bool middle_look_held;
+} EvdevDevice;
+typedef struct {
+    EvdevDevice devices[EVDEV_MAX_DEVICES];
+    int device_count;
+    bool grab_input;
+    char explicit_paths[EVDEV_MAX_DEVICES][256];
+    int explicit_count;
+    bool evdev_enabled;
+} EvdevState;
 #endif

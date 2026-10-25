@@ -330,11 +330,17 @@ rows into RFB's top-down framebuffer, and marks the rectangle modified. fbdev
 presentation does the same single readback, then converts it into the device's
 packed truecolor format and blits it into `/dev/fb*` memory, using
 `FBIOPAN_DISPLAY` only when `yres_virtual` already has at least two pages and
-treating `FBIO_WAITFORVSYNC` as best-effort. It never calls
-`FBIOPUT_VSCREENINFO`: the current kernel mode is adopted, not changed. During
+treating `FBIO_WAITFORVSYNC` as best-effort. By default it adopts the current
+kernel mode; with `--fbdev-modeset` or `--fbdev-mode` it requests a modeset via
+`FBIOPUT_VSCREENINFO` and restores the original mode on exit. The driver may
+adjust timings or reject the request. Local evdev input (keyboard, mouse,
+touchscreen) is enabled by default for fbdev; `--no-fbdev-evdev` disables it.
+`--fbdev-grab-input` opts in to `EVIOCGRAB` (warns about VT lockout). Explicit
+device restriction via `--fbdev-input-device PATH` (repeatable, max 8). During
 shutdown, clients and scene textures are destroyed before the EGL context is
-unbound and terminated; fbdev also restores the original pan offset before
-unmapping. No physics code, browser code, or worker thread owns a GL context.
+unbound and terminated; fbdev also restores the original video mode (or pan
+offset if no modeset occurred) before unmapping. No physics code, browser code,
+or worker thread owns a GL context.
 
 ## Validation
 
@@ -351,7 +357,8 @@ braking, steering coordinate signs, garage bounds, transform round trips,
 hover/body finiteness, and identical results under different render cadences.
 `tests/test_fbdev.c` exercises packed 16/24/32bpp conversion, LUT quantization,
 bottom-up row flips, independent strides/padding, geometry validation, and page
-offsets without opening `/dev/fb0` (so `make test` also runs in CI/sandboxes).
+offsets without opening `/dev/fb0` (so `make test` also runs in CI/sandboxes),
+plus `evdev_util` absolute scaling and touch-id pool.
 `tests/test_keymap.c` pins the exact RFB/X11-to-evdev table, including the
 non-contiguous letter codes needed by WASD. `tests/test_math.c` covers all nine
 output transforms plus stowed/mid-travel/deployed picking, and
