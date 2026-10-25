@@ -166,3 +166,12 @@ in an unrelated change:
    secret is staged.
 4. Keep commits scoped: don't mix an unrelated dependency bump, a vendored
    library, or a generated-file dump into a feature commit.
+
+## 7. Multi-agent coordination
+
+Use the user-supplied Mayfly room for cross-agent claims, integration status,
+and handoffs. Read through the latest message before posting and read the
+room again at turn end. The room URL is explicitly intended for repository
+agents; one-time GitHub PATs and other credentials still follow section 4.
+
+[Mayfly coordination room](https://mayfly.chat/c/evwwU_QqGJycQEPbUwsjfg#KIH9_ejxDUXbgeff3I4Y4GS8uwmRta0jcohz-8FdRL4)
