@@ -95,6 +95,22 @@ The rule is the same shape as the PNG ban: there is exactly one right way.
 - **Never truncate translated text with a printf precision.** `%.62s` / `%.*s`
   count bytes and split multi-byte characters (already reachable in Russian,
   guaranteed in CJK). Use `i18n_utf8_truncate()` from `include/i18n.h`.
+- **`snprintf()` into a fixed buffer is the same bug with a worse failure
+  mode.** A half-written code point makes cairo latch
+  `CAIRO_STATUS_INVALID_STRING`, after which *every* draw call on that context
+  is silently dropped - a 96-byte note buffer blanked the entire app picker.
+  Use `cd_utf8_printf()` from `include/textfit.h`; it also sanitises text that
+  an earlier byte-wise truncation already broke.
+- **Bound every string that goes into a fixed slot.** Both cairo clients draw
+  into a fixed 1000x625 box with neighbouring columns, and translations are
+  routinely 20-40% wider than the English. Use the shared
+  `text_fit()`/`mono_fit()`/`txt_fit()` wrappers from `src/textfit_cairo.c`
+  (policy in `src/textfit.c`): shrink to a legibility floor, then ellipsize -
+  never clip, and never draw past the slot into the next column. Compute a
+  follow-on element's position from the width the text was **drawn** at, not
+  the width it measured at (that is how the RESTART badge ended up on top of a
+  slider). `make check-text` renders every catalog and fails on any ellipsis;
+  English must still fit at 100%, and is the reference layout.
 - **Never translate a format string instead of its argument.** `tr("%s")` with
   the sentence passed as an argument translates nothing; write `"%s"` as a
   literal and wrap the argument in `tr()`. Same for ternaries inside a
@@ -113,7 +129,9 @@ The rule is the same shape as the PNG ban: there is exactly one right way.
   `src/ui.c` or it will keep the old language until restart.
 - `make test` runs `tests/test_i18n.c`, which fails if a shipped catalog key
   no longer appears verbatim in the sources. Rewording an English string
-  means updating `assets/locale/ru.lang` in the same commit.
+  means updating `assets/locale/ru.lang` in the same commit. It also runs
+  `tests/test_textfit.c` (the fitting policy against a synthetic metric, so
+  the expected cut points are exact) and the overflow check in report mode.
 - A missing catalog or key **must** fall back to English silently. Never
   print blanks or key names on screen; a partially translated install is a
   supported state.

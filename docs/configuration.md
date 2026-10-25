@@ -446,12 +446,61 @@ Therefore, before shipping any non-European catalog:
 4. **CJK does not need shaping**, so a CJK catalog plus the `@font` directive is
    genuinely sufficient — no Pango required.
 
+### Fixed slots: shrink, then ellipsize, never clip
+
+Both clients draw into a fixed 1000x625 surface where every string has a
+neighbour: a 205 px sidebar, 230 px file cards, two 288 px gauge cards, a 302 px
+label lane in front of the value controls, a 560 px popup with a name column and
+an app-id column. Translated text is routinely 20-40% wider than the English it
+replaces, so drawing a label without measuring it is a layout bug that only
+appears in another language.
+
+`src/textfit.c` (policy, no cairo, unit-tested by `tests/test_textfit.c`) and
+`src/textfit_cairo.c` (cairo glue, shared by both clients) implement one rule:
+
+1. measure the string; if it fits, draw it untouched;
+2. otherwise scale the font down, but no smaller than a legibility floor (0.85
+   in the demo clients, 0.86 in the settings GUI);
+3. if it still does not fit, cut whole code points off the end and append `…`.
+
+Clipping is never the answer, and neither is letting text run into the next
+column: a cairo clip rectangle hides the end of a sentence with no hint that
+anything is missing.
+
+Both clients can render a page offscreen for exactly this check: the settings
+GUI already had `--screenshot OUT.webp --tab 0|1|2`; the demo client gained
+`chromedrive-demo files|audio|telemetry|cluster --screenshot OUT.webp`, which
+opens no Wayland connection and needs no compositor, so a layout can be
+inspected (and diffed) without a window being mounted at an angle in the 3D
+scene.
+
+`CHROMEDRIVE_TEXT_AUDIT=1` logs every string that had to be shrunk or elided,
+with its slot width. `tools/check-client-overflow.sh` renders every shipped
+catalog in every tab, the app picker and all four demo modes offscreen and fails
+if any of them ellipsizes (`make check-text`; `make test` runs the same check in
+report-only mode). The English strings are the reference layout and must render
+at 100% - if English starts shrinking, a slot got narrower than the text it was
+designed for.
+
+The settings GUI sizes its tab pills from the label *as drawn*
+(`cd_fit_measure`), so a longer translation shrinks inside its own pill instead
+of pushing the row under the Reset button.
+
 Two related rules are enforced in code and in `AGENTS.md`:
 
 - **Never truncate translated text with a printf precision.** `%.62s` and
   `%.*s` count *bytes* and split multi-byte characters. Already reachable with
   Russian, certain with CJK. `i18n_utf8_truncate()` in `include/i18n.h` is the
   replacement.
+- **Never `snprintf()` a translated string into a fixed buffer either.** It
+  truncates on a byte count too, and the damage is worse than a mangled
+  character: a half-written code point makes cairo latch
+  `CAIRO_STATUS_INVALID_STRING`, and *every subsequent draw call on that
+  context is silently dropped*. One over-long translation blanked the whole app
+  picker below its header and the footer line - a whole-window failure from a
+  96-byte note buffer. `cd_utf8_printf()` in `include/textfit.h` is the bounded,
+  boundary-safe replacement, and it also sanitises text that a previous
+  byte-wise truncation already broke.
 - **Never translate a format string instead of its arguments.** `tr("%s")`
   with the real sentence passed as an argument translates nothing. Pass `"%s"`
   as a literal and wrap the argument in `tr()`.
