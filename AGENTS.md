@@ -120,10 +120,24 @@ The rule is the same shape as the PNG ban: there is exactly one right way.
   set. A third-party client's `xdg_toplevel` title belongs to that app — the
   compositor must never translate it.
 - **Font coverage is a real constraint, not a detail.** The text path is
-  cairo's toy API with DejaVu, which has no CJK/Arabic/Indic/Thai coverage and
-  does *no* per-glyph fallback (measured: CJK ink in DejaVu is byte-identical
-  to a bogus family name). See "Scripts and font coverage" in
-  `docs/configuration.md` before adding a catalog for a new script.
+  cairo's toy API, which does *no* per-glyph fallback (measured: CJK ink in
+  DejaVu is byte-identical to a bogus family name). See "Scripts and font
+  coverage" in `docs/configuration.md` before adding a catalog for a new
+  script.
+- **A non-European catalog names its family** with `@font` / `@monofont` in the
+  catalog header, and the family is applied at draw time (`i18n_font()`), so a
+  language switch takes effect without a restart. Never hardcode a family name
+  in a new drawing path - go through `cd_font()` / `ui_font_family()` or the
+  new path will paint tofu in CJK.
+- **A catalog that cannot draw its own text must be refused, not rendered.**
+  The startup probe in `src/fontprobe.c` compares ink against an unassigned
+  code point and falls back to English with a loud log line. Any new drawing
+  program must call it after loading the catalog and *before* baking textures.
+  Its sample comes from the catalog's values (`i18n_sample_glyphs()`), so do
+  not add a second hardcoded sample table.
+- **Arabic, Hebrew, Indic and Thai are not shippable on this text path.**
+  No shaping, no bidi: the result is disconnected letterforms in the wrong
+  order. That needs Pango, not a catalog.
 - Bake-time, not frame-time: textures with text in them are built once. If
   you add a new baked-with-text texture, add it to `ui_refresh_text()` in
   `src/ui.c` or it will keep the old language until restart.

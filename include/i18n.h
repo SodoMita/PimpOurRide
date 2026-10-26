@@ -41,6 +41,19 @@
  * any other backslash sequence is kept verbatim. Files are UTF-8; a leading
  * BOM is skipped. Duplicate keys: last one wins (with a warning).
  *
+ * A line whose first non-space character is '@' is a metadata directive, not
+ * a translation:
+ *
+ *     @font = Noto Sans CJK SC
+ *     @monofont = Noto Sans Mono CJK SC
+ *
+ * Both sides are trimmed like ordinary lines and the value is unescaped.
+ * The last occurrence wins. Directives are cleared by i18n_free() and by
+ * every catalog (re)load, so switching language cannot retain an old
+ * family; a failed or missing load leaves both unset. Unknown names are
+ * ignored with a warning, so a catalog may carry directives a binary does
+ * not know about yet.
+ *
  * Search order for <tag>.lang - first hit wins, no merging:
  *
  *     1. $CHROMEDRIVE_LOCALE_DIR          (explicit override; tests use this)
@@ -88,6 +101,31 @@ const char *i18n_catalog_path(void);
 /* Translate an English source string. Never returns NULL, and returns
  * `english` unchanged when no catalog is loaded or the key is absent. */
 const char *tr(const char *english);
+
+/* Family the loaded catalog asks for, or NULL when it asks for nothing (the
+ * caller then keeps its built-in default). The pointer is owned by the
+ * module and valid until the next i18n_init()/i18n_set_language()/
+ * i18n_free(). */
+/* Presence marker: include/fontprobe.h used a weak-shim fallback while the
+ * @font work and the coverage-probe work were being written in parallel
+ * branches. Both are merged now, so this simply documents that the API below
+ * exists - an out-of-tree user compiled against the old header can still
+ * #ifdef on it. */
+#define I18N_HAS_FONT_DIRECTIVE 1
+
+const char *i18n_font(void);
+const char *i18n_monofont(void);
+
+/* Up to `max` DISTINCT non-ASCII code points taken from the loaded catalog's
+ * VALUES (never its keys), in first-appearance order, each written as a
+ * NUL-terminated UTF-8 sequence into out[i] (8 bytes each is enough).
+ * Returns how many were written (0 when running on English or when the
+ * catalog is pure ASCII). This is the sample the glyph probe tests, so it
+ * must come from the text that will actually be drawn, not from a hardcoded
+ * table that can drift away from the catalog. U+200B..U+200F and U+FE0F are
+ * skipped (zero width / variation selectors): they draw no ink and would
+ * confuse a coverage probe based on it. Malformed bytes are never reported. */
+int i18n_sample_glyphs(char out[][8], int max);
 
 /* UTF-8-safe byte truncation. Copies the longest prefix of `src` that is both
  * a whole number of UTF-8 codepoints and at most `max_bytes` bytes long, into

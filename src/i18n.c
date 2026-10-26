@@ -21,16 +21,22 @@
  * and the stored g_catalog, so no snprintf can be flagged as truncating. */
 #define I18N_MAX_DIR 4096
 #define I18N_MAX_PATH (I18N_MAX_DIR + 64)
+#define I18N_FONT_MAX 128
 
 typedef struct {
     char *key;                  /* English source text (also the lookup key) */
     char *val;                  /* translation */
+    size_t seq;                 /* load-time appearance counter, for g_order */
 } Entry;
 
 static char g_lang[32] = "en";          /* active language tag */
 static char g_catalog[I18N_MAX_PATH] = "";  /* "" when running on English */
+static char g_font[I18N_FONT_MAX] = "";     /* from "@font"; "" means unset */
+static char g_monofont[I18N_FONT_MAX] = ""; /* from "@monofont"; "" unset */
 static Entry *g_entries;
 static int g_count, g_cap;
+static int *g_order;                /* entry indices in first-appearance order */
+static int g_load_seq;              /* counter behind g_entries[].seq */
 static int g_lookups, g_misses;         /* cumulative since last init */
 
 /* ------------------------------------------------------------- utilities */
@@ -131,6 +137,14 @@ static void entries_clear(void) {
     free(g_entries);
     g_entries = NULL;
     g_count = g_cap = 0;
+    free(g_order);
+    g_order = NULL;
+}
+
+/* Catalog metadata directives (@font / @monofont). Empty means unset. */
+static void directives_clear(void) {
+    g_font[0] = 0;
+    g_monofont[0] = 0;
 }
 
 /* Last definition wins. Catalogs are small enough that the linear duplicate
@@ -156,6 +170,7 @@ static bool entry_set(const char *key, const char *val) {
     if (!k || !v) { free(k); free(v); return false; }
     g_entries[g_count].key = k;
     g_entries[g_count].val = v;
+    g_entries[g_count].seq = (size_t)g_load_seq++;
     g_count++;
     return true;
 }
@@ -163,6 +178,16 @@ static bool entry_set(const char *key, const char *val) {
 static bool load_catalog(const char *path) {
     FILE *f = fopen(path, "r");
     if (!f) return false;
+
+    /* A fresh load is a fresh file: directives reset even mid-parse, and the
+     * appearance counter restarts for g_order. */
+    directives_clear();
+    g_load_seq = 0;
+
+    /* "Warn once per unknown name" bookkeeping lives only inside this load. */
+    bool seen_font = false, seen_monofont = false;
+    char warned_unknown[32][64];
+    int n_warned_unknown = 0;
 
     char *line = NULL;
     size_t cap = 0;
@@ -180,6 +205,48 @@ static bool load_catalog(const char *path) {
         while (n && (s[n - 1] == '\n' || s[n - 1] == '\r')) s[--n] = 0;
         trim(s);
         if (!*s || *s == '#' || *s == ';') continue;
+
+        /* A metadata directive, never a translation entry. */
+        if (*s == '@') {
+            char *eq = strchr(s, '=');
+            if (!eq) {
+                if (!warned_parse)
+                    fprintf(stderr, "[i18n] %s: ignoring line without '=': %s\n", path, s);
+                warned_parse = true;
+                continue;
+            }
+            *eq = 0;
+            char *name = s + 1, *val = eq + 1;
+            trim(name);
+            char *dst = NULL;
+            if (!strcmp(name, "font")) dst = g_font;
+            else if (!strcmp(name, "monofont")) dst = g_monofont;
+            if (dst) {
+                trim(val);
+                unescape(val);
+                bool *seen = dst == g_font ? &seen_font : &seen_monofont;
+                if (*seen)
+                    fprintf(stderr, "[i18n] %s: duplicate directive '@%s', last value wins\n",
+                            path, name);
+                *seen = true;
+                snprintf(dst, I18N_FONT_MAX, "%s", val);
+                continue;
+            }
+            /* Unknown name: ignore the line and warn once per name, so a
+             * newer catalog may carry directives this binary does not know
+             * about yet. */
+            bool known_w = false;
+            for (int u = 0; u < n_warned_unknown && !known_w; u++)
+                known_w = !strcmp(warned_unknown[u], name);
+            if (!known_w) {
+                fprintf(stderr, "[i18n] %s: ignoring unknown directive '@%s'\n",
+                        path, name);
+                if (n_warned_unknown < (int)(sizeof warned_unknown / sizeof *warned_unknown))
+                    snprintf(warned_unknown[n_warned_unknown++],
+                             sizeof *warned_unknown, "%s", name);
+            }
+            continue;
+        }
 
         char *eq = strchr(s, '=');
         if (!eq) {
@@ -203,6 +270,27 @@ static bool load_catalog(const char *path) {
     fclose(f);
     /* bsearch() requires sorted input, and duplicates are already collapsed. */
     if (g_count > 1) qsort(g_entries, (size_t)g_count, sizeof *g_entries, entry_cmp);
+
+    /* Restore the file's appearance order over the now key-sorted entries
+     * for i18n_sample_glyphs(). Indices, not pointers, so the realloc()'d
+     * g_entries array cannot leave this stale. Small arrays: a plain
+     * insertion sort beats qsort_r, which is not portable at -std=c11. */
+    free(g_order);
+    g_order = NULL;
+    if (g_count > 0) {
+        g_order = malloc((size_t)g_count * sizeof *g_order);
+        if (g_order) {
+            for (int i = 0; i < g_count; i++) g_order[i] = i;
+            for (int i = 1; i < g_count; i++) {
+                int tmp = g_order[i], j = i - 1;
+                while (j >= 0 && g_entries[g_order[j]].seq > g_entries[tmp].seq) {
+                    g_order[j + 1] = g_order[j];
+                    j--;
+                }
+                g_order[j + 1] = tmp;
+            }
+        }
+    }
     return true;
 }
 
@@ -220,7 +308,7 @@ const char *tr(const char *english) {
     if (!english) return "";
     g_lookups++;
     if (g_count) {
-        Entry needle = { (char *)english, NULL };
+        Entry needle = { (char *)english, NULL, 0 };
         Entry *hit = bsearch(&needle, g_entries, (size_t)g_count,
                              sizeof *g_entries, entry_cmp);
         if (hit) return hit->val;
@@ -257,6 +345,63 @@ size_t i18n_utf8_truncate(char *dst, size_t cap, const char *src, size_t max_byt
     return out;
 }
 
+/* Family the loaded catalog asks for via its @font / @monofont directives,
+ * or NULL when it asked for nothing ("" is unset, per include/i18n.h). */
+const char *i18n_font(void) {
+    return g_font[0] ? g_font : NULL;
+}
+
+const char *i18n_monofont(void) {
+    return g_monofont[0] ? g_monofont : NULL;
+}
+
+/* Samples are harvested live from the entries in appearance order (g_order),
+ * so they can never drift away from what tr() actually returns. Malformed
+ * catalog bytes are skipped, never emitted: the probe renders what it is
+ * given, so it must only ever receive whole UTF-8 sequences. */
+int i18n_sample_glyphs(char out[][8], int max) {
+    if (!out || max <= 0) return 0;
+    int n = 0;
+    for (int i = 0; i < g_count && n < max; i++) {
+        const char *val = g_entries[g_order ? g_order[i] : i].val;
+        size_t vlen = strlen(val);
+        for (size_t b = 0; b < vlen && n < max;) {
+            unsigned char lead = (unsigned char)val[b];
+            if (lead < 0x80) { b++; continue; }   /* ASCII only draws as-is */
+            size_t len = utf8_len(lead);
+            bool ok = len >= 2 && b + len <= vlen;
+            unsigned cp = len == 2 ? lead & 0x1F
+                        : len == 3 ? lead & 0x0F : len == 4 ? lead & 0x07 : 0;
+            if (ok) {
+                for (size_t k = 1; k < len; k++) {
+                    unsigned char cc = (unsigned char)val[b + k];
+                    if ((cc & 0xC0) != 0x80) { ok = false; break; }
+                    cp = (cp << 6) | (cc & 0x3F);
+                }
+                if (ok && ((len == 2 && cp < 0x80) || (len == 3 && cp < 0x800) ||
+                           (len == 4 && cp < 0x10000) || cp > 0x10FFFF ||
+                           (cp >= 0xD800 && cp <= 0xDFFF)))
+                    ok = false;
+            }
+            if (!ok) { b++; continue; }   /* never emit a partial sequence */
+            /* Zero-width / variation selectors draw no ink; a coverage probe
+             * fed them would fail every font systematically. */
+            if ((cp >= 0x200B && cp <= 0x200F) || cp == 0xFE0F) { b += len; continue; }
+            bool have = false;
+            for (int r = 0; r < n && !have; r++)     /* UTF-8 is canonical, so
+                                                      * equal bytes == equal cp */
+                have = strlen(out[r]) == len && !memcmp(out[r], val + b, len);
+            if (!have) {
+                memcpy(out[n], val + b, len);
+                out[n][len] = 0;
+                n++;
+            }
+            b += len;
+        }
+    }
+    return n;
+}
+
 bool i18n_root_from_exe(char *buf, size_t size) {
     if (!buf || size < 2) return false;
     buf[0] = 0;
@@ -279,12 +424,14 @@ void i18n_stats(int *entries, int *lookups, int *misses) {
 
 void i18n_free(void) {
     entries_clear();
+    directives_clear();
     g_catalog[0] = 0;
     g_lookups = g_misses = 0;
 }
 
 const char *i18n_set_language(const char *root, const char *requested) {
     entries_clear();
+    directives_clear();
     g_catalog[0] = 0;
     g_lookups = g_misses = 0;
 

@@ -586,19 +586,48 @@ while `Noto Sans CJK SC` gives 5.774%. So a CJK catalog loaded today renders a
 screen of empty boxes, not Chinese. Evidence:
 `evidence/cjk-font-fallback-probe.webp`.
 
-Therefore, before shipping any non-European catalog:
+Two mechanisms turn that measurement into a working CJK catalog. Both exist:
 
-1. **CJK needs an explicit family.** The intended fix is a catalog header
-   directive — `@font = Noto Sans CJK SC` (`@monofont = Noto Sans Mono CJK
-   SC`) — read at load and passed to `cairo_select_font_face` instead of the
-   hardcoded DejaVu names. One family per catalog is sufficient, and Noto Sans
-   CJK carries Latin and digits too, so mixed chrome still renders. That
-   directive does **not** exist yet; a CJK `.lang` file will render as tofu
-   until it does.
-2. **Add a startup probe.** Render one representative codepoint from the
-   catalog and compare it against a known-missing one; if they match, log
-   loudly and stay on English. Silent tofu across an entire HUD is the worst
-   possible failure mode, and this is cheap to prevent.
+1. **A catalog names its family.** `@font = Noto Sans CJK SC` (and
+   `@monofont = Noto Sans Mono CJK SC`) in the catalog header are read by
+   `src/i18n.c` and handed to every `cairo_select_font_face` call, at draw time
+   so a language switch applies immediately. `i18n_font()` / `i18n_monofont()`
+   return `NULL` when a catalog asks for nothing, and the built-in DejaVu names
+   are kept. One family per catalog is enough; Noto Sans CJK also carries Latin
+   and digits, so mixed chrome still renders.
+2. **A startup probe refuses a catalog it cannot draw.** `src/fontprobe.c`
+   renders each sampled code point into a 64×64 A8 surface and compares the
+   bytes with the same rendering of an unassigned private-use code point
+   (U+F8FF). Identical pixels means both became the same .notdef box — the
+   family has no glyph — so the catalog is refused, the offender is reported as
+   `U+XXXX` plus UTF-8 bytes, and the UI falls back to English before anything
+   is baked. The whole block is skipped for English, and a failure is not
+   retried on every config reload (it is retried when the requested language
+   changes, so picking the language again after installing the font works).
+
+The samples come from the loaded catalog's **values**, in first-appearance
+order (`i18n_sample_glyphs()`), so the probe tests the strings that will
+actually be drawn instead of a hardcoded table that can drift from them.
+
+Result, measured on this tree:
+
+```
+$ CHROMEDRIVE_LANG=zh ./bin/chromedrive-demo files --screenshot /tmp/zh.webp
+[font] zh: 12 sample glyphs covered by 'Noto Sans CJK SC'
+
+$ # same catalog with @font = No Such Family 12345
+[font] WARNING: catalog 'zh' cannot be rendered
+[font]   12 sample glyph(s) missing from family 'No Such Family 12345'
+[font]   first missing code point: U+6587 (UTF-8: E6 96 87)
+[font]   falling back to English; install a font that covers this catalog or fix its @font directive
+```
+
+`tests/test_fontprobe.c` covers both directions (a family without the glyph is
+reported uncovered, one with it is covered, the catalog's directive — not the
+caller's default — decides, and English never probes). Its CJK assertions are
+**skipped and counted**, not silently passed, when Noto Sans CJK is not
+installed on the machine.
+
 3. **Do not ship Arabic, Hebrew, Indic or Thai catalogs yet.** The toy API does
    no contextual shaping and no bidi: Arabic would render as isolated,
    disconnected letterforms in the wrong visual order — unreadable, and worse
@@ -606,8 +635,9 @@ Therefore, before shipping any non-European catalog:
    needs a real shaping engine (Pango) before those scripts are honest to
    claim. Document any limitation explicitly rather than shipping a catalog
    that looks broken.
-4. **CJK does not need shaping**, so a CJK catalog plus the `@font` directive is
-   genuinely sufficient — no Pango required.
+4. **CJK does not need shaping**, so a CJK catalog plus `@font` and the probe is
+   genuinely sufficient — no Pango required. `assets/locale/zh.lang`,
+   `ja.lang` and `ko.lang` ship on that basis.
 
 ### Fixed slots: shrink, then ellipsize, never clip
 

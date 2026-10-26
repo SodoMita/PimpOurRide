@@ -5,6 +5,7 @@
 #define _GNU_SOURCE
 #include <wayland-client.h>
 #include "xdg-shell-client.h"
+#include "fontprobe.h"
 #include "i18n.h"
 #include "textfit_cairo.h"
 #include "telemetry.h"
@@ -249,8 +250,25 @@ int main(int argc,char **argv){
                      "               (no Wayland connection, so text-fitting checks\n"
                      "               do not depend on a compositor)\n",argv[0]);return 2;}
  /* Catalogs live in <root>/assets/locale; a demo client is launched from the
-  * cockpit, so it must speak the same language the compositor does. */
- {char root[4096];if(i18n_root_from_exe(root,sizeof(root))){const char *want=getenv("CHROMEDRIVE_LANG");i18n_init(root,want&&*want?want:"auto");}}
+  * cockpit, so it must speak the same language the compositor does. Probe the
+  * catalog before the first offscreen/drawn frame: a family that does not
+  * cover its own text falls back to English instead of painting tofu. */
+ {char root[4096];if(i18n_root_from_exe(root,sizeof(root))){
+  const char *want=getenv("CHROMEDRIVE_LANG");
+  const char *lang=i18n_init(root,want&&*want?want:"auto");
+  if(strcmp(lang,"en")!=0){
+   const char *family=i18n_font();if(!family)family="DejaVu Sans";
+   char first_bad[8]="";
+   int missing=cd_font_probe_catalog("DejaVu Sans",first_bad,sizeof(first_bad));
+   if(missing>0){
+    cd_font_report_missing(lang,family,missing,first_bad);
+    i18n_set_language(root,"en");
+   }else{
+    char samples[12][8];int n=i18n_sample_glyphs(samples,12);
+    fprintf(stderr,"[font] %s: %d sample glyphs covered by '%s'\n",lang,n,family);
+   }
+  }
+ }}
  /* Offscreen render: no Wayland connection, no compositor, no mount angle.
   * Used by tools/check-client-overflow.sh to verify the text fitting. */
  for(int i=2;i<argc;i++)if(!strcmp(argv[i],"--screenshot")&&i+1<argc){

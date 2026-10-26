@@ -1,5 +1,6 @@
 #include "chrome.h"
 #include "city.h"
+#include "fontprobe.h"
 #include "i18n.h"
 #include <math.h>
 #include <stdlib.h>
@@ -10,9 +11,35 @@
 #define PI 3.14159265358979323846
 static void rgb(cairo_t *c,float r,float g,float b){cairo_set_source_rgb(c,r,g,b);}
 static void rgba(cairo_t *c,float r,float g,float b,float a){cairo_set_source_rgba(c,r,g,b,a);}
-static void font(cairo_t *c,double size,bool bold,bool mono){cairo_select_font_face(c,mono?"DejaVu Sans Mono":"DejaVu Sans",CAIRO_FONT_SLANT_NORMAL,bold?CAIRO_FONT_WEIGHT_BOLD:CAIRO_FONT_WEIGHT_NORMAL);cairo_set_font_size(c,size);}
+static const char *ui_font_family(bool mono){const char *f=mono?i18n_monofont():i18n_font();return f?f:(mono?"DejaVu Sans Mono":"DejaVu Sans");}
+static void font(cairo_t *c,double size,bool bold,bool mono){cairo_select_font_face(c,ui_font_family(mono),CAIRO_FONT_SLANT_NORMAL,bold?CAIRO_FONT_WEIGHT_BOLD:CAIRO_FONT_WEIGHT_NORMAL);cairo_set_font_size(c,size);}
 static void text(cairo_t *c,double x,double y,double size,const char *s,bool bold){font(c,size,bold,false);cairo_move_to(c,x,y);cairo_show_text(c,s);}
 static void mono(cairo_t *c,double x,double y,double size,const char *s){font(c,size,false,true);cairo_move_to(c,x,y);cairo_show_text(c,s);}
+/* Bounded mono text for baked textures: shrink to 85%, then ellipsize. Bake-
+ * time only (these are 1200x76 titlebar strips), so the extra measurement pass
+ * costs nothing per frame. */
+static void mono_fit(cairo_t *c,double x,double y,double size,double maxw,const char *s){
+ char buf[512];char cur[512];snprintf(cur,sizeof(cur),"%s",s?s:"");
+ double scale=1.0;font(c,size,false,true);
+ cairo_text_extents_t e;cairo_text_extents(c,cur,&e);
+ if(e.x_advance>maxw&&maxw>0){
+  scale=maxw/e.x_advance>(0.85)?maxw/e.x_advance:0.85;
+  font(c,size*scale,false,true);cairo_text_extents(c,cur,&e);
+  if(e.x_advance>maxw){
+   size_t n=strlen(cur);
+   while(n>0){
+    while(n>0&&((unsigned char)cur[n]&0xC0)==0x80)n--;
+    cur[n]=0;snprintf(buf,sizeof(buf),"%s\xe2\x80\xa6",cur);
+    cairo_text_extents(c,buf,&e);
+    if(e.x_advance<=maxw)break;
+    if(n==0)break;
+    n--;
+   }
+   snprintf(cur,sizeof(cur),"%s",buf);
+  }
+ }
+ font(c,size*scale,false,true);cairo_move_to(c,x,y);cairo_show_text(c,cur);
+}
 static void rounded(cairo_t *c,double x,double y,double w,double h,double r){cairo_new_sub_path(c);cairo_arc(c,x+w-r,y+r,r,-PI/2,0);cairo_arc(c,x+w-r,y+h-r,r,0,PI/2);cairo_arc(c,x+r,y+h-r,r,PI/2,PI);cairo_arc(c,x+r,y+r,r,PI,PI*1.5);cairo_close_path(c);}
 static void line(cairo_t *c,double x,double y,double xx,double yy){cairo_move_to(c,x,y);cairo_line_to(c,xx,yy);cairo_stroke(c);}
 GLuint ui_texture(cairo_surface_t *im,GLuint reuse){
@@ -91,9 +118,9 @@ static void make_console(Server *s){
 }
 static void make_plate(Server *s){
  cairo_surface_t *im=cairo_image_surface_create(CAIRO_FORMAT_ARGB32,800,300);cairo_t *c=cairo_create(im);rgb(c,.08,.10,.14);cairo_paint(c);rgba(c,.2,.23,.31,.4);cairo_set_line_width(c,.7);for(int y=0;y<300;y+=4)line(c,0,y,800,y);
- rgb(c,.84,.86,.92);cairo_select_font_face(c,"DejaVu Sans",CAIRO_FONT_SLANT_OBLIQUE,CAIRO_FONT_WEIGHT_BOLD);cairo_set_font_size(c,67);cairo_move_to(c,45,134);cairo_show_text(c,tr("CUSTOM BUILT."));rgb(c,.57,.47,.78);mono(c,48,210,24,tr("NO STOCK PARTS / 001"));s->plate_tex=ui_texture(im,0);cairo_destroy(c);cairo_surface_destroy(im);
+ rgb(c,.84,.86,.92);cairo_select_font_face(c,ui_font_family(false),CAIRO_FONT_SLANT_OBLIQUE,CAIRO_FONT_WEIGHT_BOLD);cairo_set_font_size(c,67);cairo_move_to(c,45,134);cairo_show_text(c,tr("CUSTOM BUILT."));rgb(c,.57,.47,.78);mono(c,48,210,24,tr("NO STOCK PARTS / 001"));s->plate_tex=ui_texture(im,0);cairo_destroy(c);cairo_surface_destroy(im);
 }
-static void make_hub(Server *s){cairo_surface_t *im=cairo_image_surface_create(CAIRO_FORMAT_ARGB32,400,400);cairo_t *c=cairo_create(im);rgb(c,.025,.033,.052);cairo_arc(c,200,200,195,0,2*PI);cairo_fill(c);rgb(c,.28,.34,.43);cairo_set_line_width(c,2);cairo_arc(c,200,200,178,0,2*PI);cairo_stroke(c);rgb(c,.81,.88,.93);cairo_select_font_face(c,"DejaVu Sans",CAIRO_FONT_SLANT_OBLIQUE,CAIRO_FONT_WEIGHT_BOLD);cairo_set_font_size(c,110);cairo_move_to(c,100,233);cairo_show_text(c,"CD");rgb(c,.65,.42,.88);mono(c,99,292,19,tr("CUSTOM / 01"));s->hub_tex=ui_texture(im,0);cairo_destroy(c);cairo_surface_destroy(im);}
+static void make_hub(Server *s){cairo_surface_t *im=cairo_image_surface_create(CAIRO_FORMAT_ARGB32,400,400);cairo_t *c=cairo_create(im);rgb(c,.025,.033,.052);cairo_arc(c,200,200,195,0,2*PI);cairo_fill(c);rgb(c,.28,.34,.43);cairo_set_line_width(c,2);cairo_arc(c,200,200,178,0,2*PI);cairo_stroke(c);rgb(c,.81,.88,.93);cairo_select_font_face(c,ui_font_family(false),CAIRO_FONT_SLANT_OBLIQUE,CAIRO_FONT_WEIGHT_BOLD);cairo_set_font_size(c,110);cairo_move_to(c,100,233);cairo_show_text(c,"CD");rgb(c,.65,.42,.88);mono(c,99,292,19,tr("CUSTOM / 01"));s->hub_tex=ui_texture(im,0);cairo_destroy(c);cairo_surface_destroy(im);}
 static void make_handles_button(Server *s){
  cairo_surface_t *im=cairo_image_surface_create(CAIRO_FORMAT_ARGB32,384,112);cairo_t *c=cairo_create(im);
  cairo_pattern_t *grad=cairo_pattern_create_linear(0,0,0,112);cairo_pattern_add_color_stop_rgb(grad,0,.052,.105,.132);cairo_pattern_add_color_stop_rgb(grad,1,.018,.043,.066);cairo_set_source(c,grad);cairo_paint(c);cairo_pattern_destroy(grad);
@@ -109,8 +136,19 @@ void ui_monitor_label(Server *s,int i){
  if(!strcmp(buf,m->label_text)&&m->label)return;snprintf(m->label_text,sizeof(m->label_text),"%s",buf);
  cairo_surface_t *im=cairo_image_surface_create(CAIRO_FORMAT_ARGB32,1200,76);cairo_t *c=cairo_create(im);rgb(c,.025,.04,.06);cairo_paint(c);
  rgb(c,active?.40:.52,active?.93:.49,active?.76:.74);cairo_arc(c,29,38,5,0,2*PI);cairo_fill(c);
- char title[90],name[48];const char *display_name=m->surface->title;if(strstr(m->surface->app_id,"foot"))display_name=tr("TERMINAL");else if(strstr(m->surface->app_id,"files"))display_name=tr("FILES");else if(strstr(m->surface->app_id,"audio"))display_name=tr("AUDIO");else if(strstr(m->surface->app_id,"telemetry"))display_name=tr("METERS");i18n_utf8_truncate(name,sizeof(name),display_name,42);snprintf(title,sizeof(title),tr("%02d  /  %s"),i+1,name);
- rgb(c,.76,.82,.89);mono(c,54,48,25,title);rgb(c,.36,.49,.58);mono(c,790,47,17,active?tr("INPUT ACTIVE"):tr(monitor_mount_name(i)));
+ const char *display_name=m->surface->title;if(strstr(m->surface->app_id,"foot"))display_name=tr("TERMINAL");else if(strstr(m->surface->app_id,"files"))display_name=tr("FILES");else if(strstr(m->surface->app_id,"audio"))display_name=tr("AUDIO");else if(strstr(m->surface->app_id,"telemetry"))display_name=tr("METERS");/* Width-aware, not byte-aware: the title lane runs from x=54 to the mount
+  * label at x=790, and a translated window name is not the same width as the
+  * English it replaces. i18n_utf8_truncate() counts bytes - right for a cache
+  * key, wrong for something a person reads. Shrink to 0.85, then ellipsize. */
+ {
+  /* surface->title is up to 255 bytes; snprintf is safe (it truncates) but it
+   * would cut a UTF-8 sequence, so bound the name on a code-point boundary
+   * first with the existing helper, then format. */
+  char safe_name[128];i18n_utf8_truncate(safe_name,sizeof(safe_name),display_name,120);
+  char whole[160];snprintf(whole,sizeof(whole),"%02d  /  %s",i+1,safe_name);
+  mono_fit(c,54,48,25,730,whole);
+ }
+ rgb(c,.36,.49,.58);mono(c,790,47,17,active?tr("INPUT ACTIVE"):tr(monitor_mount_name(i)));
  if(hot){rgba(c,.65,.12,.22,.95);rounded(c,1128,9,62,58,12);cairo_fill(c);}
  rgb(c,hot?1:.50,hot?.82:.59,hot?.88:.67);cairo_set_line_width(c,hot?3:2);line(c,1150,30,1168,48);line(c,1168,30,1150,48);m->label=ui_texture(im,m->label);cairo_destroy(c);cairo_surface_destroy(im);
 }
@@ -120,7 +158,7 @@ static void hud(Server *s){
  cairo_pattern_t *shade=cairo_pattern_create_linear(0,0,0,150);cairo_pattern_add_color_stop_rgba(shade,0,.018,.023,.038,.92);cairo_pattern_add_color_stop_rgba(shade,1,.018,.023,.038,0);cairo_set_source(c,shade);cairo_rectangle(c,0,0,w,150);cairo_fill(c);cairo_pattern_destroy(shade);
  shade=cairo_pattern_create_linear(0,h-140,0,h);cairo_pattern_add_color_stop_rgba(shade,0,.012,.019,.029,0);cairo_pattern_add_color_stop_rgba(shade,1,.012,.019,.029,.95);cairo_set_source(c,shade);cairo_rectangle(c,0,h-140,w,140);cairo_fill(c);cairo_pattern_destroy(shade);
  rgb(c,.61,.40,.91);cairo_set_line_width(c,2);rounded(c,28,26,44,44,11);cairo_stroke(c);cairo_move_to(c,44,37);cairo_line_to(c,56,48);cairo_line_to(c,44,59);cairo_stroke(c);
- rgb(c,.93,.95,.97);cairo_select_font_face(c,"DejaVu Sans",CAIRO_FONT_SLANT_OBLIQUE,CAIRO_FONT_WEIGHT_BOLD);cairo_set_font_size(c,26);cairo_move_to(c,87,49);cairo_show_text(c,"CHROMEDRIVE");rgb(c,.47,.54,.63);mono(c,89,70,10,tr("THE DESKTOP. REBUILT."));
+ rgb(c,.93,.95,.97);cairo_select_font_face(c,ui_font_family(false),CAIRO_FONT_SLANT_OBLIQUE,CAIRO_FONT_WEIGHT_BOLD);cairo_set_font_size(c,26);cairo_move_to(c,87,49);cairo_show_text(c,"CHROMEDRIVE");rgb(c,.47,.54,.63);mono(c,89,70,10,tr("THE DESKTOP. REBUILT."));
  int count=0;for(int i=0;i<CD_APP_BAYS;i++)if(s->monitors[i].surface)count++;char b[128];
  if(w>1050){rgb(c,.33,.43,.53);mono(c,w/2-72,43,10,tr("CUSTOM BUILD / 001"));rgb(c,.79,.82,.88);mono(c,w/2-65,64,12,tr("MIDNIGHT EDITION"));}
  rgba(c,.075,.12,.14,.85);rounded(c,w-210,28,182,41,20);cairo_fill(c);rgb(c,.38,.88,.70);cairo_arc(c,w-189,49,3.5,0,2*PI);cairo_fill(c);mono(c,w-174,53,11,tr("NATIVE SESSION"));
