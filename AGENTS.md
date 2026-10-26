@@ -167,6 +167,11 @@ The rule is the same shape as the PNG ban: there is exactly one right way.
   not translate; `make check-text` runs it over every language, over the
   clients *and* the compositor, and fails on anything not declared in
   `assets/locale/untranslated.allow`.
+- **Never add an unauthenticated network listener on the default path.** The
+  embedded RFB server has no password, so whoever connects drives the cockpit;
+  it binds loopback by default (`session.vnc_loopback`, `--vnc-listen-all` to
+  opt out) and an all-interface bind announces itself at startup. The same rule
+  applies to any future remote surface: opt-in, loopback, and loud.
 - `make test` runs `tests/test_i18n.c`, which fails if a shipped catalog key
   no longer appears verbatim in the sources. Rewording an English string
   means updating `assets/locale/ru.lang` in the same commit. It also runs

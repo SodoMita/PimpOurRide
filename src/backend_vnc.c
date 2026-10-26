@@ -1,8 +1,13 @@
 /* Embedded RFB server shared by the headless backend and the optional fbdev
  * mirror. RFB input callbacks drive the same server_* input API as SDL.
  *
- * The headless backend keeps its historical 0.0.0.0 bind. The fbdev mirror is
- * explicit opt-in and loopback-only because RFB here has no authentication. */
+ * There is no authentication: whoever connects drives the cockpit. The bind is
+ * therefore loopback by default for both callers, and an all-interface listener
+ * is an explicit opt-in (session.vnc_loopback=false / --vnc-listen-all) that is
+ * announced at startup. The historical 0.0.0.0 default meant that running
+ * `--headless` on a laptop on a cafe network handed out remote control of the
+ * machine to the whole subnet. */
+#include <arpa/inet.h>
 #include "chrome.h"
 #include <rfb/rfb.h>
 #include <rfb/keysym.h>
@@ -10,6 +15,13 @@
 #include <linux/input-event-codes.h>
 #include <stdlib.h>
 #include <string.h>
+
+/* Called from src/main.c before a backend starts, so the warning is printed
+ * even when the listener never opens (bad port, missing RFB). Print-only. */
+void backend_vnc_warn_exposed(Server *s){
+ if(s->vnc_loopback)return;
+ fprintf(stderr,"[vnc] --vnc-listen-all: the RFB server will accept connections from any address.\n");
+}
 
 #define CD_VNC_LEFT 1
 #define CD_VNC_MIDDLE 2
@@ -118,8 +130,12 @@ bool backend_vnc_init(Server *s,bool loopback_only){
   free(screen->frameBuffer);rfbScreenCleanup(screen);return false;
  }
  s->vnc_screen=screen;
- fprintf(stderr,"[vnc] VNC server listening on %s:%d%s\n",loopback_only?"127.0.0.1":"0.0.0.0",s->vnc_port,
-  loopback_only?" (loopback-only fbdev mirror)":" — bridge with websockify+noVNC for a browser preview (see tools/viewer)");
+ if(loopback_only)
+  fprintf(stderr,"[vnc] VNC server listening on 127.0.0.1:%d (loopback only; no VNC password)\n",s->vnc_port);
+ else
+  fprintf(stderr,"[vnc] WARNING: VNC server listening on ALL interfaces (port %d) with no password.\n"
+                 "[vnc]   Anyone who can reach this port controls the session. Use --vnc-loopback\n"
+                 "[vnc]   (default) plus tools/run-web.sh, or pass --vnc-listen-all to accept this.\n",s->vnc_port);
  return true;
 }
 
