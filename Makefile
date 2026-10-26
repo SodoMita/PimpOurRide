@@ -84,9 +84,11 @@ $(BIN)/test-frame-pacing: tests/test_frame_pacing.c src/frame_pacing.c include/c
 	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_frame_pacing.c src/frame_pacing.c -o $@
 $(BIN)/test-input-wait: tests/test_input_wait.c src/input_wait.c include/input_wait.h | $(BIN)
 	$(CC) -Iinclude $(CFLAGS) tests/test_input_wait.c src/input_wait.c -o $@ -pthread
+$(BIN)/test-client-input-lock: tests/test_client_input_lock.c src/main.c src/math3d.c include/chrome.h include/math3d.h | $(BIN)
+	$(CC) $(CPPFLAGS) $(CFLAGS) -ffunction-sections -fdata-sections tests/test_client_input_lock.c src/math3d.c -o $@ -Wl,--gc-sections $(shell pkg-config --libs sdl2) -lm
 $(BIN)/test-vt: tests/test_vt.c src/backend_vt.c include/chrome.h | $(BIN)
 	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_vt.c src/backend_vt.c -o $@ -Wl,--wrap=open,--wrap=ioctl,--wrap=close,--wrap=clock_gettime
-test: $(BIN)/test-math $(BIN)/test-config $(BIN)/test-vehicle $(BIN)/test-city $(BIN)/test-telemetry $(BIN)/test-keymap $(BIN)/test-wheel-input $(BIN)/test-fbdev $(BIN)/test-i18n $(BIN)/test-textfit $(BIN)/test-drm $(BIN)/test-evdev $(BIN)/test-frame-pacing $(BIN)/test-input-wait $(BIN)/test-vt $(BIN)/chromedrive-config
+test: $(BIN)/test-math $(BIN)/test-config $(BIN)/test-vehicle $(BIN)/test-city $(BIN)/test-telemetry $(BIN)/test-keymap $(BIN)/test-wheel-input $(BIN)/test-fbdev $(BIN)/test-i18n $(BIN)/test-textfit $(BIN)/test-drm $(BIN)/test-evdev $(BIN)/test-frame-pacing $(BIN)/test-input-wait $(BIN)/test-client-input-lock $(BIN)/test-vt $(BIN)/chromedrive-config
 	./$(BIN)/test-math
 	./$(BIN)/test-config
 	./$(BIN)/test-vehicle
@@ -101,6 +103,7 @@ test: $(BIN)/test-math $(BIN)/test-config $(BIN)/test-vehicle $(BIN)/test-city $
 	./$(BIN)/test-evdev
 	./$(BIN)/test-frame-pacing
 	./$(BIN)/test-input-wait
+	./$(BIN)/test-client-input-lock
 	./$(BIN)/test-vt
 	./$(BIN)/chromedrive-config --selftest
 	# Report-only here: an ellipsis means a slot is too small for a shipped

@@ -392,7 +392,7 @@ reverse proxy and firewall before exposing them to an untrusted network.
 | F5 | Unbound in the compositor; reserved for browser/client restart or reload |
 | F6 | Toggle Arrange for the selected screen (move / rotate / roll / scale / resize) |
 | F7 | Toggle client input / hover-drive ownership |
-| Meta+ScrollLock | Grab/release all ordinary keyboard, pointer, scroll and touch input for the focused Wayland window; while grabbed, other compositor hotkeys and cockpit clicks pass to that window. Physical managed-VT Ctrl+Alt+Fn remains a session-safety escape |
+| Meta+ScrollLock | Grab/release all ordinary keyboard, pointer, scroll and touch input for the focused Wayland window without changing the current camera/view; while grabbed, other compositor hotkeys and cockpit clicks pass to that window. Physical managed-VT Ctrl+Alt+Fn remains a session-safety escape |
 | F8 | Cycle driver / exterior concept / EV systems cutaway |
 | F9 | Switch between driver and passenger seats |
 | F10 | Recover the car pose, disengage autopilot and close the doors (battery and odometer are preserved) |
@@ -546,10 +546,12 @@ tests/test_city.c             infinite determinism, district/road coverage, clea
 tests/test_telemetry.c        shared cluster telemetry and seqlock tests
 tests/test_keymap.c           RFB typing/WASD/function-key mapping regressions
 tests/test_fbdev.c            fbdev format/geometry tests + evdev helpers and async queue/overflow tests
+tests/test_client_input_lock.c input-lock camera-preservation regression
 tests/test_drm.c              fake-KMS/GBM/EGL lifecycle, modifier, flip-failure and restore tests
 tests/protocol_probe.c        end-to-end Wayland protocol conformance test (incl. dma-buf)
 tests/input_latency_client.c  timestamp-recording Wayland receiver for virtual-input tests
 tools/virtual-input-test.py   real uinput grab-conformance + frame-pacing comparison
+tools/virtual-input-stress.py multi-device 16 kHz delivery/overflow/frame-liveness stress
 tools/run-web.sh              one-command native backend + browser bridge
 tools/viewer/                 static noVNC remote desktop + safe hold-to-drive controls
 ```
@@ -575,6 +577,22 @@ the Wayland client callback, and each run fails closed unless the compositor
 confirms `EVIOCSCLOCKID(CLOCK_MONOTONIC)` rather than read-time fallback. It is
 **not** visual/photon latency and does not
 make worker-side Wayland, GL, vehicle, or scene/raycast access thread-safe.
+
+To stress several independent high-rate sources through that same path:
+
+```sh
+sudo -n python3 tools/virtual-input-stress.py \
+  --output /tmp/chromedrive-input-stress --devices 4 --rate 16000 --duration 2 --fps 20
+```
+
+Here `--rate 16000` means 16,000 pointer reports/s per device. Each report has
+one `EV_REL` and one `SYN_REPORT`, or 32,000 raw evdev records/s per device.
+The injector is round-robin across separate uinput nodes and reports its actual
+rate. The test fails on injector underrun, missing locked-client motion, kernel
+`SYN_DROPPED`, bounded-queue overflow, or a stalled Wayland frame stream. It
+writes raw CSVs, the compositor log, and `results.json`; add
+`--no-input-wakeup` for the frame-paced control. This is a stress/diagnostic
+gate, not a claim that every hardware/CPU combination can sustain the rate.
 
 ## Known limitations / next steps
 

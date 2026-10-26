@@ -26,6 +26,7 @@ static struct wl_shm_pool *pool;
 static FILE *log_file;
 static const char *ready_path;
 static int configured,entered,frames,running=1,z_events,z_target;
+static int log_motions,motion_events,motion_target,frame_log;
 static uint64_t mono_ns(void){struct timespec ts;clock_gettime(CLOCK_MONOTONIC,&ts);return (uint64_t)ts.tv_sec*1000000000ull+(uint64_t)ts.tv_nsec;}
 static void timeout_handler(int sig){(void)sig;_exit(124);}
 static void keymap(void *d,struct wl_keyboard *k,uint32_t format,int32_t fd,uint32_t size){(void)d;(void)k;(void)format;(void)size;close(fd);}
@@ -33,6 +34,10 @@ static void key_enter(void *d,struct wl_keyboard *k,uint32_t serial,struct wl_su
 static void key_leave(void *d,struct wl_keyboard *k,uint32_t serial,struct wl_surface *s){(void)d;(void)k;(void)serial;(void)s;entered=0;}
 static void key_event(void *d,struct wl_keyboard *k,uint32_t serial,uint32_t time,uint32_t key,uint32_t state){
  (void)d;(void)k;(void)serial;fprintf(log_file,"K,%u,%u,%u,%llu\n",key,state,time,(unsigned long long)mono_ns());
+ /* Stress logs are fully buffered to keep one write(2) per pointer report
+  * from becoming the bottleneck. Key sentinels flush all preceding motion
+  * and frame records so the external driver can wait on them safely. */
+ if(log_motions||frame_log)fflush(log_file);
  if(key==KEY_Z&&++z_events>=z_target&&z_target>0)running=0;
 }
 static void modifiers(void *d,struct wl_keyboard *k,uint32_t serial,uint32_t dep,uint32_t lat,uint32_t locked,uint32_t group){(void)d;(void)k;(void)serial;(void)dep;(void)lat;(void)locked;(void)group;}
@@ -40,7 +45,11 @@ static void repeat_info(void *d,struct wl_keyboard *k,int32_t rate,int32_t delay
 static const struct wl_keyboard_listener keyboard_listener={.keymap=keymap,.enter=key_enter,.leave=key_leave,.key=key_event,.modifiers=modifiers,.repeat_info=repeat_info};
 static void pointer_enter(void *d,struct wl_pointer *p,uint32_t serial,struct wl_surface *s,wl_fixed_t x,wl_fixed_t y){(void)d;(void)p;(void)serial;(void)s;(void)x;(void)y;}
 static void pointer_leave(void *d,struct wl_pointer *p,uint32_t serial,struct wl_surface *s){(void)d;(void)p;(void)serial;(void)s;}
-static void pointer_motion(void *d,struct wl_pointer *p,uint32_t time,wl_fixed_t x,wl_fixed_t y){(void)d;(void)p;(void)x;(void)y;(void)time;}
+static void pointer_motion(void *d,struct wl_pointer *p,uint32_t time,wl_fixed_t x,wl_fixed_t y){
+ (void)d;(void)p;
+ if(log_motions)fprintf(log_file,"M,%u,%llu,%.8f,%.8f\n",time,(unsigned long long)mono_ns(),wl_fixed_to_double(x),wl_fixed_to_double(y));
+ if(++motion_events>=motion_target&&motion_target>0)running=0;
+}
 static void pointer_button(void *d,struct wl_pointer *p,uint32_t serial,uint32_t time,uint32_t button,uint32_t state){(void)d;(void)p;(void)serial;fprintf(log_file,"B,%u,%u,%u,%llu\n",button,state,time,(unsigned long long)mono_ns());}
 static void pointer_axis(void *d,struct wl_pointer *p,uint32_t time,uint32_t axis,wl_fixed_t value){(void)d;(void)p;fprintf(log_file,"A,%u,%f,%u,%llu\n",axis,wl_fixed_to_double(value),time,(unsigned long long)mono_ns());}
 static void pointer_frame(void *d,struct wl_pointer *p){(void)d;(void)p;}
@@ -71,7 +80,14 @@ static const struct xdg_surface_listener xdg_listener={.configure=xdg_configure}
 static void top_configure(void *d,struct xdg_toplevel *t,int32_t w,int32_t h,struct wl_array *states){(void)d;(void)t;(void)w;(void)h;(void)states;}
 static void top_close(void *d,struct xdg_toplevel *t){(void)d;(void)t;running=0;}
 static const struct xdg_toplevel_listener top_listener={.configure=top_configure,.close=top_close};
-static void frame_done(void *d,struct wl_callback *c,uint32_t time){(void)d;(void)time;frames++;wl_callback_destroy(c);}
+static const struct wl_callback_listener frame_listener;
+static void frame_done(void *d,struct wl_callback *c,uint32_t time){
+ (void)d;frames++;wl_callback_destroy(c);
+ if(frame_log){
+  fprintf(log_file,"F,%u,%llu,0,0\n",time,(unsigned long long)mono_ns());
+  struct wl_callback *next=wl_surface_frame(surface);wl_callback_add_listener(next,&frame_listener,NULL);wl_surface_commit(surface);
+ }
+}
 static const struct wl_callback_listener frame_listener={.done=frame_done};
 static int create_buffer(void){
  const int w=1000,h=625;size_t size=(size_t)w*h*4;int fd=memfd_create("input-latency",MFD_CLOEXEC);if(fd<0||ftruncate(fd,(off_t)size)<0)return -1;
@@ -86,11 +102,15 @@ int main(int argc,char **argv){
   if(!strcmp(argv[i],"--ready")&&i+1<argc)ready_path=argv[++i];
   else if(!strcmp(argv[i],"--log")&&i+1<argc)log_path=argv[++i];
   else if(!strcmp(argv[i],"--count")&&i+1<argc)z_target=atoi(argv[++i]);
+  else if(!strcmp(argv[i],"--log-motions"))log_motions=1;
+  else if(!strcmp(argv[i],"--motion-count")&&i+1<argc){motion_target=atoi(argv[++i]);log_motions=1;}
+  else if(!strcmp(argv[i],"--frame-log"))frame_log=1;
   else if(!strcmp(argv[i],"--timeout")&&i+1<argc)timeout=atoi(argv[++i]);
-  else{fprintf(stderr,"usage: %s [--ready PATH] [--log PATH] [--count N] [--timeout SEC]\n",argv[0]);return 2;}
+  else{fprintf(stderr,"usage: %s [--ready PATH] [--log PATH] [--count N] [--log-motions] [--motion-count N] [--frame-log] [--timeout SEC]\n",argv[0]);return 2;}
  }
- if(!log_path||z_target<0){fprintf(stderr,"--log is required and --count must be nonnegative\n");return 2;}
- log_file=fopen(log_path,"w");if(!log_file){perror("log");return 1;}setvbuf(log_file,NULL,_IOLBF,0);
+ if(!log_path||z_target<0||motion_target<0){fprintf(stderr,"--log is required and event counts must be nonnegative\n");return 2;}
+ log_file=fopen(log_path,"w");if(!log_file){perror("log");return 1;}
+ if(log_motions||frame_log)setvbuf(log_file,NULL,_IOFBF,1024*1024);else setvbuf(log_file,NULL,_IOLBF,0);
  signal(SIGALRM,timeout_handler);alarm((unsigned)timeout);
  display=wl_display_connect(NULL);if(!display){perror("wl_display_connect");return 1;}
  struct wl_registry *registry=wl_display_get_registry(display);wl_registry_add_listener(registry,&registry_listener,NULL);

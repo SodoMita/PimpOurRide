@@ -657,7 +657,10 @@ static void app_toggle_client_input_lock(Server *s){
  s->middle_look=false;s->frame_dragging=false;s->frame_drag_slot=-1;
  s->arrange_dragging=false;s->arrange_drag_button=0;s->arrange_handle=CD_HANDLE_NONE;
  s->client_input_lock=root;
- scene_focus_monitor(s,root->slot,false);server_focus(s,root);
+ /* Input ownership is not a view command. In particular do not call
+  * scene_focus_monitor() here: it forces the driver camera and retargets
+  * yaw, pitch and FOV. Lock/release must preserve the user's current view. */
+ server_focus(s,root);
  Hit hit=scene_pick(s,s->mouse_x,s->mouse_y,false);server_pointer_motion(s,hit,now);
  app_notice(s,tr("INPUT LOCK / Meta+ScrollLock releases; other input goes to the window"));
 }
