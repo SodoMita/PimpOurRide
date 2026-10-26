@@ -569,7 +569,8 @@ side, and reload — no build step, no extraction tool, no code change.
 
 ## Scripts and font coverage
 
-English and Russian work today. Anything beyond that needs one thing checked
+English, Russian, Chinese, Japanese and Korean ship today as
+`assets/locale/{ru,zh,ja,ko}.lang`. Anything beyond that needs one thing checked
 first, because it fails silently and looks like a rendering bug rather than a
 missing dependency.
 
@@ -627,6 +628,24 @@ reported uncovered, one with it is covered, the catalog's directive — not the
 caller's default — decides, and English never probes). Its CJK assertions are
 **skipped and counted**, not silently passed, when Noto Sans CJK is not
 installed on the machine.
+
+A catalog also has to be **complete**, and that is a test, not a convention.
+The language menu lists every `.lang` under `assets/locale`, so a catalog with
+gaps is a language a user can select and then read half in English; counting
+`tr()` call sites says nothing about that. `tests/test_i18n.c` therefore holds
+two guards that run as part of `make test`:
+
+- **drift** — every key in every catalog must still appear verbatim in `src/`
+  or `clients/`. Using English text as the lookup key means a reworded label
+  silently orphans its translations, and it shows up as a stale key in each
+  catalog that still carries it.
+- **parity** — every catalog must define the same key set as `ru.lang`, the
+  reference set. A new English label must be added everywhere in the same
+  patch; a key whose translation genuinely is the English text stays listed
+  with the English text as its value, because explicit beats absent.
+
+Both guards skip cleanly (rather than failing) when the test binary runs
+outside a checkout.
 
 3. **Do not ship Arabic, Hebrew, Indic or Thai catalogs yet.** The toy API does
    no contextual shaping and no bidi: Arabic would render as isolated,
