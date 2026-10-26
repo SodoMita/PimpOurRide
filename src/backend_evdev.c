@@ -144,7 +144,7 @@ static void evdev_reset_all_devices(Server *s,uint32_t time){
     for(int i=0;i<st->device_count;i++)evdev_release_device_state(s,&st->devices[i],time);
 }
 
-static bool evdev_open_device(EvdevDevice *d, const char *path, bool grab) {
+static bool evdev_open_device(EvdevState *st, EvdevDevice *d, const char *path) {
     d->fd = open(path, O_RDONLY | O_NONBLOCK | O_CLOEXEC);
     if (d->fd < 0) return false;
     snprintf(d->path, sizeof(d->path), "%s", path);
@@ -259,11 +259,22 @@ static bool evdev_open_device(EvdevDevice *d, const char *path, bool grab) {
         d->has_keys = true;
     }
 
-    if (grab) {
+    if (st->grab_input) {
         if (ioctl(d->fd, EVIOCGRAB, (int)1) == 0) {
             d->grabbed = true;
+        } else if (st->grab_required) {
+            /* Closing only this device is not enough: its physical keys would
+             * remain routed to the console. Mark the whole managed-DRM startup
+             * failed so no active session runs with partial TTY isolation. */
+            int error=errno;
+            fprintf(stderr, "[evdev] EVIOCGRAB failed on %s: %s; managed DRM requires exclusive input\n",
+                    d->path, strerror(error));
+            st->grab_failed=true;
+            evdev_device_close(d);
+            errno=error;
+            return false;
         } else {
-            fprintf(stderr, "[evdev] EVIOCGRAB failed on %s: %s (continuing ungrabbed)\n",
+            fprintf(stderr, "[evdev] EVIOCGRAB failed on %s: %s (explicit fbdev grab continues ungrabbed)\n",
                     d->path, strerror(errno));
         }
     }
@@ -935,7 +946,7 @@ static bool evdev_add_device(Server *s,EvdevState *st,const char *path){
         d->mt_fingers[j].route=CD_TOUCH_ROUTE_NONE;
     }
     d->st_finger.tracking_id=-1;d->st_finger.route=CD_TOUCH_ROUTE_NONE;
-    if(!evdev_open_device(d,path,st->grab_input))return false;
+    if(!evdev_open_device(st,d,path))return false;
     /* Only a successfully opened, capability-classified device consumes a
      * stable queue/disconnect index. Unsupported or unreadable candidates do
      * not crowd a later keyboard out of the fixed device array. */
@@ -951,7 +962,8 @@ bool backend_evdev_init(Server *s) {
         return false;
     }
     st->evdev_enabled = true;
-    st->grab_input = s->fbdev_grab_input;
+    st->grab_input = s->backend==CD_BACKEND_DRM?s->drm_grab_input:s->fbdev_grab_input;
+    st->grab_required = s->backend==CD_BACKEND_DRM&&st->grab_input;
     st->explicit_count = s->fbdev_input_device_count;
     if(st->explicit_count>EVDEV_MAX_DEVICES)st->explicit_count=EVDEV_MAX_DEVICES;
     for (int i = 0; i < st->explicit_count; i++) {
@@ -979,6 +991,12 @@ bool backend_evdev_init(Server *s) {
             }
             closedir(dir);
         }
+    }
+
+    if(st->grab_failed){
+        fprintf(stderr,"[evdev] refusing managed DRM session with incomplete TTY input isolation\n");
+        for(int i=0;i<st->device_count;i++)evdev_device_close(&st->devices[i]);
+        free(st);s->evdev_state=NULL;return false;
     }
 
     int opened=st->device_count;
@@ -1056,6 +1074,7 @@ static void evdev_ungrab_all(EvdevState *st) {
                  * keyboard that cannot issue Ctrl+Alt+F* on another VT. */
                 fprintf(stderr, "[evdev] EVIOCGRAB release failed on %s: %s; closing device\n",
                         d->path, strerror(errno));
+                d->grab_release_failed=true;
                 close(d->fd);d->fd = -1;d->type = EVDEV_DEV_NONE;
             }
             d->grabbed = false;
@@ -1080,13 +1099,36 @@ void backend_evdev_suspend(Server *s) {
 bool backend_evdev_resume(Server *s) {
     EvdevState *st = evdev_state(s);
     if (!st || !st->suspended) return true;
+    if(st->grab_required){
+        for(int i=0;i<st->device_count;i++){
+            EvdevDevice *d=&st->devices[i];
+            if(d->grab_release_failed){
+                /* The old fd was closed to force release, but the physical
+                 * device may still exist. Without re-enumeration we cannot
+                 * prove it is grabbed; enter cleanup instead of resuming an
+                 * active console-visible keyboard. */
+                fprintf(stderr,"[evdev] cannot guarantee TTY isolation for %s after failed grab release\n",d->path);
+                evdev_ungrab_all(st);
+                return false;
+            }
+        }
+    }
     for (int i = 0; i < st->device_count; i++) evdev_discard_pending(&st->devices[i]);
     if (st->grab_input) {
         for (int i = 0; i < st->device_count; i++) {
             EvdevDevice *d = &st->devices[i];
             if (d->fd < 0 || d->grabbed) continue;
             if (ioctl(d->fd, EVIOCGRAB, (int)1) == 0) d->grabbed = true;
-            else fprintf(stderr, "[evdev] EVIOCGRAB on %s failed after VT resume: %s (continuing ungrabbed)\n",
+            else if(st->grab_required){
+                int error=errno;
+                fprintf(stderr,"[evdev] EVIOCGRAB on %s failed after VT resume: %s; aborting isolated session\n",
+                        d->path,strerror(error));
+                /* Some earlier devices may already be regrabbed. Release them
+                 * before the main thread enters the normal shutdown path. */
+                evdev_ungrab_all(st);
+                errno=error;
+                return false;
+            }else fprintf(stderr, "[evdev] EVIOCGRAB on %s failed after VT resume: %s (continuing ungrabbed)\n",
                          d->path, strerror(errno));
         }
     }

@@ -239,8 +239,14 @@ void backend_vt_service(Server *s){
  int64_t now=vt_now_ms();if(now<st->retry_after_ms)return;
  st->retry_after_ms=now+1000; /* a previous master may need a moment to leave */
  if(!backend_drm_acquire_after_vt(s))return;
- if(s->evdev_state&&!backend_evdev_resume(s))
-  fprintf(stderr,"[vt] input resume failed; devices remain ungrabbed so kernel VT switching stays available\n");
+ if(s->evdev_state&&!backend_evdev_resume(s)){
+  /* In particular, managed DRM must never mark the session active after a
+   * failed keyboard regrab: that would silently restore TTY leakage. The
+   * normal shutdown path releases devices/master and restores the VT mode. */
+  fprintf(stderr,"[vt] input resume failed; entering cleanup instead of resuming without input isolation\n");
+  s->running=false;
+  return;
+ }
  backend_vt_mark_resumed(s);
 }
 

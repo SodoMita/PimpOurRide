@@ -438,9 +438,11 @@ kernel mode; with `--fbdev-modeset` or `--fbdev-mode` it requests a modeset via
 `FBIOPUT_VSCREENINFO` and restores the original mode on exit. The driver may
 adjust timings or reject the request. Local evdev input (keyboard, mouse,
 touchscreen) is enabled by default for fbdev and DRM; `--no-evdev` (or
-`--no-fbdev-evdev`) disables it. `--grab-input` opts in to `EVIOCGRAB` (fbdev
-warns about VT lockout; DRM requires a managed controlling VT or downgrades the
-grab), and `--input-device PATH` restricts enumeration (up to 8;
+`--no-fbdev-evdev`) disables it. Managed DRM grabs startup devices by default;
+`--no-drm-grab-input` opts out, while fbdev retains its opt-in
+`--fbdev-grab-input` and VT-lockout warning. `--grab-input`/`--no-grab-input`
+set both policies. DRM requires a managed controlling VT or downgrades the
+grab, and `--input-device PATH` restricts enumeration (up to 32;
 older fbdev-named aliases remain valid). A single epoll worker reads devices
 and queues plain events with `CLOCK_MONOTONIC` kernel timestamps where
 supported. It never calls Wayland, scene, physics, or GL code. The compositor

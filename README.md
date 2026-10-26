@@ -72,14 +72,20 @@ as aliases):
   connector set are restored on exit when still available.
   This path needs DRM-master/KMS access and a GBM `XRGB8888` EGL configuration;
   it does not silently fall back to fbdev. Local input is the same asynchronous
-  evdev path as fbdev (`--no-evdev`, `--input-device`, and `--grab-input` are
-  generic aliases for the corresponding fbdev-named options). On a controlling
+  evdev path as fbdev (`--no-evdev` and `--input-device` are shared;
+  `--grab-input`/`--no-grab-input` set both direct-backend policies). On a
+  managed controlling VT, DRM grabs startup evdev devices by default so their
+  keys do not also reach the TTY. Use `--no-drm-grab-input` or
+  `session.drm_grab_input=false` to opt out; the legacy fbdev setting no longer
+  disables DRM isolation. On a controlling
   Linux VT, local-evdev **Ctrl+Alt+F1…F12** switches VTs: ChromeDrive releases
   held input and evdev grabs, drains/retires scanout, drops DRM master, and
   pauses Wayland/physics/rendering until it reacquires master on return. SDL
-  and VNC keys never switch the host VT. Without a managed controlling VT,
-  DRM still runs but downgrades `--grab-input` with a warning rather than
-  risking console lockout.
+  and VNC keys never switch the host VT. A startup or resume grab failure on
+  managed DRM enters cleanup instead of running with partial TTY isolation.
+  Without a managed controlling VT, DRM still runs but downgrades grabbing
+  with a warning rather than risking console lockout; TTY isolation is then
+  explicitly unavailable.
 - **`--windowed`: a real SDL2/GLX window on an X server**, kept only as a
   local dev/debug path with eyes on a real display. `zwp_linux_dmabuf_v1` is
   **not** advertised here — see "GPU / dma-buf" below for why.
@@ -485,8 +491,10 @@ consistent look.
 `--fbdev-modeset`, `--fbdev-mode WxH[@BPP]`, `--no-fbdev-vsync`,
 `--no-fbdev-pan`, `--fbdev-vnc-mirror` (`--vnc-mirror` alias),
 `--drm [DEVICE]`, `--drm-device PATH`, `--drm-mode WxH`,
-`--evdev`/`--no-evdev`, `--grab-input`, `--input-device PATH` plus the older
-fbdev-named input equivalents, `--vnc-port N`, `--fullscreen` (`--windowed` only),
+`--evdev`/`--no-evdev`, `--grab-input`/`--no-grab-input`,
+`--drm-grab-input`/`--no-drm-grab-input`, `--input-device PATH` plus the older
+fbdev-named input equivalents (including `--no-fbdev-grab-input`), `--vnc-port N`,
+`--fullscreen` (`--windowed` only),
 `--exit-after SECONDS`, `--screenshot PATH`.
 
 Launch commands for the dashboard buttons can be overridden with the
@@ -555,8 +563,12 @@ tools/viewer/                 static noVNC remote desktop + safe hold-to-drive c
   relative/absolute pointer, multitouch type B, single-touch). An epoll worker
   preserves monotonic kernel timestamps in a bounded queue; only the
   compositor thread dispatches to Wayland/vehicle state. Overflow and device
-  loss force safe input release. Enumeration is startup-only; no hotplug
-  rescans. Non-direct
+  loss force safe input release. Managed DRM grabs successfully opened
+  startup devices by default and fails closed on grab/regrab errors. Enumeration
+  is startup-only; no hotplug rescans. Consequently, a keyboard attached after
+  startup is outside the isolation guarantee, as are unreadable nodes, an
+  explicit `--input-device` list that omits a device, and the explicit
+  `--no-evdev`/`--no-grab-input` opt-outs. Non-direct
   multitouch devices (touchpads) are treated as pointer-only; raw touchpad
   motion is not translated to `wl_touch`. `wl_touch` is advertised only when
   a direct-touch device is present at startup. DRM's managed VT path handles

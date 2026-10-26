@@ -1205,12 +1205,35 @@ static void test_vt_failed_drain_shutdown(void) {
  unlink(path);
 }
 
+static void test_vt_input_resume_failure_restores_crtc(void) {
+ reset_world();
+ char path[64];make_temp_card(path,sizeof(path));
+ Server s;CHECK(init_ok(&s,path));
+ CHECK(backend_drm_present(&s)==CD_PRESENT_OK);
+ CHECK(backend_drm_release_for_vt(&s));
+ W.vt_suspended=true;
+ CHECK(backend_drm_acquire_after_vt(&s));
+ CHECK(W.master_active);
+ /* backend_evdev_resume() now fails here in production. Keep the VT marked
+  * suspended so no frame is presented, but shutdown still owns master and
+  * must restore the console's saved CRTC. */
+ int restores=W.set_crtc_calls;
+ backend_drm_shutdown(&s);
+ CHECK(W.set_crtc_calls==restores+1);
+ CHECK(W.crtc_calls[restores].buffer_id==42);
+ CHECK(W.crtc_calls[restores].connector_id==7);
+ CHECK(W.crtc_calls[restores].has_mode);
+ check_all_clean(&s,2);
+ unlink(path);
+}
+
 static void test_unmanaged_vt_downgrades_grab(void) {
  reset_world();W.vt_managed=false;
  char path[64];make_temp_card(path,sizeof(path));
- Server s;init_server(&s,path);s.fbdev_grab_input=true;
+ Server s;init_server(&s,path);s.drm_grab_input=true;s.fbdev_grab_input=true;
  CHECK(backend_drm_init(&s));
- CHECK(!s.fbdev_grab_input);
+ CHECK(!s.drm_grab_input);
+ CHECK(s.fbdev_grab_input); /* unmanaged DRM must not change fbdev policy */
  CHECK(backend_vt_fd(&s)==-1);
  backend_drm_shutdown(&s);
  check_all_clean(&s,1);
@@ -1606,6 +1629,7 @@ int main(void) {
  test_vt_flip_interruption_and_drain();
  test_vt_failed_retire_shutdown();
  test_vt_failed_drain_shutdown();
+ test_vt_input_resume_failure_restores_crtc();
  test_unmanaged_vt_downgrades_grab();
  test_shutdown_with_pending_flip();
  test_addfb_failure();
