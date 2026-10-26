@@ -154,6 +154,19 @@ size_t i18n_languages(char *buf, size_t size, const char *root);
  * cumulative since the last i18n_init(). */
 void i18n_stats(int *entries, int *lookups, int *misses);
 
+/* Untranslated-string audit. With CHROMEDRIVE_TEXT_AUDIT set in the
+ * environment, every *prose* string that comes back untranslated - it contains
+ * a space, or is 12 characters or longer - is printed once to stderr as
+ *
+ *     [text-audit] untranslated "Render to texture"
+ *
+ * Single short tokens ("COCKPIT", "auto", "windowed") are never reported: the
+ * catalogs keep those in English on purpose. This is the only measurement that
+ * finds a gap the source scan cannot see, because a label that arrives from a
+ * table - tr(d->label) in the settings GUI - has no tr("...") call site to
+ * count. tools/check-client-overflow.sh turns these lines into a build gate,
+ * with assets/locale/untranslated.allow for the strings that stay English. */
+
 /* Releases the catalog. Safe to call repeatedly; tr() keeps working
  * (it falls back to English). */
 void i18n_free(void);

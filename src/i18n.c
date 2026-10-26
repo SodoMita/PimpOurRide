@@ -39,6 +39,18 @@ static int *g_order;                /* entry indices in first-appearance order *
 static int g_load_seq;              /* counter behind g_entries[].seq */
 static int g_lookups, g_misses;         /* cumulative since last init */
 
+/* Untranslated-string audit. tr() is the single choke point every drawn label
+ * passes through, so a string that reaches the screen with no catalog entry is
+ * exactly a miss here. Counting tr("...") call sites cannot see that: the
+ * settings rows draw tr(d->label), where the text arrives from a table, and
+ * that is how a whole column stayed English in all four catalogs. Enabled by
+ * CHROMEDRIVE_TEXT_AUDIT; see tools/check-client-overflow.sh. */
+#define AUDIT_MAX 512            /* distinct strings remembered */
+#define AUDIT_PRINT_MAX 200      /* lines printed before going quiet */
+static int g_audit = -1;         /* -1 = environment not read yet */
+static const char *g_audit_seen[AUDIT_MAX];
+static int g_audit_n, g_audit_printed;
+
 /* ------------------------------------------------------------- utilities */
 
 static void trim(char *s) {
@@ -304,6 +316,24 @@ const char *i18n_catalog_path(void) {
     return g_catalog;
 }
 
+/* Reports one string that came back untranslated. Single short tokens are
+ * skipped on purpose: "COCKPIT", "NEON", "auto", "headless", "windowed" are
+ * labels and values the catalogs keep in English by design, and reporting them
+ * would bury the prose. Anything with a space in it, or long enough to be a
+ * sentence, is a translation gap. */
+static void audit_miss(const char *english) {
+    if (g_audit < 0) g_audit = getenv("CHROMEDRIVE_TEXT_AUDIT") != NULL;
+    if (!g_audit || !g_count) return;
+    if (!strchr(english, ' ') && strlen(english) < 12) return;
+    for (int i = 0; i < g_audit_n; i++)
+        if (!strcmp(g_audit_seen[i], english)) return;
+    if (g_audit_n == AUDIT_MAX) return;
+    g_audit_seen[g_audit_n++] = english;
+    if (g_audit_printed >= AUDIT_PRINT_MAX) return;
+    g_audit_printed++;
+    fprintf(stderr, "[text-audit] untranslated \"%s\"\n", english);
+}
+
 const char *tr(const char *english) {
     if (!english) return "";
     g_lookups++;
@@ -314,6 +344,7 @@ const char *tr(const char *english) {
         if (hit) return hit->val;
     }
     g_misses++;
+    audit_miss(english);
     return english;
 }
 
@@ -427,6 +458,7 @@ void i18n_free(void) {
     directives_clear();
     g_catalog[0] = 0;
     g_lookups = g_misses = 0;
+    g_audit_n = g_audit_printed = 0;
 }
 
 const char *i18n_set_language(const char *root, const char *requested) {
@@ -434,6 +466,7 @@ const char *i18n_set_language(const char *root, const char *requested) {
     directives_clear();
     g_catalog[0] = 0;
     g_lookups = g_misses = 0;
+    g_audit_n = g_audit_printed = 0;
 
     char requested_tag[32];
     normalize_tag((!requested || !*requested || !strcmp(requested, "auto"))

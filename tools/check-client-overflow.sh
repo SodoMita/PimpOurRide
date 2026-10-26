@@ -12,6 +12,12 @@
 # cut off" is useless in a bug report and "Shirina kadrovogo bufera, 199 px"
 # is actionable.
 #
+# The same runs also audit *untranslated* text: every string drawn through
+# tr() is a lookup, so a prose string that comes back unchanged means the
+# catalog has no entry for it and the UI is silently half in English. Strings
+# that stay English by design (product names, unit tokens, shader keywords)
+# are listed in assets/locale/untranslated.allow.
+#
 # Usage: tools/check-client-overflow.sh [--report] [LANG...]
 #   --report  print findings but always exit 0 (this is how `make test` runs it)
 set -u
@@ -24,7 +30,20 @@ if [ "${1:-}" = "--report" ]; then report=1; shift; fi
 [ -x "$bin/chromedrive-config" ] || { echo "check-client-overflow: build first (make all)" >&2; exit 2; }
 [ -x "$bin/chromedrive-demo" ] || { echo "check-client-overflow: build first (make all)" >&2; exit 2; }
 
+allow="$root/assets/locale/untranslated.allow"
+# Strings deliberately left in English. One per line, '#' starts a comment;
+# a line matches a reported string when it is identical or a prefix of it.
+allowed() {
+    [ -f "$allow" ] || return 1
+    while IFS= read -r want; do
+        case "$want" in ''|'#'*) continue ;; esac
+        case "$1" in "$want"*) return 0 ;; esac
+    done <"$allow"
+    return 1
+}
+
 if [ $# -gt 0 ]; then
+
     langs=$*
 else
     langs=$(cd "$root/assets/locale" 2>/dev/null && ls *.lang 2>/dev/null | sed 's/\.lang$//')
@@ -52,6 +71,29 @@ for lang in $langs; do
             "$bin/chromedrive-demo" "$mode" --screenshot "$tmp/$lang-$mode.webp" 2>>"$log"
     done
 
+    # The compositor's own chrome - HUD bar, dash tiles, Driver's Manual rows,
+    # monitor titles - is drawn by bin/chromedrive, not by the clients, so it
+    # needs its own pass. Headless and quiet: one second, no VNC mirror, no
+    # screenshot, only the audit lines on stderr are wanted. This is the pass
+    # that catches a help-panel row with no catalog entry, which is a gap the
+    # client renders cannot see.
+    CHROMEDRIVE_LANG=$lang CHROMEDRIVE_TEXT_AUDIT=1 \
+        "$bin/chromedrive" --no-config --exit-after 1 2>>"$log" || true
+
+    # Untranslated prose. English is the reference and is skipped: it *is* the
+    # key, so every lookup legitimately returns its argument. Each render is a
+    # separate process, so the same string is reported once per tab and mode -
+    # sort -u collapses that before anything is counted.
+    [ "$lang" = "en" ] && continue
+    sed -n 's/.*\[text-audit\] untranslated "//p' "$log" | sed 's/"$//' | sort -u \
+        >"$tmp/$lang.untranslated"
+    while IFS= read -r text; do
+        [ -n "$text" ] || continue
+        allowed "$text" && continue
+        printf '       [untranslated] %s\n' "$text"
+        untranslated=$(( ${untranslated:-0} + 1 ))
+    done <"$tmp/$lang.untranslated"
+
     cut=$(grep -c 'ellipsis=1' "$log" 2>/dev/null || true)
     shrunk=$(grep -c 'ellipsis=0' "$log" 2>/dev/null || true)
     if [ "${cut:-0}" -eq 0 ] && [ "${shrunk:-0}" -eq 0 ]; then
@@ -61,7 +103,14 @@ for lang in $langs; do
     printf '  %-4s %d shrunk, %d ellipsized\n' "$lang" "${shrunk:-0}" "${cut:-0}"
     grep 'ellipsis=1' "$log" 2>/dev/null | sed 's/^/       /'
     if [ "${cut:-0}" -gt 0 ]; then fail=1; fi
+
 done
+
+if [ "${untranslated:-0}" -gt 0 ]; then
+    echo "check-client-overflow: $untranslated string(s) have no catalog entry" >&2
+    echo "  translate them, or add them to assets/locale/untranslated.allow" >&2
+    fail=1
+fi
 
 # The English source strings are the reference layout: if any of them has to be
 # shrunk, a slot got smaller than the text it was designed for.
