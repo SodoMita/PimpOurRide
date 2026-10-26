@@ -1139,6 +1139,19 @@ Hit scene_pick_surface(Server *s,Surface *surface,float x,float y){
 }
 Hit scene_pick(Server *s,float x,float y,bool grab){
  Hit best={.kind=HIT_NONE,.distance=1e9f};
+ /* A persistent client-input lock is stronger than hit testing: cockpit
+  * buttons, titlebars, the steering wheel and empty space must not steal the
+  * event. Keep useful unbounded plane coordinates during an outside drag;
+  * if the animated camera cannot intersect the plane, retain the last valid
+  * surface-local position rather than dropping the event. This mutable
+  * camera/monitor state is deliberately read only on the compositor thread. */
+ if(s->client_input_lock){
+  Surface *root=surface_root(s->client_input_lock);
+  if(root){
+   Hit locked=scene_pick_surface(s,root,x,y);if(locked.kind==HIT_APP)return locked;
+   return (Hit){.kind=HIT_APP,.surface=root,.slot=root->slot,.x=s->pointer_sx,.y=s->pointer_sy,.distance=0};
+  }
+ }
  /* Exterior inspection views deliberately have no invisible cockpit hit
   * targets. Driver picking transforms the world ray back into car-local space,
   * allowing all existing Plane/UV mathematics to remain unchanged and exact. */

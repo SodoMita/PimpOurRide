@@ -1,4 +1,5 @@
 #include "chrome.h"
+#include "input_wait.h"
 
 #include <dirent.h>
 #include <errno.h>
@@ -175,7 +176,10 @@ static void send_key(int index,uint16_t code,int value){
 static void poll_until(Server *s,int *value,int target){
     for(int i=0;i<200&&*value<target;i++){
         backend_evdev_poll(s);
-        if(*value<target)usleep(1000);
+        if(*value<target){
+            int fd=backend_evdev_wait_fd(s);CHECK(fd>=0);
+            if(fd>=0)CHECK(cd_input_wait(fd,10)>=0);else usleep(1000);
+        }
     }
     backend_evdev_poll(s);
     CHECK(*value>=target);
@@ -210,8 +214,13 @@ static void test_mouse_nodes_do_not_hide_keyboard(void){
         CHECK(key_seen&(1ull<<KEY_A));CHECK(key_seen&(1ull<<KEY_B));
         /* Ctrl and Alt may arrive on different physical evdev nodes; F1 is
          * consumed only by that physical chord and requests VT 1. */
-        send_key(0,KEY_LEFTCTRL,1);send_key(9,KEY_LEFTALT,1);send_key(9,KEY_F1,1);
-        poll_until(&s,&vt_calls,1);
+        int modifiers_before=key_calls;
+        send_key(0,KEY_LEFTCTRL,1);send_key(9,KEY_LEFTALT,1);
+        poll_until(&s,&key_calls,modifiers_before+2);
+        /* Eventfd dispatch is intentionally prompt: do not rely on a cross-
+         * device chord being batched before F1. Both held modifiers are now
+         * visible in their respective physical-device states. */
+        send_key(9,KEY_F1,1);poll_until(&s,&vt_calls,1);
         CHECK(last_vt==1);CHECK(!(key_seen&(1ull<<KEY_F1)));
     }
     backend_evdev_shutdown(&s);check_all_closed();

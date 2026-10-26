@@ -26,7 +26,7 @@ void cd_vnc_ptr(int mask,int x,int y,rfbClientPtr cl){
   /* VNC has no separate release event: a button-up outside the framebuffer
    * must still end grabs/drags instead of being silently consumed. Never
    * synthesize presses here, only releases/cancels. */
-  if(prev_middle&&!middle)s->middle_look=false;
+  if(prev_middle&&!middle){s->middle_look=false;if(s->client_input_lock)server_pointer_button(s,BTN_MIDDLE,false,now);}
   if(prev_left&&!left)server_pointer_button(s,BTN_LEFT,false,now);
   if(prev_right&&!right)server_pointer_button(s,BTN_RIGHT,false,now);
   if(s->arrange_dragging&&((s->arrange_drag_button==BTN_LEFT&&!left)||(s->arrange_drag_button==BTN_RIGHT&&!right)))
@@ -43,7 +43,7 @@ void cd_vnc_ptr(int mask,int x,int y,rfbClientPtr cl){
   if(left)scene_wheel_motion(s,x,y,now);else scene_wheel_button(s,(Hit){0},x,y,false,now);
   s->vnc_prev_mask=mask;s->vnc_prev_x=x;s->vnc_prev_y=y;return;
  }
- if(middle){
+ if(middle&&!s->client_input_lock){
   if(!prev_middle){s->middle_look=true;server_pointer_motion(s,(Hit){0},now);}
   else{s->target_yaw-=(x-s->vnc_prev_x)*.5f;s->target_pitch=clampf(s->target_pitch-(y-s->vnc_prev_y)*.4f,-35,32);s->focus_view=false;s->arrange_last_x=x;s->arrange_last_y=y;s->frame_last_x=x;s->frame_last_y=y;}
  }else{
@@ -61,6 +61,7 @@ void cd_vnc_ptr(int mask,int x,int y,rfbClientPtr cl){
    if(left&&s->frame_dragging)app_frame_pointer_motion(s,x,y);
   }else{
    server_pointer_motion(s,hit,now);
+   if(s->client_input_lock&&middle!=prev_middle&&(hit.kind==HIT_APP||s->pointer_grab))server_pointer_button(s,BTN_MIDDLE,middle,now);
    if(left&&!prev_left&&hit.kind==HIT_WHEEL)scene_wheel_button(s,hit,x,y,true,now);
    else if(left&&!prev_left&&hit.kind==HIT_BUTTON)app_launch(s,hit.button,false);
    else if(left&&!prev_left&&hit.kind==HIT_COG)app_open_settings(s);

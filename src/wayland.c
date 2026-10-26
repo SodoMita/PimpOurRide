@@ -61,6 +61,11 @@ static void selection_for_client(Server *s,struct wl_client *client);
 static void touch_cancel_surface(Surface *p);
 static void surface_unmap(Surface *p){
  Server *s=p->server;
+ if(s->client_input_lock==p){
+  /* Never leave a dangling grab owner after an unmap/client disconnect. The
+   * next ordinary event must not resurrect focus on a destroyed wl_surface. */
+  s->client_input_lock=NULL;app_notice(s,tr("INPUT LOCK OFF / grabbed window closed"));
+ }
  touch_cancel_surface(p);
  if(s->keyboard_focus==p)server_focus(s,NULL);
  if(s->pointer_focus==p){s->pointer_focus=NULL;}
@@ -142,7 +147,7 @@ static void surface_map(Surface *p){
  send_surface_enter(p);send_configure(p);
  fprintf(stderr,"[wayland] mapped %s [%s] -> CD-%02d / %s (%dx%d)\n",p->title,p->app_id,slot+1,monitor_mount_name(slot),p->width,p->height);
  /* A passive instrument must never steal app focus merely by starting up. */
- if(!cluster){server_focus(s,p);if(s->time>3.5){scene_focus_monitor(s,slot,false);app_notice(s,tr("CD-%02d / %s / %s"),slot+1,monitor_mount_name(slot),p->title);}}
+ if(!cluster){server_focus(s,p);if(s->time>3.5&&!s->client_input_lock){scene_focus_monitor(s,slot,false);app_notice(s,tr("CD-%02d / %s / %s"),slot+1,monitor_mount_name(slot),p->title);}}
 }
 static bool effective_sync(Surface *p){for(int i=0;p&&p->parent&&i<32;i++,p=p->parent)if(p->subsurface&&p->sub_sync)return true;return false;}
 static void surface_apply(Surface *p){
@@ -354,6 +359,7 @@ static void seat_touch(struct wl_client *c,struct wl_resource *r,uint32_t id){Se
 static const struct wl_seat_interface seat_impl={.get_pointer=seat_pointer,.get_keyboard=seat_keyboard,.get_touch=seat_touch,.release=resource_destroy_request};
 static void bind_seat(struct wl_client *c,void *data,uint32_t v,uint32_t id){Server *s=data;struct wl_resource *r=wl_resource_create(c,&wl_seat_interface,v<7?v:7,id);wl_resource_set_implementation(r,&seat_impl,data,NULL);uint32_t caps=WL_SEAT_CAPABILITY_POINTER|WL_SEAT_CAPABILITY_KEYBOARD|(s->touch_available?WL_SEAT_CAPABILITY_TOUCH:0);wl_seat_send_capabilities(r,caps);if(wl_resource_get_version(r)>=2)wl_seat_send_name(r,"chromedrive-driver");}
 void server_focus(Server *s,Surface *p){
+ if(s->client_input_lock)p=s->client_input_lock;
  p=surface_root(p);if(p==s->keyboard_focus)return;Surface *old=s->keyboard_focus;Resource *r;
  if(old)wl_list_for_each(r,&s->keyboards,link)if(wl_resource_get_client(r->resource)==wl_resource_get_client(old->resource))wl_keyboard_send_leave(r->resource,wl_display_next_serial(s->display),old->resource);
  s->keyboard_focus=p;if(old&&old->toplevel)send_configure(old);

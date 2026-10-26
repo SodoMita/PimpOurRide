@@ -130,6 +130,10 @@ struct Server {
  struct xkb_context *xkb_context;struct xkb_keymap *keymap;struct xkb_state *xkb_state;
  int keymap_fd;uint32_t keymap_size;bool keys[256];
  Surface *keyboard_focus,*pointer_focus,*pointer_grab;int held_buttons;uint32_t held_button_mask;
+ /* Meta+ScrollLock owns every ordinary input route for one mapped root
+  * surface. This is persistent and distinct from pointer_grab's held-button
+  * implicit grab; only the same chord or surface destruction releases it. */
+ Surface *client_input_lock;
  float pointer_sx,pointer_sy;int mouse_x,mouse_y;
  bool touch_available;CdTouchPoint touch_points[CD_MAX_TOUCH_POINTS];
 SdlTouchFinger sdl_touch[CD_MAX_TOUCH_POINTS];int sdl_touch_chrome_id;
@@ -190,6 +194,7 @@ SdlTouchFinger sdl_touch[CD_MAX_TOUCH_POINTS];int sdl_touch_chrome_id;
  int width,height,fps_limit,theme,hover_button,hover_close,active_slot;
  int bg_mode; /* CD_BG_*: which environment() backdrop to draw */
  bool running,middle_look,focus_view,show_help,hud_visible,fullscreen,demo,launch_pending;
+ bool input_wakeup; /* evdev eventfd wait during the frame's idle remainder */
  /* F6 Arrange mode: session-only whole-monitor translate/rotate/scale.
   * The effective transform lives in monitors[slot].plane and is reset when
   * a new top-level maps into that bay. Mount animation yields to this custom
@@ -210,6 +215,7 @@ SdlTouchFinger sdl_touch[CD_MAX_TOUCH_POINTS];int sdl_touch_chrome_id;
  VehicleSeat camera_seat;
  bool drive_forward,drive_reverse,drive_left,drive_right,drive_brake;
  bool door_shortcut_down,autopilot_shortcut_down,quit_shortcut_down,hud_shortcut_down;
+ bool client_input_lock_shortcut;
  bool wheel_drag;
  float wheel_steer,wheel_client_angle,wheel_last_x,wheel_last_y;
  WheelJoystick wheel_joy;
@@ -372,6 +378,7 @@ bool backend_vt_ack_acquire(Server *s);
 void backend_vt_mark_resumed(Server *s);
 /* backend_evdev.c: asynchronous raw evdev input for direct-display backends. */
 bool backend_evdev_init(Server *s);
+int backend_evdev_wait_fd(Server *s);
 void backend_evdev_poll(Server *s);
 void backend_evdev_shutdown(Server *s);
 void backend_evdev_suspend(Server *s);

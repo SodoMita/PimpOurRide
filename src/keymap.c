@@ -23,7 +23,7 @@ uint32_t keysym_to_evdev(uint32_t key) {
  case XK_Home:return KEY_HOME;case XK_End:return KEY_END;case XK_Page_Up:return KEY_PAGEUP;case XK_Page_Down:return KEY_PAGEDOWN;case XK_Insert:return KEY_INSERT;
  case XK_Shift_L:return KEY_LEFTSHIFT;case XK_Shift_R:return KEY_RIGHTSHIFT;case XK_Control_L:return KEY_LEFTCTRL;case XK_Control_R:return KEY_RIGHTCTRL;
  case XK_Alt_L:return KEY_LEFTALT;case XK_Alt_R:return KEY_RIGHTALT;case XK_Super_L:return KEY_LEFTMETA;case XK_Super_R:return KEY_RIGHTMETA;
- case XK_Caps_Lock:return KEY_CAPSLOCK;case XK_Num_Lock:return KEY_NUMLOCK;case XK_Menu:return KEY_MENU;
+ case XK_Caps_Lock:return KEY_CAPSLOCK;case XK_Num_Lock:return KEY_NUMLOCK;case XK_Scroll_Lock:return KEY_SCROLLLOCK;case XK_Menu:return KEY_MENU;
  case XK_F1:return KEY_F1;case XK_F2:return KEY_F2;case XK_F3:return KEY_F3;case XK_F4:return KEY_F4;case XK_F5:return KEY_F5;case XK_F6:return KEY_F6;
  case XK_F7:return KEY_F7;case XK_F8:return KEY_F8;case XK_F9:return KEY_F9;case XK_F10:return KEY_F10;case XK_F11:return KEY_F11;case XK_F12:return KEY_F12;
  default:return 0;
