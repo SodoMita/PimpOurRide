@@ -921,6 +921,25 @@ fail:
     evdev_async_destroy(st);return false;
 }
 
+static bool evdev_add_device(Server *s,EvdevState *st,const char *path){
+    if(st->device_count>=EVDEV_MAX_DEVICES)return false;
+    EvdevDevice *d=&st->devices[st->device_count];
+    memset(d,0,sizeof(*d));
+    d->fd=-1;d->current_slot=0;
+    for(int j=0;j<EVDEV_MAX_SLOTS;j++){
+        d->mt_fingers[j].tracking_id=-1;
+        d->mt_fingers[j].route=CD_TOUCH_ROUTE_NONE;
+    }
+    d->st_finger.tracking_id=-1;d->st_finger.route=CD_TOUCH_ROUTE_NONE;
+    if(!evdev_open_device(d,path,st->grab_input))return false;
+    /* Only a successfully opened, capability-classified device consumes a
+     * stable queue/disconnect index. Unsupported or unreadable candidates do
+     * not crowd a later keyboard out of the fixed device array. */
+    st->device_count++;
+    if(d->type==EVDEV_DEV_MULTITOUCH||d->type==EVDEV_DEV_SINGLE_TOUCH)s->touch_available=true;
+    return true;
+}
+
 bool backend_evdev_init(Server *s) {
     EvdevState *st = calloc(1, sizeof(*st));
     if (!st) {
@@ -930,61 +949,35 @@ bool backend_evdev_init(Server *s) {
     st->evdev_enabled = true;
     st->grab_input = s->fbdev_grab_input;
     st->explicit_count = s->fbdev_input_device_count;
+    if(st->explicit_count>EVDEV_MAX_DEVICES)st->explicit_count=EVDEV_MAX_DEVICES;
     for (int i = 0; i < st->explicit_count; i++) {
         snprintf(st->explicit_paths[i], sizeof(st->explicit_paths[i]), "%s", s->fbdev_input_devices[i]);
     }
     s->evdev_state = st;
     s->evdev_chrome_touch_id = -1;
 
-    const char *paths[EVDEV_MAX_DEVICES];
-    int path_count = 0;
-
-    if (st->explicit_count > 0) {
-        for (int i = 0; i < st->explicit_count && path_count < EVDEV_MAX_DEVICES; i++) {
-            paths[path_count++] = st->explicit_paths[i];
-        }
-    } else {
-        DIR *dir = opendir("/dev/input");
-        if (dir) {
+    if(st->explicit_count>0){
+        for(int i=0;i<st->explicit_count&&st->device_count<EVDEV_MAX_DEVICES;i++)
+            evdev_add_device(s,st,st->explicit_paths[i]);
+    }else{
+        DIR *dir=opendir("/dev/input");
+        if(dir){
             struct dirent *ent;
-            while ((ent = readdir(dir)) && path_count < EVDEV_MAX_DEVICES) {
-                if (strncmp(ent->d_name, "event", 5) == 0) {
-                    char full_path[512];
-                    snprintf(full_path, sizeof(full_path), "/dev/input/%s", ent->d_name);
-                    paths[path_count++] = strdup(full_path);
-                }
+            /* readdir order is arbitrary and a mouse can expose keyboard-like
+             * buttons. Walk the complete event-node directory until the usable
+             * device slots are full; never stop after an arbitrary number of
+             * candidates before capability filtering. */
+            while(st->device_count<EVDEV_MAX_DEVICES&&(ent=readdir(dir))){
+                if(strncmp(ent->d_name,"event",5)!=0)continue;
+                char full_path[512];
+                snprintf(full_path,sizeof(full_path),"/dev/input/%s",ent->d_name);
+                evdev_add_device(s,st,full_path);
             }
             closedir(dir);
         }
     }
 
-    int opened = 0;
-    for (int i = 0; i < path_count; i++) {
-        const char *path = paths[i];
-        if (st->device_count >= EVDEV_MAX_DEVICES) break;
-        EvdevDevice *d = &st->devices[st->device_count];
-        memset(d, 0, sizeof(*d));
-        d->fd = -1;
-        d->current_slot = 0;
-        for (int j = 0; j < EVDEV_MAX_SLOTS; j++) {
-            d->mt_fingers[j].tracking_id = -1;
-            d->mt_fingers[j].route = CD_TOUCH_ROUTE_NONE;
-        }
-        d->st_finger.tracking_id = -1;
-        d->st_finger.route = CD_TOUCH_ROUTE_NONE;
-        if (evdev_open_device(d, path, st->grab_input)) {
-            st->device_count++;
-            opened++;
-            if (d->type == EVDEV_DEV_MULTITOUCH || d->type == EVDEV_DEV_SINGLE_TOUCH) {
-                s->touch_available = true;
-            }
-        }
-        /* Explicit paths point into st->explicit_paths; only auto-enumerated
-         * paths are strdup-owned. Comparing against just element zero used to
-         * make a second --fbdev-input-device an invalid free. */
-        if (st->explicit_count == 0) free((void *)path);
-    }
-
+    int opened=st->device_count;
     if (opened == 0) {
         fprintf(stderr, "[evdev] no input devices opened (need read access to /dev/input/event*, usually the `input` group); output continues, mirror still available\n");
     }

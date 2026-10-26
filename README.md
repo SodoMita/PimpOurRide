@@ -58,7 +58,7 @@ as aliases):
   input (keyboard, mouse, touchscreen) is enabled by default; use
   `--no-fbdev-evdev` (or `--no-evdev`) to disable. `--fbdev-grab-input` opts in to `EVIOCGRAB`
   (warns about VT/console lockout). Explicit device restriction via
-  `--fbdev-input-device PATH` (repeatable, max 8). `--fbdev-vnc-mirror` adds
+  `--fbdev-input-device PATH` (repeatable, max 32). `--fbdev-vnc-mirror` adds
   an explicit, loopback-only RFB control/output companion sharing the same
   readback.
 - **`--drm [DEVICE]`: direct DRM/KMS + GBM/EGL scanout** (`/dev/dri/card0` by
@@ -66,8 +66,10 @@ as aliases):
   current valid mode or chooses the preferred mode, and presents with
   event-driven KMS page flips and modifier-aware framebuffer registration—no
   CPU readback/blit. `--drm-mode WIDTHxHEIGHT` requires an exact advertised
-  mode. The previous CRTC and its original connected/cloned connector set are
-  restored on exit when still available.
+  mode. At most one page flip is queued; busy scanout skips output presents
+  instead of blocking Wayland frame callbacks, which remain paced by the
+  compositor FPS cap. The previous CRTC and its original connected/cloned
+  connector set are restored on exit when still available.
   This path needs DRM-master/KMS access and a GBM `XRGB8888` EGL configuration;
   it does not silently fall back to fbdev. Local input is the same asynchronous
   evdev path as fbdev (`--no-evdev`, `--input-device`, and `--grab-input` are

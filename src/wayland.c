@@ -31,10 +31,11 @@
  * 4. Frame Callback Backpressure (wl_surface.frame -> server_frame_done):
  *    Frame callbacks queued via wl_surface.frame stay in pending_callbacks until
  *    wl_surface.commit moves them to callbacks. Crucially, server_frame_done()
- *    is called ONLY AFTER scene_render() and backend presentation complete,
- *    firing wl_callback.done(compositor_ms) and destroying the one-shot callback
- *    resource. This throttles client rendering to the compositor's actual
- *    presentation rate and prevents background clients from spinning at 100% CPU. */
+ *    is called only after scene_render() and the backend present attempt have
+ *    sampled that commit, firing wl_callback.done(compositor_ms) and destroying
+ *    the one-shot resource. A slow DRM scanout may skip output presents without
+ *    withholding callbacks: one callback per commit and the compositor fps cap
+ *    provide backpressure without making client performance depend on vblank. */
 #include "chrome.h"
 #include "i18n.h"
 #include "xdg-shell-server.h"

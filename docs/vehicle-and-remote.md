@@ -356,12 +356,14 @@ for a timer event:
 3. `wl_surface.commit` moves it to the committed callback list along with the
    rest of that frame's state.
 4. The compositor polls input, dispatches Wayland, advances fixed-step physics,
-   renders, and presents/readbacks the FBO.
+   renders, and attempts presentation/readback of the FBO without waiting for
+   DRM scanout.
 5. Only then does `server_frame_done()` send `wl_callback.done(time)` and destroy
    the one-shot resource. `wl_display_flush_clients()` makes the event visible.
 6. The client renders again from that callback and requests exactly one new
-   callback. This supplies backpressure and avoids a client queuing frames
-   faster than the compositor can display them.
+   callback. Together with the compositor FPS cap this supplies backpressure.
+   DRM may skip an output present while an older flip scans out; it does not
+   stall these callbacks or make client performance depend on physical vblank.
 
 Sending `done` at request time would acknowledge the wrong frame. Requesting a
 client callback after its buffer commit can instead attach pacing to an

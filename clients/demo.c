@@ -152,11 +152,11 @@ static bool make_buffer(App *a,Buffer *b){
 }
 static void frame_done(void *data,struct wl_callback *cb,uint32_t time){
  /* Why we destroy cb and flip frame_ready here:
-  * wl_surface.frame callbacks are one-shot resources fired by the compositor
-  * in server_frame_done() only AFTER the previous frame was composited into the
-  * 3D cockpit and presented. Waiting for frame_done before issuing the next
-  * draw() provides natural compositor-driven backpressure so the client never
-  * renders faster than the compositor displays frames. */
+ * wl_surface.frame callbacks are one-shot resources fired after the previous
+ * commit was composited into the 3D cockpit and presentation was attempted.
+ * DRM scanout can still be busy; it must not stall this client. Waiting for
+ * frame_done before the next draw gives compositor-clock backpressure (with
+ * the server's FPS cap) rather than an unthrottled render loop. */
  App *a=data;(void)time;wl_callback_destroy(cb);a->frame_ready=true;
 }
 static const struct wl_callback_listener frame_listener={.done=frame_done};
