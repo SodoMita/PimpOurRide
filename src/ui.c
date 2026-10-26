@@ -206,7 +206,9 @@ static void overlay_texture(GLuint tex,float x,float y,float w,float h){overlay_
  * nothing), and this stays visually consistent with --windowed too. Widens
  * and brightens to the active underglow color on a hovered dashboard button. */
 static void draw_cursor(Server *s){
- if(s->middle_look)return; /* mid-drag means "looking around", not pointing at anything */
+ /* A valid surface contact is rendered as the scene's normal-aligned 3D
+  * tetrahedron. Keep this flat reticle only for empty-space/look fallback. */
+ if(s->middle_look||s->pointer_hit.has_contact)return; /* mid-drag means "looking around", not pointing at anything */
  float r,g,b;scene_neon_color(s,&r,&g,&b);
  bool hot=s->hover_button>=0||s->hover_close>=0||s->cog_hover||s->quit_hover||s->hud_hover||s->wheel_hover||s->wheel_drag;float cx=s->mouse_x,cy=s->mouse_y,ring=hot?11.f:8.f;
  glDisable(GL_TEXTURE_2D);glLineWidth(hot?2.2f:1.4f);

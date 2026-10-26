@@ -110,7 +110,13 @@ enum { CD_HANDLE_NONE=0,CD_HANDLE_MOVE,CD_HANDLE_AXIS_X,CD_HANDLE_AXIS_Y,CD_HAND
  CD_HANDLE_ROTATE_YAW,CD_HANDLE_ROTATE_PITCH,CD_HANDLE_ROTATE_ROLL,CD_HANDLE_SCALE,
  CD_HANDLE_RESIZE_NW,CD_HANDLE_RESIZE_N,CD_HANDLE_RESIZE_NE,CD_HANDLE_RESIZE_E,
  CD_HANDLE_RESIZE_SE,CD_HANDLE_RESIZE_S,CD_HANDLE_RESIZE_SW,CD_HANDLE_RESIZE_W };
-typedef struct { HitKind kind;Surface *surface;int slot,button,handle;float x,y,distance; } Hit;
+typedef struct {
+ HitKind kind;Surface *surface;int slot,button,handle;float x,y,distance;
+ /* Car-local contact shared by picking, the 3D cursor and client delivery.
+  * has_contact is false for an empty miss or the retained-coordinate fallback
+  * used when a locked client's animated camera cannot intersect its plane. */
+ Vec3 point,normal;bool has_contact;
+} Hit;
 typedef struct { uint32_t format;uint64_t modifiers[CD_DMABUF_MAX_MODIFIERS];int modifier_count; } DmabufFormat;
 #define CD_MAX_TOUCH_POINTS 10
 /* One active wl_touch contact. The surface is the exact child surface that
@@ -135,6 +141,9 @@ struct Server {
   * implicit grab; only the same chord or surface destruction releases it. */
  Surface *client_input_lock;
  float pointer_sx,pointer_sy;int mouse_x,mouse_y;
+ /* Last compositor-thread hover result for this exact rendered frame. The 3D
+  * cursor consumes the same contact that pointer/touch picking produces. */
+ Hit pointer_hit;
  bool touch_available;CdTouchPoint touch_points[CD_MAX_TOUCH_POINTS];
 SdlTouchFinger sdl_touch[CD_MAX_TOUCH_POINTS];int sdl_touch_chrome_id;
   int evdev_chrome_touch_id;
@@ -259,6 +268,7 @@ void server_close_surface(Surface *surface);
 bool server_request_window_size(Surface *surface,int width,int height,int *out_w,int *out_h);
 Surface *surface_root(Surface *s);
 Surface *surface_at(Surface *root,float x,float y,float *sx,float *sy);
+bool surface_input_at(Surface *surface,float x,float y);
 void server_each_surface(Surface *root,void (*fn)(Surface*,int,int,void*),void *data);
 uint32_t sdl_to_evdev(SDL_Scancode code);
 void scene_init(Server *s);

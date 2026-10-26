@@ -45,6 +45,8 @@ $(BIN)/chromedrive-config: clients/config.c src/cdconfig.c src/i18n.c $(FITTEXT)
 	$(CC) -Iinclude -I$(GEN) $(CFLAGS) $(shell pkg-config --cflags wayland-client cairo xkbcommon libwebp) clients/config.c src/cdconfig.c src/i18n.c src/textfit.c src/textfit_cairo.c $(GEN)/xdg-shell-protocol.c -o $@ $(shell pkg-config --libs wayland-client cairo xkbcommon libwebp) -lm
 $(BIN)/test-math: tests/test_math.c src/math3d.c include/math3d.h | $(BIN)
 	$(CC) -Iinclude $(CFLAGS) tests/test_math.c src/math3d.c -o $@ -lm
+$(BIN)/test-cursor: tests/test_cursor.c src/scene.c src/wayland.c src/vehicle.c src/math3d.c include/chrome.h include/math3d.h | $(BIN)
+	$(CC) $(CPPFLAGS) $(CFLAGS) -ffunction-sections -fdata-sections tests/test_cursor.c src/wayland.c src/vehicle.c src/math3d.c -o $@ -Wl,--gc-sections $(shell pkg-config --libs wayland-server cairo) -lm
 $(BIN)/input-latency-client: tests/input_latency_client.c $(GEN)/xdg-shell-client.h $(GEN)/xdg-shell-protocol.c | $(BIN)
 	$(CC) -I$(GEN) $(CFLAGS) $(shell pkg-config --cflags wayland-client) tests/input_latency_client.c $(GEN)/xdg-shell-protocol.c -o $@ $(shell pkg-config --libs wayland-client)
 $(BIN)/protocol-probe: tests/protocol_probe.c $(GEN)/xdg-shell-client.h $(GEN)/xdg-shell-protocol.c $(GEN)/linux-dmabuf-protocol.c $(GEN)/linux-dmabuf-client.h | $(BIN)
@@ -88,8 +90,9 @@ $(BIN)/test-client-input-lock: tests/test_client_input_lock.c src/main.c src/mat
 	$(CC) $(CPPFLAGS) $(CFLAGS) -ffunction-sections -fdata-sections tests/test_client_input_lock.c src/math3d.c -o $@ -Wl,--gc-sections $(shell pkg-config --libs sdl2) -lm
 $(BIN)/test-vt: tests/test_vt.c src/backend_vt.c include/chrome.h | $(BIN)
 	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_vt.c src/backend_vt.c -o $@ -Wl,--wrap=open,--wrap=ioctl,--wrap=close,--wrap=clock_gettime
-test: $(BIN)/test-math $(BIN)/test-config $(BIN)/test-vehicle $(BIN)/test-city $(BIN)/test-telemetry $(BIN)/test-keymap $(BIN)/test-wheel-input $(BIN)/test-fbdev $(BIN)/test-i18n $(BIN)/test-textfit $(BIN)/test-drm $(BIN)/test-evdev $(BIN)/test-frame-pacing $(BIN)/test-input-wait $(BIN)/test-client-input-lock $(BIN)/test-vt $(BIN)/chromedrive-config
+test: $(BIN)/test-math $(BIN)/test-cursor $(BIN)/test-config $(BIN)/test-vehicle $(BIN)/test-city $(BIN)/test-telemetry $(BIN)/test-keymap $(BIN)/test-wheel-input $(BIN)/test-fbdev $(BIN)/test-i18n $(BIN)/test-textfit $(BIN)/test-drm $(BIN)/test-evdev $(BIN)/test-frame-pacing $(BIN)/test-input-wait $(BIN)/test-client-input-lock $(BIN)/test-vt $(BIN)/chromedrive-config
 	./$(BIN)/test-math
+	./$(BIN)/test-cursor
 	./$(BIN)/test-config
 	./$(BIN)/test-vehicle
 	./$(BIN)/test-city
