@@ -239,6 +239,144 @@ static void test_reload_stability(void) {
     CHECK(!strcmp(tr("Key0"), "Key0"), "tr() still works after i18n_free()");
 }
 
+/* -------------------------------------------------------- @font / @monofont */
+
+static void test_directives(void) {
+    clear_env();
+    char dir[4200], catalog[4300], zh[4300];
+    snprintf(dir, sizeof dir, "%s/directives", work);
+    ensure_dir(dir);
+    snprintf(catalog, sizeof catalog, "%s/ru.lang", dir);
+    /* Directives, padding on both sides, an unknown name, one without '='. */
+    write_file(catalog,
+        "@font = Noto Sans CJK SC\n"
+        "   @monofont   =   Noto Sans Mono CJK SC   \n"
+        "@unknown = whatever\n"
+        "@without_equals\n"
+        "Window width = Ширина окна\n");
+    setenv("CHROMEDRIVE_LOCALE_DIR", dir, 1);
+    CHECK(!strcmp(i18n_init(NULL, "ru"), "ru"), "unknown directives do not abort the load");
+    CHECK(i18n_font() && !strcmp(i18n_font(), "Noto Sans CJK SC"),
+          "@font is parsed and exposed");
+    CHECK(i18n_monofont() && !strcmp(i18n_monofont(), "Noto Sans Mono CJK SC"),
+          "@monofont is parsed and its padding trimmed");
+    CHECK(!strcmp(tr("Window width"), "Ширина окна"),
+          "ordinary keys still translate beside directives");
+
+    int entries;
+    i18n_stats(&entries, NULL, NULL);
+    CHECK(entries == 1, "a directive is never a translation entry");
+    CHECK(!strcmp(tr("@font"), "@font"), "tr(\"@font\") does not resolve");
+
+    write_file(catalog, "@font = Double\\\\Back\nKey = З\n");
+    i18n_init(NULL, "ru");
+    CHECK(i18n_font() && !strcmp(i18n_font(), "Double\\Back"),
+          "directive values unescape");
+
+    write_file(catalog, "@font = First\n@font = Second\nKey = З\n");
+    i18n_init(NULL, "ru");
+    CHECK(i18n_font() && !strcmp(i18n_font(), "Second"),
+          "duplicate directive: last one wins");
+
+    write_file(catalog, "Key = З\n");
+    i18n_init(NULL, "ru");
+    CHECK(i18n_font() == NULL && i18n_monofont() == NULL,
+          "reloading a catalog without directives clears both");
+
+    CHECK(!strcmp(i18n_set_language(NULL, "de"), "en"), "missing catalog degrades to en");
+    CHECK(i18n_font() == NULL && i18n_monofont() == NULL,
+          "a failed catalog load leaves both directives unset");
+
+    snprintf(zh, sizeof zh, "%s/zh.lang", dir);
+    write_file(zh, "@font = Noto Sans CJK SC\n@monofont = Mono CJK\nKey = 面板\n");
+    i18n_init(NULL, "zh");
+    CHECK(i18n_font() && i18n_monofont(), "switching to the @font catalog sets both");
+    i18n_set_language(NULL, "ru");
+    CHECK(i18n_font() == NULL && i18n_monofont() == NULL,
+          "switching away from a @font catalog leaves both unset");
+    i18n_free();
+    CHECK(i18n_font() == NULL && i18n_monofont() == NULL, "i18n_free() clears directives");
+}
+
+/* Minimal UTF-8 validator: shape, continuation bytes, overlong, surrogates,
+ * range. i18n_sample_glyphs() must hand the glyph probe whole sequences. */
+static bool valid_utf8(const char *s) {
+    if (!s) return false;
+    const unsigned char *p = (const unsigned char *)s;
+    size_t len = strlen(s), i = 0;
+    while (i < len) {
+        int need;
+        if (p[i] < 0x80) need = 1;
+        else if ((p[i] & 0xE0) == 0xC0) need = 2;
+        else if ((p[i] & 0xF0) == 0xE0) need = 3;
+        else if ((p[i] & 0xF8) == 0xF0) need = 4;
+        else return false;
+        if (i + (size_t)need > len) return false;
+        unsigned cp = need == 1 ? p[i] : p[i] & (need == 2 ? 0x1F : need == 3 ? 0x0F : 0x07);
+        for (int k = 1; k < need; k++) {
+            if ((p[i + k] & 0xC0) != 0x80) return false;
+            cp = cp << 6 | (p[i + k] & 0x3F);
+        }
+        if ((need == 2 && cp < 0x80) || (need == 3 && cp < 0x800) ||
+            (need == 4 && cp < 0x10000) || cp > 0x10FFFF ||
+            (cp >= 0xD800 && cp <= 0xDFFF)) return false;
+        i += (size_t)need;
+    }
+    return true;
+}
+
+static void test_sample_glyphs(void) {
+    clear_env();
+    char dir[4200], catalog[4300];
+    snprintf(dir, sizeof dir, "%s/glyphs", work);
+    ensure_dir(dir);
+    snprintf(catalog, sizeof catalog, "%s/ru.lang", dir);
+    /* Glyphs only ever come from VALUES: the CJK key below must never be
+     * sampled. U+200B (in ZWSP) and U+FE0F (in Cyrillic) draw no ink and
+     * must be skipped; repeats must not be added twice. */
+    write_file(catalog,
+        "@font = Some Family\n"
+        "Launch panel = 启动面板\n"
+        "键 = ASCII value\n"
+        "Cyrillic = АБ""\xEF""\xB8""\x8F""В\n"
+        "ZWSP = 启""\xE2""\x80""\x8B""动\n"
+        "Repeat = 面板\n");
+    setenv("CHROMEDRIVE_LOCALE_DIR", dir, 1);
+    CHECK(!strcmp(i18n_init(NULL, "ru"), "ru"), "glyph fixture loads");
+    CHECK(!strcmp(i18n_font(), "Some Family"), "fixture's @font active");
+
+    char samples[16][8];
+    int n = i18n_sample_glyphs(samples, 16);
+    CHECK(n == 7, "seven distinct code points, skips applied");
+    CHECK(!strcmp(samples[0], "启"), "first-appearance order, not key-sorted order");
+    CHECK(!strcmp(samples[3], "板"), "value glyphs appear in catalog order");
+    CHECK(!strcmp(samples[4], "А"), "later entries follow");
+    bool key_leaked = false;
+    for (int i = 0; i < n; i++)
+        key_leaked |= !strcmp(samples[i], "键");
+    CHECK(!key_leaked, "glyphs come from values, never from keys");
+    for (int i = 0; i < n; i++) {
+        CHECK(valid_utf8(samples[i]), "sample is valid UTF-8");
+        size_t bytes = strlen(samples[i]);
+        CHECK(bytes >= 2 && bytes <= 4, "sample is 2-4 bytes");
+    }
+
+    char two[2][8];
+    CHECK(i18n_sample_glyphs(two, 2) == 2, "cap respected");
+    CHECK(!strcmp(two[1], "动"), "a capped result is still a prefix in order");
+    CHECK(i18n_sample_glyphs(samples, 0) == 0, "max=0 returns nothing");
+    CHECK(i18n_sample_glyphs(NULL, 4) == 0, "NULL out is tolerated");
+
+    write_file(catalog, "Hello = World\n");
+    i18n_init(NULL, "ru");
+    CHECK(i18n_sample_glyphs(samples, 16) == 0, "ASCII-only catalog yields zero");
+
+    clear_env();
+    setenv("LANG", "C", 1);
+    i18n_init(NULL, NULL);
+    CHECK(i18n_sample_glyphs(samples, 16) == 0, "English (no catalog) yields zero");
+}
+
 /* -------------------------------------------------------- drift guard */
 
 /* Reads every .c under src/ and clients/ into one buffer. */
@@ -281,11 +419,6 @@ static char *source_corpus(size_t *len) {
     return buf;
 }
 
-/* Every key the shipped catalog defines must still appear verbatim in a
- * source file. This is the cost of using English text as the lookup key: if
- * someone rewords a label, its translation silently stops matching. Failing
- * `make test` is much better than discovering it in a screenshot. Skipped
- * (not failed) when run outside a checkout. */
 static void dr_trim(char *s) {
     char *p = s;
     while (*p == ' ' || *p == '\t') p++;
@@ -294,16 +427,44 @@ static void dr_trim(char *s) {
     while (n && (s[n - 1] == ' ' || s[n - 1] == '\t')) s[--n] = 0;
 }
 
-static void test_catalog_drift(void) {
-    FILE *f = fopen("assets/locale/ru.lang", "r");
-    if (!f) { printf("  (drift guard skipped: no assets/locale/ru.lang here)\n"); return; }
+/* A catalog key set, in file order. */
+typedef struct {
+    char **v;
+    int n, cap;
+} keylist;
 
-    char *corpus = source_corpus(NULL);
-    if (!corpus) { fclose(f); printf("  (drift guard skipped: no src/ or clients/ here)\n"); return; }
+static void keylist_add(keylist *l, const char *k) {
+    if (l->n == l->cap) {
+        l->cap = l->cap ? l->cap * 2 : 64;
+        char **grown = realloc(l->v, (size_t)l->cap * sizeof *grown);
+        if (!grown) return;
+        l->v = grown;
+    }
+    l->v[l->n] = strdup(k);
+    if (l->v[l->n]) l->n++;
+}
 
+static void keylist_free(keylist *l) {
+    for (int i = 0; i < l->n; i++) free(l->v[i]);
+    free(l->v);
+    l->v = NULL;
+    l->n = l->cap = 0;
+}
+
+static int keylist_has(const keylist *l, const char *k) {
+    for (int i = 0; i < l->n; i++)
+        if (!strcmp(l->v[i], k)) return 1;
+    return 0;
+}
+
+/* Mirrors the loader: trim, skip blanks and #/; comments, split on the first
+ * '=', trim the key, and ignore translator directives (@font, @monofont).
+ * Returns non-zero when the file cannot be read at all. */
+static int keylist_load(const char *path, keylist *out) {
+    FILE *f = fopen(path, "r");
+    if (!f) return -1;
     char *line = NULL;
     size_t cap = 0;
-    int checked = 0, stale = 0;
     while (getline(&line, &cap, f) >= 0) {
         char key[1024];
         snprintf(key, sizeof key, "%s", line);
@@ -312,16 +473,62 @@ static void test_catalog_drift(void) {
         char *eq = strchr(key, '=');
         if (!eq) continue;
         *eq = 0;
-        dr_trim(key);           /* the loader trims the key after splitting */
-
-        checked++;
-        if (!strstr(corpus, key)) {
-            fprintf(stderr, "FAIL: ru.lang key no longer in sources: \"%s\"\n", key);
-            stale++;
-        }
+        dr_trim(key);
+        if (key[0] == '@') continue;
+        keylist_add(out, key);
     }
     free(line);
     fclose(f);
+    return 0;
+}
+
+/* -------------------------------------------------------- drift guard */
+
+/* Every key a shipped catalog defines must still appear verbatim in a source
+ * file. This is the cost of using English text as the lookup key: if someone
+ * rewords a label, its translation silently stops matching. Failing `make
+ * test` is much better than discovering it in a screenshot. Skipped (not
+ * failed) when run outside a checkout.
+ *
+ * This guard covers every .lang file, not just ru.lang: the reworded label
+ * shows up as a *stale* key in each catalog that still carries it, and on the
+ * branch that added the CJK catalogs exactly that had happened to three
+ * strings after upstream reworded the wheel-mode labels. */
+static void test_catalog_drift(void) {
+    DIR *dir = opendir("assets/locale");
+    if (!dir) {
+        printf("  (drift guard skipped: no assets/locale/ here)\n");
+        return;
+    }
+
+    char *corpus = source_corpus(NULL);
+    if (!corpus) {
+        closedir(dir);
+        printf("  (drift guard skipped: no src/ or clients/ here)\n");
+        return;
+    }
+
+    int files = 0, checked = 0, stale = 0, printed = 0;
+    struct dirent *ent;
+    while ((ent = readdir(dir)) != NULL) {
+        size_t n = strlen(ent->d_name);
+        if (n < 6 || strcmp(ent->d_name + n - 5, ".lang")) continue;
+        char path[512];
+        snprintf(path, sizeof path, "assets/locale/%s", ent->d_name);
+        keylist keys = {0};
+        if (keylist_load(path, &keys)) continue;
+        files++;
+        for (int i = 0; i < keys.n; i++) {
+            checked++;
+            if (strstr(corpus, keys.v[i])) continue;
+            stale++;
+            if (printed++ < 12)
+                fprintf(stderr, "FAIL: %s key no longer in sources: \"%s\"\n",
+                        ent->d_name, keys.v[i]);
+        }
+        keylist_free(&keys);
+    }
+    closedir(dir);
 
     /* Translating a bare "%s" leaves the actual dynamic message in English.
      * Keep this source-level check beside the key-drift guard so newly added
@@ -330,9 +537,77 @@ static void test_catalog_drift(void) {
           "dynamic messages translate their text, not a bare %s placeholder");
     free(corpus);
 
+    CHECK(files > 0, "drift guard found catalogs to check");
     CHECK(checked > 0, "drift guard found keys to check");
-    CHECK(stale == 0, "every ru.lang key still exists verbatim in the sources");
-    printf("  drift guard: %d catalog keys verified against src/ + clients/\n", checked);
+    CHECK(stale == 0, "every catalog key still exists verbatim in the sources");
+    printf("  drift guard: %d keys across %d catalog(s) verified against src/ + clients/\n",
+           checked, files);
+}
+
+/* ------------------------------------------------------- parity guard */
+
+/* The language menu lists every .lang under assets/locale, so a catalog that
+ * is missing keys is a language a user can select and then see half in
+ * English. Catching that here is the only mechanical defence: counting tr()
+ * call sites does not tell you whether a *language* is complete.
+ *
+ * ru.lang is the reference set (it is the catalog that tracks the English
+ * sources most closely), so a new English label must be added to every
+ * shipped catalog. A key whose translation genuinely matches the English is
+ * still listed, with the English text as its value: explicit beats absent. */
+static void test_catalog_parity(void) {
+    keylist base = {0};
+    if (keylist_load("assets/locale/ru.lang", &base)) {
+        printf("  (parity guard skipped: no assets/locale/ru.lang here)\n");
+        return;
+    }
+
+    DIR *dir = opendir("assets/locale");
+    if (!dir) {
+        keylist_free(&base);
+        printf("  (parity guard skipped: no assets/locale/ here)\n");
+        return;
+    }
+
+    int catalogs = 0, gaps = 0, strays = 0, printed = 0;
+    struct dirent *ent;
+    while ((ent = readdir(dir)) != NULL) {
+        size_t n = strlen(ent->d_name);
+        if (n < 6 || strcmp(ent->d_name + n - 5, ".lang")) continue;
+        char path[512];
+        snprintf(path, sizeof path, "assets/locale/%s", ent->d_name);
+        keylist keys = {0};
+        if (keylist_load(path, &keys)) continue;
+        catalogs++;
+
+        int missing = 0, extra = 0;
+        for (int i = 0; i < base.n; i++) {
+            if (keylist_has(&keys, base.v[i])) continue;
+            missing++;
+            if (printed++ < 12)
+                fprintf(stderr, "FAIL: %s has no entry for \"%s\"\n",
+                        ent->d_name, base.v[i]);
+        }
+        for (int i = 0; i < keys.n; i++) {
+            if (keylist_has(&base, keys.v[i])) continue;
+            extra++;
+            if (printed++ < 12)
+                fprintf(stderr, "FAIL: %s key not in ru.lang: \"%s\"\n",
+                        ent->d_name, keys.v[i]);
+        }
+        gaps += missing;
+        strays += extra;
+        printf("  parity: %-9s %3d keys %s\n", ent->d_name, keys.n,
+               missing || extra ? "(INCOMPLETE)" : "ok");
+        keylist_free(&keys);
+    }
+    closedir(dir);
+
+    CHECK(catalogs > 1, "parity guard found catalogs to compare");
+    CHECK(base.n > 0, "parity guard found a reference key set in ru.lang");
+    CHECK(gaps == 0, "every shipped catalog translates every ru.lang key");
+    CHECK(strays == 0, "no catalog carries keys ru.lang does not have");
+    keylist_free(&base);
 }
 
 int main(void) {
@@ -348,7 +623,10 @@ int main(void) {
     test_search_order();
     test_languages();
     test_reload_stability();
+    test_directives();
+    test_sample_glyphs();
     test_catalog_drift();
+    test_catalog_parity();
 
     i18n_free();
     if (failures) {
@@ -356,6 +634,6 @@ int main(void) {
         return 1;
     }
     printf("PASS: i18n (catalog parsing, escapes, language resolution, search order, "
-           "hot reload, language listing, catalog drift)\n");
+           "hot reload, language listing, @font directives, glyph sampling, catalog drift)\n");
     return 0;
 }
