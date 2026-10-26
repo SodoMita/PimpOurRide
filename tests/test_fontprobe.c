@@ -49,33 +49,35 @@ static bool have_family(const char *family) {
     return cd_font_covers(family, CJK_SAMPLE);
 }
 
-/* Write a catalog into a private temp dir and point the search path at it. */
+/* Write a catalog into a private temp dir and point the search path at it.
+ *
+ * The dir and the file are remembered, not assumed: an earlier version removed
+ * hardcoded "xx.lang"/"yy.lang" names, so every catalog written under another
+ * tag leaked its file, and re-making a catalog overwrote g_dir and orphaned the
+ * previous directory. Each call now tears the previous fixture down first, and
+ * drop_catalog() removes exactly what was created. */
 static char g_dir[256];
-static bool make_catalog(const char *tag, const char *body) {
-    snprintf(g_dir, sizeof(g_dir), "/tmp/cd-fontprobe-XXXXXX");
-    if (!mkdtemp(g_dir)) return false;
-    char path[512];
-    snprintf(path, sizeof(path), "%s/%s.lang", g_dir, tag);
-    FILE *f = fopen(path, "wb");
-    if (!f) return false;
-    bool ok = fwrite(body, 1, strlen(body), f) == strlen(body);
-    fclose(f);
-    setenv("CHROMEDRIVE_LOCALE_DIR", g_dir, 1);
-    return ok;
-}
+static char g_file[512];
 
 static void drop_catalog(void) {
-    if (g_dir[0]) {
-        char path[512];
-        snprintf(path, sizeof(path), "%s/xx.lang", g_dir);
-        unlink(path);
-        snprintf(path, sizeof(path), "%s/yy.lang", g_dir);
-        unlink(path);
-        rmdir(g_dir);
-        g_dir[0] = 0;
-    }
+    if (g_file[0]) { unlink(g_file); g_file[0] = 0; }
+    if (g_dir[0]) { rmdir(g_dir); g_dir[0] = 0; }
     unsetenv("CHROMEDRIVE_LOCALE_DIR");
     i18n_free();
+}
+
+static bool make_catalog(const char *tag, const char *body) {
+    drop_catalog();                     /* never leak a previous fixture */
+    snprintf(g_dir, sizeof(g_dir), "/tmp/cd-fontprobe-XXXXXX");
+    if (!mkdtemp(g_dir)) { g_dir[0] = 0; return false; }
+    snprintf(g_file, sizeof(g_file), "%s/%s.lang", g_dir, tag);
+    FILE *f = fopen(g_file, "wb");
+    if (!f) { drop_catalog(); return false; }
+    bool ok = fwrite(body, 1, strlen(body), f) == strlen(body);
+    if (fclose(f) != 0) ok = false;
+    if (!ok) { drop_catalog(); return false; }
+    setenv("CHROMEDRIVE_LOCALE_DIR", g_dir, 1);
+    return true;
 }
 
 static void test_coverage_basics(void) {

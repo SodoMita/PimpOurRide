@@ -141,6 +141,18 @@ The rule is the same shape as the PNG ban: there is exactly one right way.
 - Bake-time, not frame-time: textures with text in them are built once. If
   you add a new baked-with-text texture, add it to `ui_refresh_text()` in
   `src/ui.c` or it will keep the old language until restart.
+- **Baked chrome text is fitted, never drawn bare.** In `src/ui.c` and
+  `src/city_scene.c`, every translated label goes through `text_fit()`,
+  `mono_fit()`, `text_fit_c()` or `oblique_fit()` (shrink to 0.85, then
+  ellipsize, never clip) with a real budget: `lane(c, x, margin)` when the label
+  ends its line, or an explicit slot width when a column follows. Text drawn
+  with a bare `cairo_show_text()` at a fixed size is how "Раскладка" became
+  "Движен…" in the hint bar. Sizes are chosen so English fits at 100% - a shrink
+  in English means the slot is wrong, not the translation.
+- **Never name a font family in a drawing path.** `i18n_font_family(mono)`
+  (called by `ui_font_family()` and `cd_font()`) is the single source, so a
+  catalog's `@font` is honoured everywhere; a hardcoded `"DejaVu Sans"` is how a
+  translated CJK screen renders as tofu.
 - **Adding an English label means adding it to every catalog in the same
   commit.** `make test` now fails on both sides of that: *drift* (a catalog key
   that no longer appears verbatim in `src/`/`clients/`, so a reworded label

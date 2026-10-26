@@ -7,7 +7,7 @@ LDLIBS = $(shell pkg-config --libs $(PKGS)) -lm -pthread
 PROTO_DIR := $(shell pkg-config --variable=pkgdatadir wayland-protocols)
 GEN = .generated
 BIN = bin
-SOURCES = src/main.c src/wayland.c src/scene.c src/city_scene.c src/vehicle.c src/city.c src/city_stream.c src/vehicle_scene.c src/vehicle_seat.c src/keymap.c src/wheel_input.c src/ui.c src/math3d.c src/telemetry.c src/dmabuf.c src/cdconfig.c src/i18n.c src/fontprobe.c src/frame_pacing.c src/input_wait.c src/backend_sdl.c src/backend_headless.c src/backend_egl.c src/backend_vnc.c src/backend_fbdev.c src/backend_drm.c src/backend_vt.c src/backend_evdev.c src/evdev_queue.c src/evdev_util.c src/fbdev_pixfmt.c
+SOURCES = src/main.c src/wayland.c src/scene.c src/city_scene.c src/vehicle.c src/city.c src/city_stream.c src/vehicle_scene.c src/vehicle_seat.c src/keymap.c src/wheel_input.c src/ui.c src/math3d.c src/telemetry.c src/dmabuf.c src/cdconfig.c src/i18n.c src/fontprobe.c src/textfit.c src/textfit_cairo.c src/frame_pacing.c src/input_wait.c src/backend_sdl.c src/backend_headless.c src/backend_egl.c src/backend_vnc.c src/backend_fbdev.c src/backend_drm.c src/backend_vt.c src/backend_evdev.c src/evdev_queue.c src/evdev_util.c src/fbdev_pixfmt.c
 PROTOCOLS = $(GEN)/xdg-shell-protocol.c $(GEN)/xdg-decoration-protocol.c $(GEN)/linux-dmabuf-protocol.c
 HEADERS = $(GEN)/xdg-shell-server.h $(GEN)/xdg-decoration-server.h $(GEN)/linux-dmabuf-server.h
 .PHONY: all clean test check-text sanitize garage3d garage3d-test garage3d-clean
@@ -30,7 +30,7 @@ $(GEN)/linux-dmabuf-protocol.c: | $(GEN)
 	wayland-scanner private-code $(PROTO_DIR)/stable/linux-dmabuf/linux-dmabuf-v1.xml $@
 $(GEN)/linux-dmabuf-client.h: | $(GEN)
 	wayland-scanner client-header $(PROTO_DIR)/stable/linux-dmabuf/linux-dmabuf-v1.xml $@
-$(BIN)/chromedrive: $(SOURCES) include/chrome.h include/textfit.h include/textfit_cairo.h include/math3d.h include/vehicle.h include/city.h include/vehicle_seat.h include/wheel_input.h include/telemetry.h include/cdconfig.h include/i18n.h include/fbdev_pixfmt.h include/input_wait.h $(HEADERS) $(PROTOCOLS) | $(BIN)
+$(BIN)/chromedrive: $(SOURCES) include/chrome.h include/textfit.h include/textfit_cairo.h include/math3d.h include/vehicle.h include/city.h include/vehicle_seat.h include/wheel_input.h include/telemetry.h include/cdconfig.h include/i18n.h include/fbdev_pixfmt.h include/input_wait.h include/fontprobe.h $(HEADERS) $(PROTOCOLS) | $(BIN)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(SOURCES) $(PROTOCOLS) -o $@ $(LDLIBS)
 # Both cairo clients share the text-fitting policy in src/textfit.c (pure) +
 # src/textfit_cairo.c (drawing), so a fixed-width slot can never spill or clip.

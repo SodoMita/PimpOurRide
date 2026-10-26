@@ -15,6 +15,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <unistd.h>
 
 static int failures;
 
@@ -377,6 +378,88 @@ static void test_sample_glyphs(void) {
     CHECK(i18n_sample_glyphs(samples, 16) == 0, "English (no catalog) yields zero");
 }
 
+/* --------------------------------------------------- utf8 byte budgeting */
+
+/* These helpers sit directly under user-readable strings, and their budgets
+ * are often computed ("sizeof(buf) - used"), not `sizeof`d. The two ways that
+ * goes wrong are a negative int converted to size_t and a negative long passed
+ * straight through; both would let the copy loop believe it has 2^63 bytes of
+ * room. Covered here because the failure mode is a silent overrun. */
+static void test_utf8_hardening(void) {
+    char buf[8];
+
+    /* Ordinary truncation, for reference. */
+    memset(buf, 'X', sizeof buf);
+    CHECK(i18n_utf8_truncate(buf, sizeof buf, "abcdefghij", 5) == 5, "budget 5 copies 5");
+    CHECK(!strcmp(buf, "abcde"), "truncation result is the exact prefix");
+
+    /* A negative budget converted to size_t (the classic "sizeof - used" wrap)
+     * must not be believed; the destination is then the only limit. */
+    memset(buf, 'X', sizeof buf);
+    CHECK(i18n_utf8_truncate(buf, sizeof buf, "abcdefghij", (size_t)-1) == 7,
+          "wrapped max_bytes falls back to cap - 1");
+    CHECK(!strcmp(buf, "abcdefg"), "no overrun past the destination");
+
+    /* A negative cap is not a large cap: nothing is written at all. */
+    memset(buf, 'X', sizeof buf);
+    CHECK(i18n_utf8_truncate(buf, (size_t)-1, "abc", 3) == 0,
+          "wrapped cap is treated as no space");
+    CHECK(buf[0] == 'X', "a wrapped cap must not write anything");
+
+    /* The signed variant exists exactly for computed budgets. */
+    memset(buf, 'X', sizeof buf);
+    CHECK(i18n_utf8_truncate_n(buf, sizeof buf, "abcdefghij", -5) == 0,
+          "negative signed budget copies nothing");
+    CHECK(buf[0] == 0, "negative signed budget empties the destination");
+    CHECK(i18n_utf8_truncate_n(buf, sizeof buf, "abcdefghij", 4) == 4 &&
+              !strcmp(buf, "abcd"),
+          "positive signed budget behaves like the size_t version");
+
+    /* A budget that lands inside a multi-byte character stops before it. */
+    char cjk[16];
+    /* U+5F15 U+6587 -> 3 bytes each */
+    CHECK(i18n_utf8_truncate(cjk, sizeof cjk, "\xe5\xbc\x95\xe6\x96\x87", 4) == 3,
+          "a budget inside a codepoint keeps only the whole prefix");
+    CHECK(!strcmp(cjk, "\xe5\xbc\x95"), "and produces valid UTF-8");
+
+    /* Cap 0 / NULL source never crash and never write. */
+    CHECK(i18n_utf8_truncate(buf, 0, "abc", 3) == 0, "cap 0 copies nothing");
+    CHECK(i18n_utf8_truncate(buf, sizeof buf, NULL, 3) == 0, "NULL source copies nothing");
+    CHECK(i18n_utf8_truncate(NULL, sizeof buf, "abc", 3) == 0, "NULL destination is ignored");
+}
+
+/* ------------------------------------------------------ font family source */
+
+/* Every drawing path must ask for the catalog's family instead of naming
+ * "DejaVu Sans" itself; a hardcoded family is how a translated CJK screen
+ * renders as tofu. i18n_font_family() is that single source. */
+static void test_font_family(void) {
+    i18n_set_language(NULL, "en");
+    CHECK(!strcmp(i18n_font_family(false), "DejaVu Sans"),
+          "English draws with the built-in proportional family");
+    CHECK(!strcmp(i18n_font_family(true), "DejaVu Sans Mono"),
+          "English draws with the built-in mono family");
+
+    char dir[4200], catalog[4300];
+    snprintf(dir, sizeof dir, "%s/fam", work);
+    ensure_dir(dir);
+    snprintf(catalog, sizeof catalog, "%s/zz.lang", dir);
+    write_file(catalog, "@font = Noto Sans CJK SC\n@monofont = Noto Sans Mono CJK SC\nKey = \xe5\xbc\x95\n");
+    setenv("CHROMEDRIVE_LOCALE_DIR", dir, 1);
+    CHECK(!strcmp(i18n_set_language(NULL, "zz"), "zz"), "the @font catalog loads");
+    CHECK(!strcmp(i18n_font_family(false), "Noto Sans CJK SC"),
+          "the catalog family wins over the built-in default");
+    CHECK(!strcmp(i18n_font_family(true), "Noto Sans Mono CJK SC"),
+          "the mono directive is used for mono text");
+
+    /* A catalog with no directive keeps the defaults, and switching back to
+     * English restores them: the helper is asked at draw time. */
+    i18n_set_language(NULL, "en");
+    CHECK(!strcmp(i18n_font_family(false), "DejaVu Sans"),
+          "switching back to English restores the default family");
+    unsetenv("CHROMEDRIVE_LOCALE_DIR");
+}
+
 /* -------------------------------------------------------- drift guard */
 
 /* Reads every .c under src/ and clients/ into one buffer. */
@@ -610,6 +693,26 @@ static void test_catalog_parity(void) {
     keylist_free(&base);
 }
 
+/* Removes the scratch tree. The test writes real catalogs under mkdtemp() and
+ * used to leave the directory behind on every run, which turns a repeated
+ * `make test` into a slow /tmp leak. */
+static void remove_tree(const char *path) {
+    DIR *dir = opendir(path);
+    if (dir) {
+        struct dirent *ent;
+        while ((ent = readdir(dir)) != NULL) {
+            if (!strcmp(ent->d_name, ".") || !strcmp(ent->d_name, "..")) continue;
+            char child[4300];
+            snprintf(child, sizeof child, "%s/%s", path, ent->d_name);
+            struct stat st;
+            if (stat(child, &st) == 0 && S_ISDIR(st.st_mode)) remove_tree(child);
+            else unlink(child);
+        }
+        closedir(dir);
+    }
+    rmdir(path);
+}
+
 int main(void) {
     snprintf(work, sizeof work, "/tmp/cd-i18n-XXXXXX");
     if (!mkdtemp(work)) {
@@ -625,10 +728,13 @@ int main(void) {
     test_reload_stability();
     test_directives();
     test_sample_glyphs();
+    test_utf8_hardening();
+    test_font_family();
     test_catalog_drift();
     test_catalog_parity();
 
     i18n_free();
+    remove_tree(work);
     if (failures) {
         fprintf(stderr, "FAIL: %d i18n assertion(s)\n", failures);
         return 1;

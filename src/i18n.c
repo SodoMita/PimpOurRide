@@ -13,6 +13,7 @@
 #include <ctype.h>
 #include <dirent.h>
 #include <stdio.h>
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
@@ -359,7 +360,15 @@ static size_t utf8_len(unsigned char c) {
 }
 
 size_t i18n_utf8_truncate(char *dst, size_t cap, const char *src, size_t max_bytes) {
-    if (!dst || !cap) return 0;
+    if (!dst) return 0;
+    /* A size above PTRDIFF_MAX cannot describe an object, so it is a negative
+     * int that was converted on the way in: "sizeof(buf) - used" with used >
+     * sizeof(buf), or a similar computed budget. Trusting it would let the copy
+     * loop run off the end of a real buffer. Treat a wrapped cap as no space,
+     * and a wrapped budget as "the destination is the only limit". */
+    if (cap > (size_t)PTRDIFF_MAX) cap = 0;
+    if (max_bytes > (size_t)PTRDIFF_MAX) max_bytes = cap ? cap - 1 : 0;
+    if (!cap) return 0;
     dst[0] = 0;
     if (!src) return 0;
     size_t out = 0;
@@ -376,6 +385,17 @@ size_t i18n_utf8_truncate(char *dst, size_t cap, const char *src, size_t max_byt
     return out;
 }
 
+/* Signed budget: the caller computed it and it can be negative. Negative means
+ * no room, which must not turn into SIZE_MAX bytes of room. */
+size_t i18n_utf8_truncate_n(char *dst, size_t cap, const char *src, long max_bytes) {
+    if (!dst) return 0;
+    if (max_bytes < 0) {
+        if (cap) dst[0] = 0;
+        return 0;
+    }
+    return i18n_utf8_truncate(dst, cap, src, (size_t)max_bytes);
+}
+
 /* Family the loaded catalog asks for via its @font / @monofont directives,
  * or NULL when it asked for nothing ("" is unset, per include/i18n.h). */
 const char *i18n_font(void) {
@@ -384,6 +404,15 @@ const char *i18n_font(void) {
 
 const char *i18n_monofont(void) {
     return g_monofont[0] ? g_monofont : NULL;
+}
+
+/* One place defines the fallback family, so no drawing path has to spell
+ * "DejaVu Sans" itself - a hardcoded family is how a fully translated CJK
+ * screen renders as tofu. clients/ and the compositor both go through here. */
+const char *i18n_font_family(bool mono) {
+    const char *asked = mono ? i18n_monofont() : i18n_font();
+    if (asked) return asked;
+    return mono ? "DejaVu Sans Mono" : "DejaVu Sans";
 }
 
 /* Samples are harvested live from the entries in appearance order (g_order),

@@ -1,6 +1,7 @@
 #include "chrome.h"
 #include "city.h"
 #include "i18n.h"
+#include "textfit_cairo.h"
 #include <math.h>
 #include <string.h>
 
@@ -61,14 +62,26 @@ static void city_texture(GLuint tex,float x,float y,float w,float h,float z){
  if(!was_culled)glDisable(GL_CULL_FACE);
  glDisable(GL_TEXTURE_2D);glDisable(GL_BLEND);glEnable(GL_LIGHTING);
 }
+/* Drive-through bay sign. Both lines are translated, so both are fitted into
+ * the sign instead of being centred at whatever width the translation happens
+ * to have: measure-and-centre with no budget is how a longer string ran off the
+ * 1024 px plate. The family comes from i18n_font_family() - a sign that names
+ * "DejaVu Sans" itself paints tofu the moment a CJK catalog is selected. */
 static GLuint city_sign_texture(const char *name,int index){
  cairo_surface_t *im=cairo_image_surface_create(CAIRO_FORMAT_ARGB32,1024,192);cairo_t*c=cairo_create(im);
  cairo_set_source_rgb(c,.018,.027,.045);cairo_paint(c);
  const float accents[][3]={{.45,.85,1},{.25,.95,.72},{.72,.48,1},{1,.48,.32}};
  cairo_set_source_rgb(c,accents[index&3][0],accents[index&3][1],accents[index&3][2]);cairo_set_line_width(c,7);cairo_rectangle(c,7,7,1010,178);cairo_stroke(c);
- cairo_select_font_face(c,"DejaVu Sans",CAIRO_FONT_SLANT_NORMAL,CAIRO_FONT_WEIGHT_BOLD);cairo_set_font_size(c,58);
- cairo_text_extents_t ex;cairo_text_extents(c,name,&ex);cairo_move_to(c,(1024-ex.width)/2,92);cairo_show_text(c,name);
- cairo_set_font_size(c,25);cairo_set_source_rgb(c,.62,.72,.82);const char *sub=tr("AUTONOMOUS HOVER SERVICE  /  DRIVE THROUGH");cairo_text_extents(c,sub,&ex);cairo_move_to(c,(1024-ex.width)/2,145);cairo_show_text(c,sub);
+ const double lane=1000;                   /* the plate is 1024 wide with a 7 px border */
+ /* 52 px, not 58: the widest bay name in the city ("CHARGE POINT / CAMPUS
+  * SOUTH") measures 1073 px at 58 px, i.e. the old code centred 49 px of text
+  * outside a 1024 px plate and relied on nothing checking it. At 52 px the
+  * longest English name fits at 100%, so a shrink now always means a
+  * translation outgrew the sign, not that the sign was too small for English. */
+ cairo_select_font_face(c,i18n_font_family(false),CAIRO_FONT_SLANT_NORMAL,CAIRO_FONT_WEIGHT_BOLD);cairo_set_font_size(c,52);
+ cd_draw_fit(c,512,92,52,true,false,lane,CD_ALIGN_CENTER,0.85,name?name:"");
+ cairo_set_source_rgb(c,.62,.72,.82);
+ cd_draw_fit(c,512,145,25,true,false,lane,CD_ALIGN_CENTER,0.85,tr("AUTONOMOUS HOVER SERVICE  /  DRIVE THROUGH"));
  GLuint tex=ui_texture(im,0);cairo_destroy(c);cairo_surface_destroy(im);return tex;
 }
 

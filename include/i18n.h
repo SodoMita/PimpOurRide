@@ -116,6 +116,13 @@ const char *tr(const char *english);
 const char *i18n_font(void);
 const char *i18n_monofont(void);
 
+/* Family to draw with: the catalog's @font / @monofont when it named one, else
+ * the built-in DejaVu default. This is the ONLY place the default family names
+ * live - a new drawing path calls this (or cd_font()/ui_font_family(), which
+ * delegate here) instead of spelling "DejaVu Sans" again, because a hardcoded
+ * family is exactly how a fully translated CJK screen renders as tofu. */
+const char *i18n_font_family(bool mono);
+
 /* Up to `max` DISTINCT non-ASCII code points taken from the loaded catalog's
  * VALUES (never its keys), in first-appearance order, each written as a
  * NUL-terminated UTF-8 sequence into out[i] (8 bytes each is enough).
@@ -136,6 +143,21 @@ int i18n_sample_glyphs(char out[][8], int max);
  * half and produce mojibake - already reachable with Russian, and certain with
  * CJK. Truncating a cache key is fine; truncating what the user reads is not. */
 size_t i18n_utf8_truncate(char *dst, size_t cap, const char *src, size_t max_bytes);
+
+/* Same, with a SIGNED byte budget.
+ *
+ * Call sites compute their budget (`sizeof(buf) - used`, `cap - prefix`), and
+ * an int expression that goes negative converts to a huge size_t: the copy
+ * loop then believes it has SIZE_MAX bytes of room and runs off the buffer.
+ * That is an overrun that looks like a one-character bug. Anything negative
+ * here means "no room" and writes an empty string. Reach for this whenever the
+ * budget is computed rather than `sizeof`d.
+ *
+ * The size_t version above is hardened too: a `cap` or `max_bytes` above
+ * PTRDIFF_MAX cannot describe a real object, so it is a converted negative
+ * value; `cap` is then treated as 0 and `max_bytes` as "the destination is the
+ * only limit". */
+size_t i18n_utf8_truncate_n(char *dst, size_t cap, const char *src, long max_bytes);
 
 /* Install root derived from the running binary (<root>/bin/<prog>): the same
  * two-directories-up rule src/main.c uses for assets, factored out so the

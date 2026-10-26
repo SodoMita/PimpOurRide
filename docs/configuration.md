@@ -698,6 +698,43 @@ The settings GUI sizes its tab pills from the label *as drawn*
 (`cd_fit_measure`), so a longer translation shrinks inside its own pill instead
 of pushing the row under the Reset button.
 
+**The compositor's own chrome now uses the same policy.** `src/ui.c` used to
+draw its baked labels with `cairo_show_text()` at a fixed size: the HUD's
+control-hint bar sized its pills around the English words (`{94,98,106,…}`), so
+Russian "Раскладка" was cut to "Движен…" under the next key cap, and the
+windshield's centred mode line could run into the speed or pack group. Every
+baked text call in `src/ui.c` and the drive-through bay signs in
+`src/city_scene.c` now go through the same shrink-then-ellipsize helpers
+(`text_fit`, `mono_fit`, `text_fit_c`, `oblique_fit`), with one rule for each
+slot:
+
+- a label that is the last thing on its line asks `lane(c, x, margin)` for the
+  width from `x` to the surface edge — the honest budget, and it follows the
+  window size (`hud()` bakes at `s->width` × `s->height`);
+- a label with a column beside it passes that slot's width explicitly;
+- the hint bar *measures* its nine labels and sizes the pills around them,
+  instead of assuming English word lengths; only if the measured bar cannot fit
+  the capsule do the labels shrink, and then all of them shrink together.
+
+The bay signs are the one place a size was chosen from measurement rather than
+guessed: at 58 px the longest English bay name measured 1073 px inside a
+1024 px plate, i.e. the old code drew 49 px of it outside the sign. They bake at
+52 px, where every English name fits at 100%, so a shrink there always means a
+translation outgrew the sign.
+
+**One place defines the default family.** `i18n_font_family(mono)` in
+`src/i18n.c` returns the catalog's `@font`/`@monofont` when it named one and the
+built-in DejaVu default otherwise; `ui_font_family()` and `cd_font()` both
+delegate to it. `src/city_scene.c` used to spell `"DejaVu Sans"` itself, which
+would have painted every bay sign as tofu in a CJK session. A drawing path that
+names a family directly is a bug, not a style choice.
+
+`i18n_utf8_truncate()` additionally refuses a size above `PTRDIFF_MAX`: call
+sites compute budgets (`cap - used`) and an `int` that goes negative converts to
+a huge `size_t`, which the copy loop would believe. `i18n_utf8_truncate_n()`
+takes a signed budget for the same reason, and `tests/test_i18n.c` covers both
+directions.
+
 Two related rules are enforced in code and in `AGENTS.md`:
 
 - **Never truncate translated text with a printf precision.** `%.62s` and

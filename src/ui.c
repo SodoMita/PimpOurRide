@@ -2,6 +2,7 @@
 #include "city.h"
 #include "fontprobe.h"
 #include "i18n.h"
+#include "textfit_cairo.h"
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>
@@ -11,34 +12,68 @@
 #define PI 3.14159265358979323846
 static void rgb(cairo_t *c,float r,float g,float b){cairo_set_source_rgb(c,r,g,b);}
 static void rgba(cairo_t *c,float r,float g,float b,float a){cairo_set_source_rgba(c,r,g,b,a);}
-static const char *ui_font_family(bool mono){const char *f=mono?i18n_monofont():i18n_font();return f?f:(mono?"DejaVu Sans Mono":"DejaVu Sans");}
+/* The default family lives in src/i18n.c; every drawing path in the
+ * compositor, the clients and the city signs resolves through it, so a catalog
+ * that names its own font (@font) is honoured everywhere instead of in most
+ * places. */
+static const char *ui_font_family(bool mono){return i18n_font_family(mono);}
 static void font(cairo_t *c,double size,bool bold,bool mono){cairo_select_font_face(c,ui_font_family(mono),CAIRO_FONT_SLANT_NORMAL,bold?CAIRO_FONT_WEIGHT_BOLD:CAIRO_FONT_WEIGHT_NORMAL);cairo_set_font_size(c,size);}
 static void text(cairo_t *c,double x,double y,double size,const char *s,bool bold){font(c,size,bold,false);cairo_move_to(c,x,y);cairo_show_text(c,s);}
 static void mono(cairo_t *c,double x,double y,double size,const char *s){font(c,size,false,true);cairo_move_to(c,x,y);cairo_show_text(c,s);}
-/* Bounded mono text for baked textures: shrink to 85%, then ellipsize. Bake-
- * time only (these are 1200x76 titlebar strips), so the extra measurement pass
- * costs nothing per frame. */
+/* Fitting for baked chrome. The policy itself lives in src/textfit.c (no cairo,
+ * unit-tested) and src/textfit_cairo.c (the glue the clients use), so the
+ * compositor and the clients cannot drift apart on how a long translation is
+ * handled: shrink to 85%, then ellipsize, never clip.
+ *
+ * `lane(c, x, margin)` is the width from `x` to the right edge of the target
+ * surface minus `margin`, which is the honest budget for any label that is the
+ * last thing on its line. Labels that sit beside another column pass an
+ * explicit slot width instead. */
+static double lane(cairo_t *c,double x,double margin){
+ cairo_surface_t *t=cairo_get_target(c);double right=cairo_image_surface_get_width(t)-margin;
+ return right>x?right-x:0;
+}
 static void mono_fit(cairo_t *c,double x,double y,double size,double maxw,const char *s){
- char buf[512];char cur[512];snprintf(cur,sizeof(cur),"%s",s?s:"");
- double scale=1.0;font(c,size,false,true);
- cairo_text_extents_t e;cairo_text_extents(c,cur,&e);
- if(e.x_advance>maxw&&maxw>0){
-  scale=maxw/e.x_advance>(0.85)?maxw/e.x_advance:0.85;
-  font(c,size*scale,false,true);cairo_text_extents(c,cur,&e);
-  if(e.x_advance>maxw){
-   size_t n=strlen(cur);
-   while(n>0){
-    while(n>0&&((unsigned char)cur[n]&0xC0)==0x80)n--;
-    cur[n]=0;snprintf(buf,sizeof(buf),"%s\xe2\x80\xa6",cur);
-    cairo_text_extents(c,buf,&e);
-    if(e.x_advance<=maxw)break;
-    if(n==0)break;
-    n--;
+ cd_draw_fit(c,x,y,size,false,true,maxw,CD_ALIGN_LEFT,0.85,s?s:"");
+}
+static void text_fit(cairo_t *c,double x,double y,double size,double maxw,const char *s,bool bold){
+ cd_draw_fit(c,x,y,size,bold,false,maxw,CD_ALIGN_LEFT,0.85,s?s:"");
+}
+static void text_fit_c(cairo_t *c,double cx,double y,double size,double maxw,const char *s,bool bold){
+ cd_draw_fit(c,cx,y,size,bold,false,maxw,CD_ALIGN_CENTER,0.85,s?s:"");
+}
+static void mono_fit_c(cairo_t *c,double cx,double y,double size,double maxw,const char *s){
+ cd_draw_fit(c,cx,y,size,false,true,maxw,CD_ALIGN_CENTER,0.85,s?s:"");
+}
+/* The oblique display faces (plate, hub, wordmark) are decorative, so they keep
+ * their slant instead of going through cd_font(); the fitting is the same. */
+static double oblique_width(cairo_t *c,const char *s){
+ cairo_text_extents_t e;cairo_text_extents(c,s,&e);return e.x_advance;
+}
+static void oblique_fit(cairo_t *c,double x,double y,double size,double maxw,const char *s){
+ font(c,size,true,false);
+ if(maxw>0){
+  double w=oblique_width(c,s);
+  if(w>maxw){
+   double scale=maxw/w>0.85?maxw/w:0.85;
+   /* the oblique face is not what cd_font() selects, so shrink by hand */
+   cairo_select_font_face(c,ui_font_family(false),CAIRO_FONT_SLANT_OBLIQUE,CAIRO_FONT_WEIGHT_BOLD);cairo_set_font_size(c,size*scale);
+   w=oblique_width(c,s);
+   if(w>maxw){
+    char buf[512];i18n_utf8_truncate(buf,sizeof(buf),s?s:"",sizeof(buf)-5);
+    size_t n=strlen(buf);
+    while(n>0){
+     while(n>0&&((unsigned char)buf[n]&0xC0)==0x80)n--;
+     buf[n]=0;
+     char cut[512];snprintf(cut,sizeof(cut),"%s\xe2\x80\xa6",buf);
+     if(oblique_width(c,cut)<=maxw){memcpy(buf,cut,sizeof(buf));break;}
+     if(n==0)break;
+    }
+    cairo_move_to(c,x,y);cairo_show_text(c,buf);return;
    }
-   snprintf(cur,sizeof(cur),"%s",buf);
   }
  }
- font(c,size*scale,false,true);cairo_move_to(c,x,y);cairo_show_text(c,cur);
+ cairo_move_to(c,x,y);cairo_show_text(c,s?s:"");
 }
 static void rounded(cairo_t *c,double x,double y,double w,double h,double r){cairo_new_sub_path(c);cairo_arc(c,x+w-r,y+r,r,-PI/2,0);cairo_arc(c,x+w-r,y+h-r,r,0,PI/2);cairo_arc(c,x+r,y+h-r,r,PI/2,PI);cairo_arc(c,x+r,y+r,r,PI,PI*1.5);cairo_close_path(c);}
 static void line(cairo_t *c,double x,double y,double xx,double yy){cairo_move_to(c,x,y);cairo_line_to(c,xx,yy);cairo_stroke(c);}
@@ -78,8 +113,8 @@ static GLuint make_button(DashButton *b){
  cairo_surface_t *im=cairo_image_surface_create(CAIRO_FORMAT_ARGB32,384,224);cairo_t *c=cairo_create(im);
  cairo_pattern_t *grad=cairo_pattern_create_linear(0,0,0,224);cairo_pattern_add_color_stop_rgb(grad,0,.075,.095,.133);cairo_pattern_add_color_stop_rgb(grad,1,.033,.047,.073);cairo_set_source(c,grad);cairo_paint(c);cairo_pattern_destroy(grad);
  rgb(c,.17,.22,.30);cairo_set_line_width(c,2);rounded(c,2,2,380,220,15);cairo_stroke(c);
- icon(c,b->icon,30,40);rgb(c,.83,.89,.94);text(c,29,128,32,tr(b->name),true);rgb(c,.42,.51,.60);mono(c,30,180,20,tr(b->sub));rgb(c,.36,.91,.73);cairo_arc(c,345,43,4,0,2*PI);cairo_fill(c);
- if(!b->enabled){rgba(c,.01,.01,.02,.58);cairo_paint(c);rgb(c,.50,.55,.63);mono(c,246,198,16,tr("DISABLED"));} /* config-disabled entry reads as off, not broken */
+ icon(c,b->icon,30,40);rgb(c,.83,.89,.94);text_fit(c,29,128,32,333,tr(b->name),true);rgb(c,.42,.51,.60);mono_fit(c,30,180,20,333,tr(b->sub));rgb(c,.36,.91,.73);cairo_arc(c,345,43,4,0,2*PI);cairo_fill(c);
+ if(!b->enabled){rgba(c,.01,.01,.02,.58);cairo_paint(c);rgb(c,.50,.55,.63);mono_fit(c,246,198,16,120,tr("DISABLED"));} /* config-disabled entry reads as off, not broken */
  GLuint tex=ui_texture(im,0);cairo_destroy(c);cairo_surface_destroy(im);return tex;
 }
 void ui_refresh_buttons(Server *s){for(int i=0;i<6;i++){if(s->buttons[i].texture)glDeleteTextures(1,&s->buttons[i].texture);s->buttons[i].texture=make_button(&s->buttons[i]);}}
@@ -90,15 +125,15 @@ static void windshield_hud(Server *s){
  rgba(c,r,g,b,.20);line(c,44,72,44,292);line(c,1356,72,1356,292);line(c,44,72,92,72);line(c,1308,72,1356,72);
  /* Live speed and gear at the left edge of the windshield. */
  snprintf(value,sizeof(value),"%.0f",fabs(s->vehicle.speed)*3.6);rgba(c,.80,.95,1,.92);text(c,70,218,112,value,true);
- rgba(c,.43,.68,.76,.85);mono(c,78,260,22,tr("KM/H"));mono(c,78,305,14,tr("GROUND SPEED"));
+ rgba(c,.43,.68,.76,.85);mono_fit(c,78,260,22,340,tr("KM/H"));mono_fit(c,78,305,14,340,tr("GROUND SPEED"));
  const char *gear=s->vehicle.autopilot_enabled?"A":s->steering_mode==VEHICLE_STEER_CLIENT?"C":s->vehicle.speed>.25f?"D":s->vehicle.speed<-.25f?"R":"N";
- rgba(c,.45,.95,.79,.95);text(c,358,211,72,gear,true);rgba(c,.40,.61,.69,.85);mono(c,352,260,15,s->vehicle.autopilot_enabled?tr("AUTO"):s->steering_mode==VEHICLE_STEER_DRIVE?tr("DRIVE"):tr("CLIENT"));
+ rgba(c,.45,.95,.79,.95);text(c,358,211,72,gear,true);rgba(c,.40,.61,.69,.85);mono_fit(c,352,260,15,130,s->vehicle.autopilot_enabled?tr("AUTO"):s->steering_mode==VEHICLE_STEER_DRIVE?tr("DRIVE"):tr("CLIENT"));
  /* Pack and instantaneous power at the right edge. */
  snprintf(value,sizeof(value),"%.0f%%",100*s->vehicle.battery_kwh/VEHICLE_BATTERY_CAPACITY_KWH);rgba(c,.80,.95,1,.92);text(c,1070,190,72,value,true);
- rgba(c,.43,.68,.76,.85);mono(c,1080,232,18,tr("82 KWH PACK"));snprintf(value,sizeof(value),tr("%+.0f KW"),s->vehicle.power_kw);mono(c,1080,278,21,value);
+ rgba(c,.43,.68,.76,.85);mono_fit(c,1080,232,18,300,tr("82 KWH PACK"));snprintf(value,sizeof(value),tr("%+.0f KW"),s->vehicle.power_kw);mono_fit(c,1080,278,21,300,value);
  /* Centre stays mostly empty. A small live steering chevron and status line
   * read as glass projection without covering the fixed windshield client. */
- rgba(c,.48,.72,.80,.72);mono(c,568,62,14,tr("WINDSHIELD HUD / LIVE"));
+ rgba(c,.48,.72,.80,.72);mono_fit(c,568,62,14,480,tr("WINDSHIELD HUD / LIVE"));
  float steer_hud=s->steering_mode==VEHICLE_STEER_DRIVE?s->vehicle.steering:wheel_client_steer_from_angle(s->wheel_client_angle);
  rgba(c,r,g,b,.62);cairo_set_line_width(c,4);float cx=700+steer_hud*90;
  cairo_move_to(c,cx-34,370);cairo_line_to(c,cx,352);cairo_line_to(c,cx+34,370);cairo_stroke(c);
@@ -107,20 +142,23 @@ static void windshield_hud(Server *s){
  if(s->vehicle.autopilot_enabled){char dest[64];i18n_utf8_truncate(dest,sizeof(dest),city_autopilot_destination(&s->vehicle),62);snprintf(auto_mode,sizeof(auto_mode),tr("AUTOPILOT / %s"),dest);mode=auto_mode;}
  if(s->vehicle.door_target[0]>.5f||s->vehicle.door_target[1]>.5f)mode=s->vehicle.door_open[0]>.995f&&s->vehicle.door_open[1]>.995f?tr("DOORS OPEN / META+O TO CLOSE"):tr("DOORS OPENING");
  else if(s->vehicle.door_open[0]>.001f||s->vehicle.door_open[1]>.001f)mode=tr("DOORS CLOSING");
- rgba(c,.55,.77,.82,.82);cairo_text_extents_t ex;font(c,17,false,true);cairo_text_extents(c,mode,&ex);cairo_move_to(c,700-ex.width/2,414);cairo_show_text(c,mode);
- snprintf(value,sizeof(value),tr("HOVER %.2f M  /  MOTOR %.0f C"),s->vehicle.hover_height,s->vehicle.motor_temp_c);font(c,13,false,true);cairo_text_extents(c,value,&ex);cairo_move_to(c,700-ex.width/2,442);cairo_show_text(c,value);
+ /* Both centre lines are as wide as their translation, and they are centred on
+  * the same axis as the steering chevron: measure-and-centre without a budget
+  * let a long Russian mode string run into the speed or pack group. */
+ rgba(c,.55,.77,.82,.82);mono_fit_c(c,700,414,17,1180,mode);
+ snprintf(value,sizeof(value),tr("HOVER %.2f M  /  MOTOR %.0f C"),s->vehicle.hover_height,s->vehicle.motor_temp_c);mono_fit_c(c,700,442,13,1180,value);
  s->windshield_tex=ui_texture(im,s->windshield_tex);cairo_destroy(c);cairo_surface_destroy(im);
 }
 static void make_console(Server *s){
  cairo_surface_t *im=cairo_image_surface_create(CAIRO_FORMAT_ARGB32,1200,692);cairo_t *c=cairo_create(im);rgb(c,.032,.041,.061);cairo_paint(c);rgba(c,.15,.18,.26,.15);cairo_set_line_width(c,1);for(int x=-700;x<1400;x+=14)line(c,x,0,x+692,692);
- rgb(c,.78,.84,.9);text(c,58,76,33,tr("LAUNCH CONTROL"),true);rgb(c,.41,.49,.60);mono(c,61,114,16,tr("YOUR APPS. THEIR OWN DISPLAYS."));rgb(c,.34,.85,.70);cairo_arc(c,1067,69,5,0,2*PI);cairo_fill(c);mono(c,1090,76,17,tr("ON"));
+ rgb(c,.78,.84,.9);text_fit(c,58,76,33,900,tr("LAUNCH CONTROL"),true);rgb(c,.41,.49,.60);mono_fit(c,61,114,16,900,tr("YOUR APPS. THEIR OWN DISPLAYS."));rgb(c,.34,.85,.70);cairo_arc(c,1067,69,5,0,2*PI);cairo_fill(c);mono_fit(c,1090,76,17,90,tr("ON"));
  s->console_tex=ui_texture(im,0);cairo_destroy(c);cairo_surface_destroy(im);
 }
 static void make_plate(Server *s){
  cairo_surface_t *im=cairo_image_surface_create(CAIRO_FORMAT_ARGB32,800,300);cairo_t *c=cairo_create(im);rgb(c,.08,.10,.14);cairo_paint(c);rgba(c,.2,.23,.31,.4);cairo_set_line_width(c,.7);for(int y=0;y<300;y+=4)line(c,0,y,800,y);
- rgb(c,.84,.86,.92);cairo_select_font_face(c,ui_font_family(false),CAIRO_FONT_SLANT_OBLIQUE,CAIRO_FONT_WEIGHT_BOLD);cairo_set_font_size(c,67);cairo_move_to(c,45,134);cairo_show_text(c,tr("CUSTOM BUILT."));rgb(c,.57,.47,.78);mono(c,48,210,24,tr("NO STOCK PARTS / 001"));s->plate_tex=ui_texture(im,0);cairo_destroy(c);cairo_surface_destroy(im);
+ rgb(c,.84,.86,.92);oblique_fit(c,45,134,67,700,tr("CUSTOM BUILT."));rgb(c,.57,.47,.78);mono_fit(c,48,210,24,700,tr("NO STOCK PARTS / 001"));s->plate_tex=ui_texture(im,0);cairo_destroy(c);cairo_surface_destroy(im);
 }
-static void make_hub(Server *s){cairo_surface_t *im=cairo_image_surface_create(CAIRO_FORMAT_ARGB32,400,400);cairo_t *c=cairo_create(im);rgb(c,.025,.033,.052);cairo_arc(c,200,200,195,0,2*PI);cairo_fill(c);rgb(c,.28,.34,.43);cairo_set_line_width(c,2);cairo_arc(c,200,200,178,0,2*PI);cairo_stroke(c);rgb(c,.81,.88,.93);cairo_select_font_face(c,ui_font_family(false),CAIRO_FONT_SLANT_OBLIQUE,CAIRO_FONT_WEIGHT_BOLD);cairo_set_font_size(c,110);cairo_move_to(c,100,233);cairo_show_text(c,"CD");rgb(c,.65,.42,.88);mono(c,99,292,19,tr("CUSTOM / 01"));s->hub_tex=ui_texture(im,0);cairo_destroy(c);cairo_surface_destroy(im);}
+static void make_hub(Server *s){cairo_surface_t *im=cairo_image_surface_create(CAIRO_FORMAT_ARGB32,400,400);cairo_t *c=cairo_create(im);rgb(c,.025,.033,.052);cairo_arc(c,200,200,195,0,2*PI);cairo_fill(c);rgb(c,.28,.34,.43);cairo_set_line_width(c,2);cairo_arc(c,200,200,178,0,2*PI);cairo_stroke(c);rgb(c,.81,.88,.93);cairo_select_font_face(c,ui_font_family(false),CAIRO_FONT_SLANT_OBLIQUE,CAIRO_FONT_WEIGHT_BOLD);cairo_set_font_size(c,110);cairo_move_to(c,100,233);cairo_show_text(c,"CD");rgb(c,.65,.42,.88);mono_fit(c,99,292,19,280,tr("CUSTOM / 01"));s->hub_tex=ui_texture(im,0);cairo_destroy(c);cairo_surface_destroy(im);}
 static void make_handles_button(Server *s){
  cairo_surface_t *im=cairo_image_surface_create(CAIRO_FORMAT_ARGB32,384,112);cairo_t *c=cairo_create(im);
  cairo_pattern_t *grad=cairo_pattern_create_linear(0,0,0,112);cairo_pattern_add_color_stop_rgb(grad,0,.052,.105,.132);cairo_pattern_add_color_stop_rgb(grad,1,.018,.043,.066);cairo_set_source(c,grad);cairo_paint(c);cairo_pattern_destroy(grad);
@@ -148,7 +186,7 @@ void ui_monitor_label(Server *s,int i){
   char whole[160];snprintf(whole,sizeof(whole),"%02d  /  %s",i+1,safe_name);
   mono_fit(c,54,48,25,730,whole);
  }
- rgb(c,.36,.49,.58);mono(c,790,47,17,active?tr("INPUT ACTIVE"):tr(monitor_mount_name(i)));
+ rgb(c,.36,.49,.58);mono_fit(c,790,47,17,320,active?tr("INPUT ACTIVE"):tr(monitor_mount_name(i)));
  if(hot){rgba(c,.65,.12,.22,.95);rounded(c,1128,9,62,58,12);cairo_fill(c);}
  rgb(c,hot?1:.50,hot?.82:.59,hot?.88:.67);cairo_set_line_width(c,hot?3:2);line(c,1150,30,1168,48);line(c,1168,30,1150,48);m->label=ui_texture(im,m->label);cairo_destroy(c);cairo_surface_destroy(im);
 }
@@ -158,13 +196,13 @@ static void hud(Server *s){
  cairo_pattern_t *shade=cairo_pattern_create_linear(0,0,0,150);cairo_pattern_add_color_stop_rgba(shade,0,.018,.023,.038,.92);cairo_pattern_add_color_stop_rgba(shade,1,.018,.023,.038,0);cairo_set_source(c,shade);cairo_rectangle(c,0,0,w,150);cairo_fill(c);cairo_pattern_destroy(shade);
  shade=cairo_pattern_create_linear(0,h-140,0,h);cairo_pattern_add_color_stop_rgba(shade,0,.012,.019,.029,0);cairo_pattern_add_color_stop_rgba(shade,1,.012,.019,.029,.95);cairo_set_source(c,shade);cairo_rectangle(c,0,h-140,w,140);cairo_fill(c);cairo_pattern_destroy(shade);
  rgb(c,.61,.40,.91);cairo_set_line_width(c,2);rounded(c,28,26,44,44,11);cairo_stroke(c);cairo_move_to(c,44,37);cairo_line_to(c,56,48);cairo_line_to(c,44,59);cairo_stroke(c);
- rgb(c,.93,.95,.97);cairo_select_font_face(c,ui_font_family(false),CAIRO_FONT_SLANT_OBLIQUE,CAIRO_FONT_WEIGHT_BOLD);cairo_set_font_size(c,26);cairo_move_to(c,87,49);cairo_show_text(c,"CHROMEDRIVE");rgb(c,.47,.54,.63);mono(c,89,70,10,tr("THE DESKTOP. REBUILT."));
+ rgb(c,.93,.95,.97);cairo_select_font_face(c,ui_font_family(false),CAIRO_FONT_SLANT_OBLIQUE,CAIRO_FONT_WEIGHT_BOLD);cairo_set_font_size(c,26);cairo_move_to(c,87,49);cairo_show_text(c,"CHROMEDRIVE");rgb(c,.47,.54,.63);mono_fit(c,89,70,10,300,tr("THE DESKTOP. REBUILT."));
  int count=0;for(int i=0;i<CD_APP_BAYS;i++)if(s->monitors[i].surface)count++;char b[128];
- if(w>1050){rgb(c,.33,.43,.53);mono(c,w/2-72,43,10,tr("CUSTOM BUILD / 001"));rgb(c,.79,.82,.88);mono(c,w/2-65,64,12,tr("MIDNIGHT EDITION"));}
- rgba(c,.075,.12,.14,.85);rounded(c,w-210,28,182,41,20);cairo_fill(c);rgb(c,.38,.88,.70);cairo_arc(c,w-189,49,3.5,0,2*PI);cairo_fill(c);mono(c,w-174,53,11,tr("NATIVE SESSION"));
+ if(w>1050){rgb(c,.33,.43,.53);mono_fit(c,w/2-72,43,10,190,tr("CUSTOM BUILD / 001"));rgb(c,.79,.82,.88);mono_fit(c,w/2-65,64,12,200,tr("MIDNIGHT EDITION"));}
+ rgba(c,.075,.12,.14,.85);rounded(c,w-210,28,182,41,20);cairo_fill(c);rgb(c,.38,.88,.70);cairo_arc(c,w-189,49,3.5,0,2*PI);cairo_fill(c);mono_fit(c,w-174,53,11,146,tr("NATIVE SESSION"));
  rgba(c,.39,.45,.56,.2);cairo_set_line_width(c,1);line(c,28,91,w-28,91);
  const char *view=s->camera_mode==VEHICLE_CAMERA_DRIVER?(s->camera_seat==VEHICLE_SEAT_DRIVER?tr("DRIVER SEAT  /  FIRST PERSON"):tr("PASSENGER SEAT  /  FIRST PERSON")):s->camera_mode==VEHICLE_CAMERA_CHASE?tr("EXTERIOR VIEW  /  CONCEPT SPLINE BODY"):tr("EV SYSTEMS  /  800 V CUTAWAY");
- rgb(c,.42,.49,.6);mono(c,29,116,10,view);snprintf(b,sizeof(b),tr("%02d CONNECTED  /  %02d BAYS"),count,CD_APP_BAYS);mono(c,w-237,116,10,b);
+ rgb(c,.42,.49,.6);mono_fit(c,29,116,10,lane(c,29,265),view);snprintf(b,sizeof(b),tr("%02d CONNECTED  /  %02d BAYS"),count,CD_APP_BAYS);mono_fit(c,w-237,116,10,210,b);
  const char *garage=city_garage_at(s->vehicle.position);
  CityChunk city_here=city_chunk_at(s->vehicle.position);
  if(garage)snprintf(b,sizeof(b),"%s",garage);
@@ -174,38 +212,68 @@ static void hud(Server *s){
   snprintf(b,sizeof(b),"HOME GARAGE CAMPUS / OFF-STREET COURT");
  else if(city_stream_chunk_is_core(city_here))snprintf(b,sizeof(b),"CHROMEDRIVE CORE / CITY STREETS");
  else snprintf(b,sizeof(b),"%s / %s",city_district_name(city_here.district),city_feature_name(city_here.feature));
- rgb(c,.38,.66,.72);mono(c,29,135,9,b);
- snprintf(b,sizeof(b),tr("FOV %.1f DEG"),s->fov);rgb(c,.38,.49,.60);mono(c,w-237,135,9,b);
- if(w>1050){snprintf(b,sizeof(b),tr("%3.0f%% PACK  /  %+6.1f KW"),100*s->vehicle.battery_kwh/VEHICLE_BATTERY_CAPACITY_KWH,s->vehicle.power_kw);mono(c,w/2-78,116,10,b);}
+ rgb(c,.38,.66,.72);mono_fit(c,29,135,9,lane(c,29,265),b);
+ snprintf(b,sizeof(b),tr("FOV %.1f DEG"),s->fov);rgb(c,.38,.49,.60);mono_fit(c,w-237,135,9,210,b);
+ if(w>1050){snprintf(b,sizeof(b),tr("%3.0f%% PACK  /  %+6.1f KW"),100*s->vehicle.battery_kwh/VEHICLE_BATTERY_CAPACITY_KWH,s->vehicle.power_kw);mono_fit(c,w/2-78,116,10,200,b);}
  /* The control hints are chrome, not fake app controls. The actual buttons are 3D. */
  if(w>=1100){int bx=w/2-438,by=h-66;rgba(c,.025,.038,.059,.88);rounded(c,bx,by,876,43,21);cairo_fill(c);rgba(c,.35,.43,.53,.30);rounded(c,bx,by,876,43,21);cairo_stroke(c);
-  if(s->arrange_mode){rgb(c,1,.70,.28);mono(c,bx+28,by+26,11,s->arrange_handles?tr("GIZMO: amber move | RGB axes/rings | white corners/edges resize | magenta scale"):tr("DRAG move | HANDLES/H gizmo | SHIFT-DRAG yaw/pitch | CTRL-DRAG roll | WHEEL scale"));}
+  if(s->arrange_mode){rgb(c,1,.70,.28);mono_fit(c,bx+28,by+26,11,820,s->arrange_handles?tr("GIZMO: amber move | RGB axes/rings | white corners/edges resize | magenta scale"):tr("DRAG move | HANDLES/H gizmo | SHIFT-DRAG yaw/pitch | CTRL-DRAG roll | WHEEL scale"));}
   else{
    const char *keys[]={"F7","WASD","META+O","META+A","META+H","F8","F9","F6","F1"};
    const char *labels[]={tr("Input"),tr("Drive"),tr("Doors"),tr("Auto"),tr("HUD"),tr("View"),tr("Seat"),tr("Arrange"),tr("Help")};
-   int widths[]={94,98,106,100,94,84,82,100,0};int x=bx+12;
-   for(int i=0;i<9;i++){int kw=strlen(keys[i])>5?48:strlen(keys[i])>3?34:25;rgb(c,.14,.19,.25);rounded(c,x,by+11,kw,21,4);cairo_fill(c);rgb(c,.80,.85,.91);mono(c,x+5,by+25,10,keys[i]);rgb(c,.60,.67,.74);text(c,x+kw+9,by+26,11,labels[i],false);x+=widths[i];}
+   /* The pill widths used to be a fixed {94,98,106,...} table sized around the
+    * English words, so every longer translation ran under the next key cap and
+    * had to be ellipsized ("Движен…"). The bar is baked, so measure the labels
+    * and size the pills around them; the nine key caps are fixed-width already.
+    * Only if the measured bar cannot fit the 876 px capsule do the labels get
+    * shrunk, and then all of them do, so the row stays even. */
+   int kw[9],tw[9],total=0;
+   for(int i=0;i<9;i++){
+    kw[i]=strlen(keys[i])>5?48:strlen(keys[i])>3?34:25;
+    tw[i]=(int)(cd_text_width(c,11,false,false,labels[i])+0.999);
+    total+=kw[i]+9+tw[i]+14;
+   }
+   const int avail=852;                    /* 876 minus 12 px each side */
+   double squeeze=total>avail?(double)(avail-9*14)/ (double)(total-9*14):1.0;
+   if(squeeze<0.85)squeeze=0.85;
+   int x=bx+12;
+   for(int i=0;i<9;i++){
+    int slot=kw[i]+9+(int)(tw[i]*squeeze)+14;
+    rgb(c,.14,.19,.25);rounded(c,x,by+11,kw[i],21,4);cairo_fill(c);
+    rgb(c,.80,.85,.91);mono(c,x+5,by+25,10,keys[i]);
+    rgb(c,.60,.67,.74);text_fit(c,x+kw[i]+9,by+26,11,slot-kw[i]-9-6,labels[i],false);
+    x+=slot;
+   }
   }
  }
  char mode[64];snprintf(mode,sizeof(mode),"%s",tr("ARRANGE MODE"));if(s->arrange_mode&&s->arrange_slot>=0)snprintf(mode,sizeof(mode),tr("ARRANGE MODE / CD-%02d"),s->arrange_slot+1);
  const char *seat_state=s->camera_mode==VEHICLE_CAMERA_SYSTEMS?tr("EV SKATEBOARD / NO WHEELS"):s->camera_mode==VEHICLE_CAMERA_CHASE?tr("SPLINE-BUILT ELECTRIC HOVER CAR"):s->steering_mode==VEHICLE_STEER_DRIVE?tr("HOVER DRIVE / F7 FOR CLIENTS"):tr("CLIENT INPUT / JOYSTICK WHEEL");
  char auto_state[128];if(s->vehicle.autopilot_enabled){char dest[92];i18n_utf8_truncate(dest,sizeof(dest),city_autopilot_destination(&s->vehicle),90);snprintf(auto_state,sizeof(auto_state),tr("AUTOPILOT / %s"),dest);seat_state=auto_state;}
  const char *state=s->arrange_mode?mode:s->focus_view&&s->camera_mode==VEHICLE_CAMERA_DRIVER?tr("FOCUS MODE"):seat_state;
- rgb(c,.75,.81,.87);text(c,29,h-47,12,state,true);rgb(c,.37,.45,.55);mono(c,29,h-26,9,"NATIVE WAYLAND / v" CD_VERSION);
+ rgb(c,.75,.81,.87);text_fit(c,29,h-47,12,lane(c,29,160),state,true);rgb(c,.37,.45,.55);mono(c,29,h-26,9,"NATIVE WAYLAND / v" CD_VERSION);
  rgb(c,.72,.78,.84);snprintf(b,sizeof(b),"%02.0f FPS",s->fps);mono(c,w-94,h-47,12,b);rgb(c,.39,.48,.56);mono(c,w-107,h-26,9,"OPENGL / SHM");
- if(s->notice_until>s->time){font(c,12,false,false);cairo_text_extents_t ex;cairo_text_extents(c,s->notice,&ex);float tw=ex.width+44;rgba(c,.035,.06,.08,.94);rounded(c,(w-tw)/2,h-115,tw,31,15);cairo_fill(c);rgb(c,.53,.90,.77);text(c,(w-ex.width)/2,h-94,12,s->notice,false);}
+ if(s->notice_until>s->time){
+  /* Fit first, then size the bubble around what will actually be drawn: a
+   * notice built from a translated sentence plus a dynamic tail used to grow
+   * past the window edge on both sides. */
+  char shown[512];double sc=cd_fit_measure(c,12,false,false,w-80,0.85,s->notice,shown,sizeof(shown));
+  double tw=cd_text_width(c,12*sc,false,false,shown)+44;if(tw>w-40)tw=w-40;
+  rgba(c,.035,.06,.08,.94);rounded(c,(w-tw)/2,h-115,tw,31,15);cairo_fill(c);rgb(c,.53,.90,.77);text_fit_c(c,w/2,h-94,12,w-80,shown,false);}
  if(s->middle_look){rgba(c,.38,.93,.77,.8);cairo_set_line_width(c,1);line(c,w/2-9,h/2,w/2+9,h/2);line(c,w/2,h/2-9,w/2,h/2+9);}
  s->hud_tex=ui_texture(im,s->hud_tex);cairo_destroy(c);cairo_surface_destroy(im);
 }
 static void help(Server *s){
  cairo_surface_t *im=cairo_image_surface_create(CAIRO_FORMAT_ARGB32,1000,720);cairo_t *c=cairo_create(im);rgba(c,.025,.038,.063,.98);rounded(c,1,1,998,718,25);cairo_fill(c);rgb(c,.25,.33,.43);cairo_set_line_width(c,2);rounded(c,1,1,998,718,25);cairo_stroke(c);
- rgb(c,.52,.90,.77);mono(c,58,63,15,tr("CHROMEDRIVE / DRIVER'S MANUAL"));rgb(c,.94,.95,.97);text(c,55,130,45,tr("Make yourself at home."),true);rgb(c,.47,.58,.69);text(c,58,176,18,tr("Real Wayland apps. One virtual monitor for every window."),false);
+ rgb(c,.52,.90,.77);mono_fit(c,58,63,15,lane(c,58,58),tr("CHROMEDRIVE / DRIVER'S MANUAL"));rgb(c,.94,.95,.97);text_fit(c,55,130,45,lane(c,55,58),tr("Make yourself at home."),true);rgb(c,.47,.58,.69);text_fit(c,58,176,18,lane(c,58,58),tr("Real Wayland apps. One virtual monitor for every window."),false);
  /* Physical key names (F7, META+O, META+H, WASD, META+SHIFT+Q) are not translated -
   * they are on the keyboard. The descriptive ones are chrome and do translate. */
  const char *keys[]={tr("MIDDLE + DRAG"),tr("CLICK / DRAG FRAME"),"META+O / META+A","F7 / META+SCROLLLOCK","WASD / SPACE",tr("DRAG WHEEL"),"F8 / F9 / F10","F2 / F3","F4 / F12","META+H","META+SHIFT+Q",tr("DASH COG")};
  const char *desc[]={tr("Look around from the selected seat"),tr("Focus a screen / drag its titlebar to move it"),tr("Doors / city autopilot; a drive key returns manual control"),tr("Toggle client/drive; Meta+ScrollLock grabs/releases app input"),tr("Accelerate, reverse, steer and regenerative brake"),tr("Steer in drive mode; joystick wheel in client mode"),tr("Change view / switch seat / recover the car"),tr("Selected seat / focus app or next spatial monitor"),tr("Change underglow / save a WebP screenshot"),tr("Show or hide the 2D HUD; the dash HUD button mirrors it"),tr("Quit immediately; red EXIT button needs a second press to confirm"),tr("Settings; Shift-click a tile for another instance")};
- for(int i=0;i<12;i++){int y=218+i*34;rgb(c,.69,.77,.88);mono(c,61,y,14,keys[i]);rgb(c,.54,.63,.73);text(c,294,y,14,desc[i],false);rgba(c,.26,.33,.43,.4);line(c,58,y+13,942,y+13);}
- rgb(c,.40,.49,.60);text(c,58,640,14,tr("Arrange: Tab next - HANDLES/H gizmo - drag transforms - R reset - right-click tile assigns app"),false);rgb(c,.50,.87,.73);mono(c,58,686,15,tr("F1 CLOSE    F6/ESC EXIT ARRANGE    CTRL+ALT+Q / META+SHIFT+Q EXIT"));s->help_tex=ui_texture(im,0);cairo_destroy(c);cairo_surface_destroy(im);
+ /* Two columns: key names on the left (some are translated - "MIDDLE + DRAG"),
+   * descriptions on the right. Both get their real budget, so a long translation
+   * wraps neither into the other column nor through the panel border. */
+ for(int i=0;i<12;i++){int y=218+i*34;rgb(c,.69,.77,.88);mono_fit(c,61,y,14,223,keys[i]);rgb(c,.54,.63,.73);text_fit(c,294,y,14,lane(c,294,58),desc[i],false);rgba(c,.26,.33,.43,.4);line(c,58,y+13,942,y+13);}
+ rgb(c,.40,.49,.60);text_fit(c,58,640,14,lane(c,58,58),tr("Arrange: Tab next - HANDLES/H gizmo - drag transforms - R reset - right-click tile assigns app"),false);rgb(c,.50,.87,.73);mono_fit(c,58,686,15,lane(c,58,58),tr("F1 CLOSE    F6/ESC EXIT ARRANGE    CTRL+ALT+Q / META+SHIFT+Q EXIT"));s->help_tex=ui_texture(im,0);cairo_destroy(c);cairo_surface_destroy(im);
 
 }
 static void make_leather(Server *s){
