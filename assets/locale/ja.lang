@@ -75,6 +75,7 @@ AUTOPILOT / %s = オートパイロット / %s
 Autopilot disengaged / vehicle braking = オートパイロット解除 / 車両ブレーキ中
 Autopilot engaged / doors closing, then city route = オートパイロット投入 / ドア閉鎖後、市街地ルートへ
 Autostart (--demo set) = 自動起動（--demo 指定）
+Binary file — preview unavailable.\n\n%s\n%lld bytes\n\nThis browser is intentionally read-only. = バイナリファイル — プレビューできません。\n\n%s\n%lld バイト\n\nこのブラウザは意図的に読み取り専用です。
 Bouncing balls = 弾むボール
 Buffer scale (HiDPI) = バッファスケール（HiDPI）
 built-in = 内蔵

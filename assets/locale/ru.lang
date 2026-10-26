@@ -73,6 +73,7 @@ AUTOPILOT / %s = АВТОПИЛОТ / %s
 Autopilot disengaged / vehicle braking = Автопилот выключен / машина тормозит
 Autopilot engaged / doors closing, then city route = Автопилот включён / двери закроются, затем маршрут по городу
 Autostart (--demo set) = Автозапуск (с --demo)
+Binary file — preview unavailable.\n\n%s\n%lld bytes\n\nThis browser is intentionally read-only. = Двоичный файл — просмотр недоступен.\n\n%s\n%lld байт\n\nЭтот браузер намеренно работает только для чтения.
 Bouncing balls = Прыгающие шары
 Buffer scale (HiDPI) = Масштаб буфера (HiDPI)
 built-in = встроенное

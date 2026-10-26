@@ -74,6 +74,7 @@ AUTOPILOT / %s = 自动驾驶 / %s
 Autopilot disengaged / vehicle braking = 自动驾驶已解除 / 车辆制动中
 Autopilot engaged / doors closing, then city route = 自动驾驶已接通 / 关门后驶入市区路线
 Autostart (--demo set) = 自启动（已设 --demo）
+Binary file — preview unavailable.\n\n%s\n%lld bytes\n\nThis browser is intentionally read-only. = 二进制文件 — 无法预览。\n\n%s\n%lld 字节\n\n此浏览器被有意设为只读。
 Bouncing balls = 弹跳小球
 Buffer scale (HiDPI) = 缓冲缩放（HiDPI）
 built-in = 内置
