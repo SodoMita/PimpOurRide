@@ -351,7 +351,34 @@ static void draw_hud_button(Server *s){
  }
  glEnable(GL_LIGHTING);glPopMatrix();
 }
+#define APP_SURFACE_Z0 .024f
+#define APP_SURFACE_ZSTEP .0007f
 typedef struct {float scale,w,h,z0,zstep;int layer;} DrawSurface;
+typedef struct {
+ Server *server;Surface *root,*only;Plane plane;Vec3 ray;DrawSurface draw;Hit best;
+} PickSurfaces;
+static void pick_app_surface(Surface *p,int sx,int sy,void *data){
+ PickSurfaces *pick=data;DrawSurface *d=&pick->draw;
+ /* server_each_surface() is also the renderer's traversal. Increment this
+  * layer for exactly the same mapped/textured surfaces, even when a grab
+  * restricts the hit result to one particular subsurface. */
+ float z=d->z0+d->zstep*d->layer++;
+ if(pick->only&&p!=pick->only)return;
+ Vec3 normal;plane_axes(pick->plane,NULL,NULL,&normal);
+ Plane rendered=pick->plane;rendered.center=vadd(rendered.center,vmul(normal,z));
+ float u,v,distance;
+ if(!plane_hit(rendered,pick->server->eye,pick->ray,&u,&v,&distance,false)||distance>=pick->best.distance)return;
+ /* The monitor stencil clips ordinary hover picking to this rectangle. An
+  * implicit pointer/touch grab deliberately keeps unbounded local coordinates
+  * on its original surface, matching the previous base-plane behaviour. */
+ if(!pick->only&&(u<0||u>1||v<0||v>1))return;
+ /* sx/sy are the exact root-local offsets used by draw_app_surface(). */
+ float x=(u-.5f)*pick->plane.width/d->scale+pick->root->width/2.f-sx;
+ float y=(v-.5f)*pick->plane.height/d->scale+pick->root->height/2.f-sy;
+ if(!pick->only&&!surface_input_at(p,x,y))return;
+ pick->best=(Hit){.kind=HIT_APP,.surface=p,.slot=pick->root->slot,.x=x,.y=y,.distance=distance,
+  .point=vadd(pick->server->eye,vmul(pick->ray,distance)),.normal=normal,.has_contact=true};
+}
 static void transformed_uv(int transform,float x,float y,float *u,float *v){float a=x,b=y;switch(transform&3){case 1:a=1-y;b=x;break;case 2:a=1-x;b=1-y;break;case 3:a=y;b=1-x;break;}if(transform>=4)a=1-a;*u=a;*v=b;}
 static void draw_app_surface(Surface *p,int sx,int sy,void *data){
  DrawSurface *d=data;float x=-d->w/2+sx*d->scale,y=d->h/2-sy*d->scale,w=p->width*d->scale,h=p->height*d->scale,z=d->z0+d->zstep*d->layer++;
@@ -361,6 +388,15 @@ static void draw_app_surface(Surface *p,int sx,int sy,void *data){
 static float monitor_iso_scale(Plane p,int slot){
  Plane base=monitor_plane(slot);float kx=p.width/base.width,ky=p.height/base.height;
  return sqrtf(fmaxf(kx*ky,.0001f));
+}
+static Hit pick_monitor_surfaces(Server *s,Monitor *m,Surface *only,Vec3 ray,Hit best){
+ Surface *root=m->surface;if(!root||root->width<=0||root->height<=0)return best;
+ Plane p=m->plane;float scale=fminf(p.width/root->width,p.height/root->height);if(scale<=0)return best;
+ float k=monitor_iso_scale(p,root->slot);
+ PickSurfaces pick={.server=s,.root=root,.only=only,.plane=p,.ray=ray,.best=best,
+  .draw={.scale=scale,.w=root->width*scale,.h=root->height*scale,.z0=APP_SURFACE_Z0*k,.zstep=APP_SURFACE_ZSTEP*k}};
+ server_each_surface(root,pick_app_surface,&pick);
+ return pick.best;
 }
 static void handles_button_rect(Plane p,float k,float *x,float *y,float *w,float *h){
  *w=.36f*k;*h=.105f*k;*x=p.width*.11f-*w*.5f;*y=p.height*.5f+.026f*k;
@@ -593,7 +629,7 @@ static void draw_monitor(Server *s,int i){
  /* scene_render() already cleared stencil once. A unique reference per
   * monitor avoids another full-frame clear for every overlapping app. */
  glEnable(GL_STENCIL_TEST);glStencilMask(0xff);glStencilFunc(GL_ALWAYS,i+1,0xff);glStencilOp(GL_KEEP,GL_KEEP,GL_REPLACE);glColorMask(GL_FALSE,GL_FALSE,GL_FALSE,GL_FALSE);glDepthMask(GL_FALSE);glDisable(GL_DEPTH_TEST);quad(-w/2,-h/2,w,h,.021*k);glEnable(GL_DEPTH_TEST);glColorMask(GL_TRUE,GL_TRUE,GL_TRUE,GL_TRUE);glDepthMask(GL_TRUE);glStencilFunc(GL_EQUAL,i+1,0xff);glStencilOp(GL_KEEP,GL_KEEP,GL_KEEP);glStencilMask(0);
- float scale=fminf(w/m->surface->width,h/m->surface->height);DrawSurface d={.scale=scale,.w=m->surface->width*scale,.h=m->surface->height*scale,.z0=.024*k,.zstep=.0007*k};server_each_surface(m->surface,draw_app_surface,&d);
+ float scale=fminf(w/m->surface->width,h/m->surface->height);DrawSurface d={.scale=scale,.w=m->surface->width*scale,.h=m->surface->height*scale,.z0=APP_SURFACE_Z0*k,.zstep=APP_SURFACE_ZSTEP*k};server_each_surface(m->surface,draw_app_surface,&d);
  glStencilMask(0xff);glDisable(GL_STENCIL_TEST);
  if(arranging){
   /* Amber frame + local RGB axes (right/up/normal) make the current
@@ -1097,6 +1133,28 @@ void scene_rtt_end(Server *s){
  }
  glBindFramebuffer(GL_FRAMEBUFFER,s->target_fbo);glViewport(0,0,s->width,s->height);
 }
+static void draw_surface_cursor(Server *s){
+ Hit hit=s->pointer_hit;
+ if(!hit.has_contact||s->camera_mode!=VEHICLE_CAMERA_DRIVER||s->height<=0)return;
+ /* Keep the 3D pointer legible without moving its contact: distance/FOV only
+  * determine its angular size. Vertex 0 remains the exact picked surface
+  * point, and the base extends along that surface's unit normal. */
+ float metres_per_pixel=2.f*hit.distance*tanf(s->fov*RAD*.5f)/s->height;
+ Vec3 vertices[4];if(!oriented_tetrahedron(hit.point,hit.normal,30.f*metres_per_pixel,9.f*metres_per_pixel,vertices))return;
+ static const int faces[4][3]={{0,1,2},{0,2,3},{0,3,1},{1,3,2}};
+ glPushAttrib(GL_ENABLE_BIT|GL_DEPTH_BUFFER_BIT|GL_COLOR_BUFFER_BIT|GL_LIGHTING_BIT|GL_CURRENT_BIT);
+ glDisable(GL_LIGHTING);glDisable(GL_TEXTURE_2D);glDisable(GL_CULL_FACE);
+ glEnable(GL_BLEND);glBlendFunc(GL_SRC_ALPHA,GL_ONE_MINUS_SRC_ALPHA);glDepthMask(GL_FALSE);glDepthFunc(GL_LEQUAL);glShadeModel(GL_SMOOTH);
+ glBegin(GL_TRIANGLES);
+ for(int i=0;i<4;i++)for(int j=0;j<3;j++){
+  int k=faces[i][j];Vec3 v=vertices[k];
+  /* Smooth interpolation makes the tip almost opaque and all three base
+   * corners fully transparent; the base face itself contributes no colour. */
+  if(k==0)glColor4f(.86f,.98f,1.f,.94f);else glColor4f(.12f,.58f,1.f,0.f);
+  glVertex3f(v.x,v.y,v.z);
+ }
+ glEnd();glPopAttrib();
+}
 void scene_render(Server *s){
  int rw=s->render_width>0?s->render_width:s->width,rh=s->render_height>0?s->render_height:s->height;
  glViewport(0,0,rw,rh);glClear(GL_COLOR_BUFFER_BIT|GL_DEPTH_BUFFER_BIT|GL_STENCIL_BUFFER_BIT);glEnable(GL_DEPTH_TEST);
@@ -1120,7 +1178,7 @@ void scene_render(Server *s){
  steering_wheel(s);
  vehicle_render(s,s->camera_mode==VEHICLE_CAMERA_SYSTEMS);
  if(driver)draw_windshield_hud(s);
- vehicle_render_glass(s);glPopMatrix();
+ vehicle_render_glass(s);draw_surface_cursor(s);glPopMatrix();
 }
 Hit scene_pick_surface(Server *s,Surface *surface,float x,float y){
  Hit best={.kind=HIT_NONE,.distance=1e9f};
@@ -1128,14 +1186,24 @@ Hit scene_pick_surface(Server *s,Surface *surface,float x,float y){
  Surface *root=surface_root(surface);
  if(!root||root->slot<0||root->slot>=CD_MAX_MONITORS||root->width<=0||root->height<=0)return best;
  SceneCamera camera=scene_camera(s);Vec3 ray=vehicle_world_direction(&s->vehicle,scene_camera_ray(s,camera,x,y));
- Plane p=s->monitors[root->slot].plane;float u,v,d;
- if(!plane_hit(p,s->eye,ray,&u,&v,&d,false))return best;
- float scale=fminf(p.width/root->width,p.height/root->height);
- if(scale<=0)return best;
- float sx=(u-.5f)*p.width/scale+root->width/2.f,sy=(v-.5f)*p.height/scale+root->height/2.f;
- Surface *child=surface;
- while(child&&child!=root){sx-=child->x;sy-=child->y;child=child->parent;}
- return (Hit){.kind=HIT_APP,.surface=surface,.slot=root->slot,.x=sx,.y=sy,.distance=d};
+ return pick_monitor_surfaces(s,&s->monitors[root->slot],surface,ray,best);
+}
+static Hit scene_hit_contact(Server *s,Hit hit,Vec3 ray){
+ if(hit.has_contact||hit.kind==HIT_NONE||hit.distance<=.01f)return hit;
+ Plane p;bool valid=true;
+ switch(hit.kind){
+ case HIT_APP:case HIT_CLOSE:case HIT_FRAME:case HIT_HANDLES_BUTTON:case HIT_ARRANGE_HANDLE:
+  if(hit.slot<0||hit.slot>=CD_MAX_MONITORS)return hit;p=s->monitors[hit.slot].plane;break;
+ case HIT_BUTTON:if(hit.button<0||hit.button>=6)return hit;p=s->buttons[hit.button].plane;break;
+ case HIT_COG:p=s->cog;break;
+ case HIT_QUIT:p=s->quit_button;break;
+ case HIT_HUD:p=s->hud_button;break;
+ case HIT_WHEEL:p=steering_plane();break;
+ default:valid=false;break;
+ }
+ if(!valid)return hit;
+ hit.point=vadd(s->eye,vmul(ray,hit.distance));plane_axes(p,NULL,NULL,&hit.normal);hit.has_contact=true;
+ return hit;
 }
 Hit scene_pick(Server *s,float x,float y,bool grab){
  Hit best={.kind=HIT_NONE,.distance=1e9f};
@@ -1158,23 +1226,28 @@ Hit scene_pick(Server *s,float x,float y,bool grab){
  if(s->camera_mode!=VEHICLE_CAMERA_DRIVER)return best;
  SceneCamera camera=scene_camera(s);Vec3 ray=vehicle_world_direction(&s->vehicle,scene_camera_ray(s,camera,x,y));float u,v,d;
  if(grab&&s->pointer_grab)return scene_pick_surface(s,s->pointer_grab,x,y);
- for(int i=0;i<CD_MAX_MONITORS;i++){Monitor *m=&s->monitors[i];if(!m->surface)continue;Plane p=m->plane;if(!plane_hit(p,s->eye,ray,&u,&v,&d,false)||d>=best.distance)continue;
-  float lx=(u-.5f)*p.width,ly=(.5f-v)*p.height,k=monitor_iso_scale(p,i);
-  if(i!=CD_CLUSTER_SLOT&&handles_button_at(p,k,lx,ly)){best=(Hit){.kind=HIT_HANDLES_BUTTON,.surface=m->surface,.slot=i,.x=lx,.y=ly,.distance=d};continue;}
-  if(i!=CD_CLUSTER_SLOT&&s->arrange_mode&&s->arrange_handles&&s->arrange_slot==i){
-   float zlx=0,zly=0,zd=0;bool z_hit=arrange_z_handle_hit(p,k,s->eye,ray,&zlx,&zly,&zd);
-   int handle=arrange_handle_at(p,k,lx,ly,z_hit,zlx,zly);
-   if(handle!=CD_HANDLE_NONE){best=(Hit){.kind=HIT_ARRANGE_HANDLE,.surface=m->surface,.slot=i,.handle=handle,.x=lx,.y=ly,.distance=handle==CD_HANDLE_AXIS_Z?zd:d};continue;}
+ for(int i=0;i<CD_MAX_MONITORS;i++){
+  Monitor *m=&s->monitors[i];if(!m->surface)continue;Plane p=m->plane;
+  /* Chrome retains its established priority. App surfaces are independently
+   * raycast on their actual rendered (normal-offset) planes below: using the
+   * base-plane UV here caused steep-angle parallax and incorrect client
+   * coordinates, especially for raised subsurface layers. */
+  if(plane_hit(p,s->eye,ray,&u,&v,&d,false)&&d<best.distance){
+   float lx=(u-.5f)*p.width,ly=(.5f-v)*p.height,k=monitor_iso_scale(p,i);
+   if(i!=CD_CLUSTER_SLOT&&handles_button_at(p,k,lx,ly)){best=(Hit){.kind=HIT_HANDLES_BUTTON,.surface=m->surface,.slot=i,.x=lx,.y=ly,.distance=d};continue;}
+   if(i!=CD_CLUSTER_SLOT&&s->arrange_mode&&s->arrange_handles&&s->arrange_slot==i){
+    float zlx=0,zly=0,zd=0;bool z_hit=arrange_z_handle_hit(p,k,s->eye,ray,&zlx,&zly,&zd);
+    int handle=arrange_handle_at(p,k,lx,ly,z_hit,zlx,zly);
+    if(handle!=CD_HANDLE_NONE){best=(Hit){.kind=HIT_ARRANGE_HANDLE,.surface=m->surface,.slot=i,.handle=handle,.x=lx,.y=ly,.distance=handle==CD_HANDLE_AXIS_Z?zd:d};continue;}
+   }
+   float close_x,close_y,close_w,close_h;plane_close_rect(p,&close_x,&close_y,&close_w,&close_h);
+   if(i!=CD_CLUSTER_SLOT&&fabsf(lx-close_x)<=close_w*.5f&&fabsf(ly-close_y)<=close_h*.5f){best=(Hit){.kind=HIT_CLOSE,.surface=m->surface,.slot=i,.distance=d};continue;}
+   if(u<0||u>1||v<0||v>1){
+    bool frame=i!=CD_CLUSTER_SLOT&&lx>=-(p.width*.5f+.07f*k)&&lx<=p.width*.5f+.07f*k&&ly>=-(p.height*.5f+.06f*k)&&ly<=p.height*.5f+.21f*k;
+    if(frame)best=(Hit){.kind=HIT_FRAME,.surface=m->surface,.slot=i,.x=lx,.y=ly,.distance=d};
+   }
   }
-  float close_x,close_y,close_w,close_h;plane_close_rect(p,&close_x,&close_y,&close_w,&close_h);
-  if(i!=CD_CLUSTER_SLOT&&fabsf(lx-close_x)<=close_w*.5f&&fabsf(ly-close_y)<=close_h*.5f){best=(Hit){.kind=HIT_CLOSE,.surface=m->surface,.slot=i,.distance=d};continue;}
-  if(u<0||u>1||v<0||v>1){
-   bool frame=i!=CD_CLUSTER_SLOT&&lx>=-(p.width*.5f+.07f*k)&&lx<=p.width*.5f+.07f*k&&ly>=-(p.height*.5f+.06f*k)&&ly<=p.height*.5f+.21f*k;
-   if(frame)best=(Hit){.kind=HIT_FRAME,.surface=m->surface,.slot=i,.x=lx,.y=ly,.distance=d};
-   continue;
-  }
-  float scale=fminf(p.width/m->surface->width,p.height/m->surface->height);float sx=(u-.5f)*p.width/scale+m->surface->width/2.f,sy=(v-.5f)*p.height/scale+m->surface->height/2.f,px,py;
-  Surface *surface=surface_at(m->surface,sx,sy,&px,&py);if(surface)best=(Hit){.kind=HIT_APP,.surface=surface,.slot=i,.x=px,.y=py,.distance=d};
+  best=pick_monitor_surfaces(s,m,NULL,ray,best);
  }
  for(int i=0;i<6;i++)if(plane_hit(s->buttons[i].plane,s->eye,ray,&u,&v,&d,true)&&d<best.distance)best=(Hit){.kind=HIT_BUTTON,.button=i,.distance=d};
  /* Cog: same pick plane as drawn, then a radial test so only the gear
@@ -1189,7 +1262,7 @@ Hit scene_pick(Server *s,float x,float y,bool grab){
   float dx=(u-.5f)*wheel.width,dy=(v-.5f)*wheel.height;
   if(dx*dx+dy*dy<=.50f*.50f)best=(Hit){.kind=HIT_WHEEL,.x=u,.y=v,.distance=d};
  }
- return best;
+ return scene_hit_contact(s,best,ray);
 }
 void scene_monitor_reset(Server *s,int slot){
  if(slot<0||slot>=CD_MAX_MONITORS)return;

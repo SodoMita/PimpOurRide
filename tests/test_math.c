@@ -164,5 +164,21 @@ int main(void){
    assert(near(hm.wrist.x,md.wrist.x)&&near(hm.wrist.y,md.wrist.y)&&near(hm.wrist.z,md.wrist.z));
   }
  }
- puts("PASS: output/mount transforms, Arrange resizing, close targets, FOV bounds, back-face rejection, and telescopic manipulator IK");return 0;
+ /* Surface cursor: the apex is the untouched contact, not a screen-space
+  * approximation. The regular base is normal-aligned and all three corners
+  * are equidistant from the axis even for a rolled/steep surface. */
+ Vec3 tip=v3(.31f,-.22f,.77f),cursor_axis=vnorm(v3(.3f,-.5f,.8f)),tet[4];
+ assert(oriented_tetrahedron(tip,vmul(cursor_axis,4.f),.32f,.09f,tet));
+ assert(tet[0].x==tip.x&&tet[0].y==tip.y&&tet[0].z==tip.z);
+ Vec3 base_centre=vmul(vadd(vadd(tet[1],tet[2]),tet[3]),1.f/3.f);
+ Vec3 expected_base=vadd(tip,vmul(cursor_axis,.32f));
+ assert(near(base_centre.x,expected_base.x)&&near(base_centre.y,expected_base.y)&&near(base_centre.z,expected_base.z));
+ for(int i=1;i<4;i++){
+  Vec3 rel=vsub(tet[i],tip);float along=vdot(rel,cursor_axis);
+  assert(near(along,.32f));
+  Vec3 radial=vsub(rel,vmul(cursor_axis,along));assert(near(sqrtf(vdot(radial,radial)),.09f));
+ }
+ assert(!oriented_tetrahedron(tip,v3(0,0,0),.32f,.09f,tet));
+ assert(!oriented_tetrahedron(tip,cursor_axis,0,.09f,tet));
+ puts("PASS: output/mount transforms, Arrange resizing, close targets, FOV bounds, back-face rejection, normal-aligned cursor tetrahedron, and telescopic manipulator IK");return 0;
 }

@@ -1031,7 +1031,7 @@ int main(int argc,char **argv){
   telemetry_update(&s);scene_update_mounts(&s);
   static bool collision_seen;if(s.vehicle.collision&&!collision_seen)app_notice(&s,tr("Hover bumper absorbed a garage wall contact"));collision_seen=s.vehicle.collision;
   float blend=1.f-expf(-(float)s.dt*12.f);s.yaw+=(s.target_yaw-s.yaw)*blend;s.pitch+=(s.target_pitch-s.pitch)*blend;s.fov+=(s.target_fov-s.fov)*blend;
-  Hit hover=scene_pick(&s,s.mouse_x,s.mouse_y,false);s.hover_button=hover.kind==HIT_BUTTON?hover.button:-1;s.hover_close=hover.kind==HIT_CLOSE?hover.slot:-1;s.cog_hover=hover.kind==HIT_COG;s.quit_hover=hover.kind==HIT_QUIT;s.hud_hover=hover.kind==HIT_HUD;s.wheel_hover=hover.kind==HIT_WHEEL;
+  Hit hover=scene_pick(&s,s.mouse_x,s.mouse_y,false);s.pointer_hit=hover;s.hover_button=hover.kind==HIT_BUTTON?hover.button:-1;s.hover_close=hover.kind==HIT_CLOSE?hover.slot:-1;s.cog_hover=hover.kind==HIT_COG;s.quit_hover=hover.kind==HIT_QUIT;s.hud_hover=hover.kind==HIT_HUD;s.wheel_hover=hover.kind==HIT_WHEEL;
   s.cog_angle+=((s.time<s.cog_spin_until)?540.f:s.cog_hover?160.f:20.f)*(float)s.dt;if(s.cog_angle>=360.f)s.cog_angle-=360.f;
   /* One thread owns the current GL context for the entire frame: UI texture
    * regeneration, vehicle/cockpit geometry, and Wayland surface textures are

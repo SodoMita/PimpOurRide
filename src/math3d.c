@@ -10,6 +10,18 @@ Vec3 vmul(Vec3 a,float k){return v3(a.x*k,a.y*k,a.z*k);}
 float vdot(Vec3 a,Vec3 b){return a.x*b.x+a.y*b.y+a.z*b.z;}
 Vec3 vcross(Vec3 a,Vec3 b){return v3(a.y*b.z-a.z*b.y,a.z*b.x-a.x*b.z,a.x*b.y-a.y*b.x);}
 Vec3 vnorm(Vec3 v){float n=sqrtf(vdot(v,v));return n>1e-9f?vmul(v,1.f/n):v3(0,0,0);}
+bool oriented_tetrahedron(Vec3 tip,Vec3 normal,float length,float radius,Vec3 out[4]){
+ if(!out||length<=0||radius<=0)return false;
+ Vec3 n=vnorm(normal);if(vdot(n,n)<.999f)return false;
+ Vec3 ref=fabsf(n.y)<.9f?v3(0,1,0):v3(1,0,0);
+ Vec3 right=vnorm(vcross(ref,n)),up=vcross(n,right),base=vadd(tip,vmul(n,length));
+ out[0]=tip;
+ for(int i=0;i<3;i++){
+  float a=(90.f+120.f*i)*RAD;
+  out[i+1]=vadd(base,vmul(vadd(vmul(right,cosf(a)),vmul(up,sinf(a))),radius));
+ }
+ return true;
+}
 Vec3 rotate_y(Vec3 v,float deg){float c=cosf(deg*RAD),s=sinf(deg*RAD);return v3(c*v.x+s*v.z,v.y,-s*v.x+c*v.z);}
 Vec3 rotate_x(Vec3 v,float deg){float c=cosf(deg*RAD),s=sinf(deg*RAD);return v3(v.x,c*v.y-s*v.z,s*v.y+c*v.z);}
 Vec3 rotate_z(Vec3 v,float deg){float c=cosf(deg*RAD),s=sinf(deg*RAD);return v3(c*v.x-s*v.y,s*v.x+c*v.y,v.z);}

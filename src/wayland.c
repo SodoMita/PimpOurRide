@@ -556,7 +556,11 @@ static void bind_data(struct wl_client *c,void *data,uint32_t v,uint32_t id){str
 
 static void each_surface_recursive(Surface *p,int x,int y,int depth,void (*fn)(Surface*,int,int,void*),void *data){if(depth>32)return;if(p->mapped&&p->texture)fn(p,x,y,data);Surface *child;wl_list_for_each(child,&p->server->surfaces,link)if(child->parent==p&&child->mapped)each_surface_recursive(child,x+child->x,y+child->y,depth+1,fn,data);}
 void server_each_surface(Surface *root,void (*fn)(Surface*,int,int,void*),void *data){if(root)each_surface_recursive(root,0,0,0,fn,data);}
-static Surface *surface_at_rec(Surface *root,float x,float y,float *sx,float *sy,int depth){if(depth>32)return NULL;Surface *child;wl_list_for_each_reverse(child,&root->server->surfaces,link)if(child->parent==root&&child->mapped){Surface *hit=surface_at_rec(child,x-child->x,y-child->y,sx,sy,depth+1);if(hit)return hit;}if(root->mapped&&x>=0&&y>=0&&x<root->width&&y<root->height&&(!root->input_region||cairo_region_contains_point(root->input_region,(int)x,(int)y))){*sx=x;*sy=y;return root;}return NULL;}
+bool surface_input_at(Surface *p,float x,float y){
+ return p&&p->mapped&&x>=0&&y>=0&&x<p->width&&y<p->height&&
+  (!p->input_region||cairo_region_contains_point(p->input_region,(int)x,(int)y));
+}
+static Surface *surface_at_rec(Surface *root,float x,float y,float *sx,float *sy,int depth){if(depth>32)return NULL;Surface *child;wl_list_for_each_reverse(child,&root->server->surfaces,link)if(child->parent==root&&child->mapped){Surface *hit=surface_at_rec(child,x-child->x,y-child->y,sx,sy,depth+1);if(hit)return hit;}if(surface_input_at(root,x,y)){*sx=x;*sy=y;return root;}return NULL;}
 Surface *surface_at(Surface *root,float x,float y,float *sx,float *sy){return root?surface_at_rec(root,x,y,sx,sy,0):NULL;}
 void server_frame_done(Server *s,uint32_t time){
  /* main calls this after scene_render + backend present/readback, then flushes

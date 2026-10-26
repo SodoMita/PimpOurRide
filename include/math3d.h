@@ -13,6 +13,10 @@ Vec3 vmul(Vec3 a,float k);
 float vdot(Vec3 a,Vec3 b);
 Vec3 vcross(Vec3 a,Vec3 b);
 Vec3 vnorm(Vec3 v);
+/* Vertex 0 is the exact contact tip. Vertices 1..3 form a regular base
+ * centred length units along the unit surface normal. Returns false for a
+ * degenerate normal or non-positive dimensions rather than emitting NaNs. */
+bool oriented_tetrahedron(Vec3 tip,Vec3 normal,float length,float radius,Vec3 out[4]);
 Vec3 rotate_y(Vec3 v,float deg);
 Vec3 rotate_x(Vec3 v,float deg);
 Vec3 rotate_z(Vec3 v,float deg);
