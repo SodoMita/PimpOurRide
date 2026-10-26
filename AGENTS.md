@@ -120,13 +120,53 @@ The rule is the same shape as the PNG ban: there is exactly one right way.
   set. A third-party client's `xdg_toplevel` title belongs to that app — the
   compositor must never translate it.
 - **Font coverage is a real constraint, not a detail.** The text path is
-  cairo's toy API with DejaVu, which has no CJK/Arabic/Indic/Thai coverage and
-  does *no* per-glyph fallback (measured: CJK ink in DejaVu is byte-identical
-  to a bogus family name). See "Scripts and font coverage" in
-  `docs/configuration.md` before adding a catalog for a new script.
+  cairo's toy API, which does *no* per-glyph fallback (measured: CJK ink in
+  DejaVu is byte-identical to a bogus family name). See "Scripts and font
+  coverage" in `docs/configuration.md` before adding a catalog for a new
+  script.
+- **A non-European catalog names its family** with `@font` / `@monofont` in the
+  catalog header, and the family is applied at draw time (`i18n_font()`), so a
+  language switch takes effect without a restart. Never hardcode a family name
+  in a new drawing path - go through `cd_font()` / `ui_font_family()` or the
+  new path will paint tofu in CJK.
+- **A catalog that cannot draw its own text must be refused, not rendered.**
+  The startup probe in `src/fontprobe.c` compares ink against an unassigned
+  code point and falls back to English with a loud log line. Any new drawing
+  program must call it after loading the catalog and *before* baking textures.
+  Its sample comes from the catalog's values (`i18n_sample_glyphs()`), so do
+  not add a second hardcoded sample table.
+- **Arabic, Hebrew, Indic and Thai are not shippable on this text path.**
+  No shaping, no bidi: the result is disconnected letterforms in the wrong
+  order. That needs Pango, not a catalog.
 - Bake-time, not frame-time: textures with text in them are built once. If
   you add a new baked-with-text texture, add it to `ui_refresh_text()` in
   `src/ui.c` or it will keep the old language until restart.
+- **Baked chrome text is fitted, never drawn bare.** In `src/ui.c` and
+  `src/city_scene.c`, every translated label goes through `text_fit()`,
+  `mono_fit()`, `text_fit_c()` or `oblique_fit()` (shrink to 0.85, then
+  ellipsize, never clip) with a real budget: `lane(c, x, margin)` when the label
+  ends its line, or an explicit slot width when a column follows. Text drawn
+  with a bare `cairo_show_text()` at a fixed size is how "Раскладка" became
+  "Движен…" in the hint bar. Sizes are chosen so English fits at 100% - a shrink
+  in English means the slot is wrong, not the translation.
+- **Never name a font family in a drawing path.** `i18n_font_family(mono)`
+  (called by `ui_font_family()` and `cd_font()`) is the single source, so a
+  catalog's `@font` is honoured everywhere; a hardcoded `"DejaVu Sans"` is how a
+  translated CJK screen renders as tofu.
+- **Adding an English label means adding it to every catalog in the same
+  commit.** `make test` now fails on both sides of that: *drift* (a catalog key
+  that no longer appears verbatim in `src/`/`clients/`, so a reworded label
+  cannot silently orphan its translations) and *parity* (a catalog whose key
+  set differs from `assets/locale/ru.lang`, the reference set). A language the
+  menu offers must not be half English; if a string genuinely stays English,
+  list it with the English text as its value.
+- **Prove it by drawing, not by grepping.** `tr("...")` call sites cannot see a
+  label that arrives from a table (`tr(d->label)` in the settings GUI), and
+  that is exactly how a whole column stayed English in four catalogs at once.
+  `CHROMEDRIVE_TEXT_AUDIT=1` makes `tr()` report every prose string it could
+  not translate; `make check-text` runs it over every language, over the
+  clients *and* the compositor, and fails on anything not declared in
+  `assets/locale/untranslated.allow`.
 - `make test` runs `tests/test_i18n.c`, which fails if a shipped catalog key
   no longer appears verbatim in the sources. Rewording an English string
   means updating `assets/locale/ru.lang` in the same commit. It also runs

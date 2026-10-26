@@ -569,7 +569,8 @@ side, and reload — no build step, no extraction tool, no code change.
 
 ## Scripts and font coverage
 
-English and Russian work today. Anything beyond that needs one thing checked
+English, Russian, Chinese, Japanese and Korean ship today as
+`assets/locale/{ru,zh,ja,ko}.lang`. Anything beyond that needs one thing checked
 first, because it fails silently and looks like a rendering bug rather than a
 missing dependency.
 
@@ -586,19 +587,66 @@ while `Noto Sans CJK SC` gives 5.774%. So a CJK catalog loaded today renders a
 screen of empty boxes, not Chinese. Evidence:
 `evidence/cjk-font-fallback-probe.webp`.
 
-Therefore, before shipping any non-European catalog:
+Two mechanisms turn that measurement into a working CJK catalog. Both exist:
 
-1. **CJK needs an explicit family.** The intended fix is a catalog header
-   directive — `@font = Noto Sans CJK SC` (`@monofont = Noto Sans Mono CJK
-   SC`) — read at load and passed to `cairo_select_font_face` instead of the
-   hardcoded DejaVu names. One family per catalog is sufficient, and Noto Sans
-   CJK carries Latin and digits too, so mixed chrome still renders. That
-   directive does **not** exist yet; a CJK `.lang` file will render as tofu
-   until it does.
-2. **Add a startup probe.** Render one representative codepoint from the
-   catalog and compare it against a known-missing one; if they match, log
-   loudly and stay on English. Silent tofu across an entire HUD is the worst
-   possible failure mode, and this is cheap to prevent.
+1. **A catalog names its family.** `@font = Noto Sans CJK SC` (and
+   `@monofont = Noto Sans Mono CJK SC`) in the catalog header are read by
+   `src/i18n.c` and handed to every `cairo_select_font_face` call, at draw time
+   so a language switch applies immediately. `i18n_font()` / `i18n_monofont()`
+   return `NULL` when a catalog asks for nothing, and the built-in DejaVu names
+   are kept. One family per catalog is enough; Noto Sans CJK also carries Latin
+   and digits, so mixed chrome still renders.
+2. **A startup probe refuses a catalog it cannot draw.** `src/fontprobe.c`
+   renders each sampled code point into a 64×64 A8 surface and compares the
+   bytes with the same rendering of an unassigned private-use code point
+   (U+F8FF). Identical pixels means both became the same .notdef box — the
+   family has no glyph — so the catalog is refused, the offender is reported as
+   `U+XXXX` plus UTF-8 bytes, and the UI falls back to English before anything
+   is baked. The whole block is skipped for English, and a failure is not
+   retried on every config reload (it is retried when the requested language
+   changes, so picking the language again after installing the font works).
+
+The samples come from the loaded catalog's **values**, in first-appearance
+order (`i18n_sample_glyphs()`), so the probe tests the strings that will
+actually be drawn instead of a hardcoded table that can drift from them.
+
+Result, measured on this tree:
+
+```
+$ CHROMEDRIVE_LANG=zh ./bin/chromedrive-demo files --screenshot /tmp/zh.webp
+[font] zh: 12 sample glyphs covered by 'Noto Sans CJK SC'
+
+$ # same catalog with @font = No Such Family 12345
+[font] WARNING: catalog 'zh' cannot be rendered
+[font]   12 sample glyph(s) missing from family 'No Such Family 12345'
+[font]   first missing code point: U+6587 (UTF-8: E6 96 87)
+[font]   falling back to English; install a font that covers this catalog or fix its @font directive
+```
+
+`tests/test_fontprobe.c` covers both directions (a family without the glyph is
+reported uncovered, one with it is covered, the catalog's directive — not the
+caller's default — decides, and English never probes). Its CJK assertions are
+**skipped and counted**, not silently passed, when Noto Sans CJK is not
+installed on the machine.
+
+A catalog also has to be **complete**, and that is a test, not a convention.
+The language menu lists every `.lang` under `assets/locale`, so a catalog with
+gaps is a language a user can select and then read half in English; counting
+`tr()` call sites says nothing about that. `tests/test_i18n.c` therefore holds
+two guards that run as part of `make test`:
+
+- **drift** — every key in every catalog must still appear verbatim in `src/`
+  or `clients/`. Using English text as the lookup key means a reworded label
+  silently orphans its translations, and it shows up as a stale key in each
+  catalog that still carries it.
+- **parity** — every catalog must define the same key set as `ru.lang`, the
+  reference set. A new English label must be added everywhere in the same
+  patch; a key whose translation genuinely is the English text stays listed
+  with the English text as its value, because explicit beats absent.
+
+Both guards skip cleanly (rather than failing) when the test binary runs
+outside a checkout.
+
 3. **Do not ship Arabic, Hebrew, Indic or Thai catalogs yet.** The toy API does
    no contextual shaping and no bidi: Arabic would render as isolated,
    disconnected letterforms in the wrong visual order — unreadable, and worse
@@ -606,8 +654,9 @@ Therefore, before shipping any non-European catalog:
    needs a real shaping engine (Pango) before those scripts are honest to
    claim. Document any limitation explicitly rather than shipping a catalog
    that looks broken.
-4. **CJK does not need shaping**, so a CJK catalog plus the `@font` directive is
-   genuinely sufficient — no Pango required.
+4. **CJK does not need shaping**, so a CJK catalog plus `@font` and the probe is
+   genuinely sufficient — no Pango required. `assets/locale/zh.lang`,
+   `ja.lang` and `ko.lang` ship on that basis.
 
 ### Fixed slots: shrink, then ellipsize, never clip
 
@@ -648,6 +697,43 @@ designed for.
 The settings GUI sizes its tab pills from the label *as drawn*
 (`cd_fit_measure`), so a longer translation shrinks inside its own pill instead
 of pushing the row under the Reset button.
+
+**The compositor's own chrome now uses the same policy.** `src/ui.c` used to
+draw its baked labels with `cairo_show_text()` at a fixed size: the HUD's
+control-hint bar sized its pills around the English words (`{94,98,106,…}`), so
+Russian "Раскладка" was cut to "Движен…" under the next key cap, and the
+windshield's centred mode line could run into the speed or pack group. Every
+baked text call in `src/ui.c` and the drive-through bay signs in
+`src/city_scene.c` now go through the same shrink-then-ellipsize helpers
+(`text_fit`, `mono_fit`, `text_fit_c`, `oblique_fit`), with one rule for each
+slot:
+
+- a label that is the last thing on its line asks `lane(c, x, margin)` for the
+  width from `x` to the surface edge — the honest budget, and it follows the
+  window size (`hud()` bakes at `s->width` × `s->height`);
+- a label with a column beside it passes that slot's width explicitly;
+- the hint bar *measures* its nine labels and sizes the pills around them,
+  instead of assuming English word lengths; only if the measured bar cannot fit
+  the capsule do the labels shrink, and then all of them shrink together.
+
+The bay signs are the one place a size was chosen from measurement rather than
+guessed: at 58 px the longest English bay name measured 1073 px inside a
+1024 px plate, i.e. the old code drew 49 px of it outside the sign. They bake at
+52 px, where every English name fits at 100%, so a shrink there always means a
+translation outgrew the sign.
+
+**One place defines the default family.** `i18n_font_family(mono)` in
+`src/i18n.c` returns the catalog's `@font`/`@monofont` when it named one and the
+built-in DejaVu default otherwise; `ui_font_family()` and `cd_font()` both
+delegate to it. `src/city_scene.c` used to spell `"DejaVu Sans"` itself, which
+would have painted every bay sign as tofu in a CJK session. A drawing path that
+names a family directly is a bug, not a style choice.
+
+`i18n_utf8_truncate()` additionally refuses a size above `PTRDIFF_MAX`: call
+sites compute budgets (`cap - used`) and an `int` that goes negative converts to
+a huge `size_t`, which the copy loop would believe. `i18n_utf8_truncate_n()`
+takes a signed budget for the same reason, and `tests/test_i18n.c` covers both
+directions.
 
 Two related rules are enforced in code and in `AGENTS.md`:
 

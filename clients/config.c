@@ -40,6 +40,7 @@
  */
 #define _GNU_SOURCE
 #include "cdconfig.h"
+#include "fontprobe.h"
 #include "i18n.h"
 #include "math3d.h"
 #include "textfit_cairo.h"
@@ -2211,6 +2212,25 @@ static bool gui_init(Gui *g, const char *config_dir) {
              (lang_env && *lang_env) ? lang_env
                                      : cd_config_get_string(g->store[FILE_CD], "ui", "language", "auto"));
     i18n_set_language(g->root, g->language_applied);
+    /* Probe before gui_load_languages()/the first render. If the catalog's
+     * @font cannot draw its own values, fall back to English now so no tofu
+     * is ever baked into a tab. The requested tag stays in language_applied
+     * so gui_sync_language() does not immediately re-arm the bad catalog. */
+    if (strcmp(i18n_language(), "en") != 0) {
+        const char *family = i18n_font();
+        if (!family) family = "DejaVu Sans";
+        char first_bad[8] = "";
+        int missing = cd_font_probe_catalog("DejaVu Sans", first_bad, sizeof first_bad);
+        if (missing > 0) {
+            cd_font_report_missing(i18n_language(), family, missing, first_bad);
+            i18n_set_language(g->root, "en");
+        } else {
+            char samples[12][8];
+            int n = i18n_sample_glyphs(samples, 12);
+            fprintf(stderr, "[font] %s: %d sample glyphs covered by '%s'\n",
+                    i18n_language(), n, family);
+        }
+    }
     gui_load_languages(g);
     /* Translated text into a fixed buffer: snprintf would cut at a byte count
      * and can leave a half-written code point, which makes cairo drop every

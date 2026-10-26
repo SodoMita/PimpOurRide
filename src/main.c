@@ -1,6 +1,7 @@
 #include "chrome.h"
 #include "cdconfig.h"
 #include "fbdev_pixfmt.h"
+#include "fontprobe.h"
 #include "i18n.h"
 #include "input_wait.h"
 #include <errno.h>
@@ -130,12 +131,40 @@ static const char *language_want(void){
  const char *env=getenv("CHROMEDRIVE_LANG");
  return (env&&*env)?env:language_request;
 }
+/* Language whose catalog failed the glyph probe, so the UI is running on
+ * English instead. apply_language() runs from more than one place at startup,
+ * and without this every call re-loaded the broken catalog, re-probed it and
+ * printed the warning block again (observed: three copies in one launch). The
+ * request is retried only when it changes, which is also what makes "fix the
+ * font, then pick the language again" work. */
+static char language_failed[32]="";
 static void apply_language(Server *s,bool startup){
- const char *now=i18n_set_language(s->root,language_want());
+ const char *want=language_want();
+ if(language_failed[0]&&!strcmp(want,language_failed))return;
+ const char *now=i18n_set_language(s->root,want);
  if(!strcmp(now,language_live))return;
+ /* Probe immediately after the catalog swap and before anything is baked.
+  * On startup this runs from main() before ui_init(); on a hot switch it runs
+  * here before ui_refresh_text() below, so a catalog that cannot draw its own
+  * text never leaves a tofu texture behind. English does no probe work. */
+ if(strcmp(now,"en")!=0){
+  const char *family=i18n_font();if(!family)family="DejaVu Sans";
+  char first_bad[8]="";
+  int missing=cd_font_probe_catalog("DejaVu Sans",first_bad,sizeof(first_bad));
+  if(missing>0){
+   cd_font_report_missing(now,family,missing,first_bad);
+   snprintf(language_failed,sizeof(language_failed),"%s",now);
+   now=i18n_set_language(s->root,"en");
+  }else{
+   char samples[12][8];int n=i18n_sample_glyphs(samples,12);
+   fprintf(stderr,"[font] %s: %d sample glyphs covered by '%s'\n",now,n,family);
+  }
+ }
  snprintf(language_live,sizeof(language_live),"%s",now);
  fprintf(stderr,"[i18n] language %s, catalog %s\n",now,*i18n_catalog_path()?i18n_catalog_path():"built-in English");
- /* At startup ui_init() has not run yet, so there is nothing baked to redo. */
+ /* At startup ui_init() has not run yet, so there is nothing baked to redo.
+  * After a fallback this deliberately re-bakes in English, not in the catalog
+  * that just failed. */
  if(!startup&&s->buttons[0].texture)ui_refresh_text(s);
 }
 static void apply_config(Server *s,const CdConfig *cfg,bool startup,const char **socket_out){

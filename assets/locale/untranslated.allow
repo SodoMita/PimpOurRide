@@ -1,0 +1,12 @@
+# Strings that stay in English in every catalog, on purpose.
+#
+# One per line; "#" starts a comment. A line matches a reported string when it
+# is identical to it or a prefix, so "Camera" would also cover "Camera mode".
+# tools/check-client-overflow.sh fails on any untranslated *prose* that is not
+# listed here, because the catalogs are meant to be complete rather than
+# mostly complete. Keep this list short and justify each line.
+#
+# OpenGL sampling keywords: these are the values the driver expects, not text.
+linear_mipmap_linear
+# cairo's own version banner, which the settings About row prints verbatim.
+ImageMagick

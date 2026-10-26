@@ -1,8 +1,8 @@
 # Русский каталог интерфейса ChromeDrive.
 #
 # Ключ — ТОЧНО исходная английская строка из кода (см. include/i18n.h).
-# Переводы необязательны: чего здесь нет, остаётся на английском, поэтому
-# файл можно переводить постепенно.
+# Каждый ключ должен быть здесь: каталог без ключа оставляет интерфейс на
+# английском, а `make test` сверяет набор ключей с assets/locale/ru.lang.
 #
 #     ключ = перевод
 #
@@ -40,6 +40,7 @@
 05 / COLOR = 05 / ЦВЕТ
 06 / HOME = 06 / ДОМ
 3d = 3D
+3D render scale (HUD stays native) = Масштаб 3D-рендера (HUD нативный)
 800 V DRIVE / REGEN = 800 В ПРИВОД / РЕКУПЕРАЦИЯ
 82 KWH PACK = БАТАРЕЯ 82 КВТ·Ч
 Accelerate, reverse, steer and regenerative brake = Газ, задний ход, поворот и рекуперация
@@ -72,6 +73,7 @@ AUTOPILOT / %s = АВТОПИЛОТ / %s
 Autopilot disengaged / vehicle braking = Автопилот выключен / машина тормозит
 Autopilot engaged / doors closing, then city route = Автопилот включён / двери закроются, затем маршрут по городу
 Autostart (--demo set) = Автозапуск (с --demo)
+Binary file — preview unavailable.\n\n%s\n%lld bytes\n\nThis browser is intentionally read-only. = Двоичный файл — просмотр недоступен.\n\n%s\n%lld байт\n\nЭтот браузер намеренно работает только для чтения.
 Bouncing balls = Прыгающие шары
 Buffer scale (HiDPI) = Масштаб буфера (HiDPI)
 built-in = встроенное
@@ -193,6 +195,8 @@ HOVER %.2f M  /  MOTOR %.0f C = ВЫСОТА %.2f М  /  МОТОР %.0f °C
 Hover bumper absorbed a garage wall contact = Бампер ховера поглотил удар о стену гаража
 HOVER DRIVE = РЕЖИМ ВОЖДЕНИЯ
 HOVER DRIVE / F7 FOR CLIENTS = ВОЖДЕНИЕ / F7 — ВВОД КЛИЕНТАМ
+HUD = HUD
+HUD on - Meta+H or the dash HUD button hides it = HUD включён — Meta+H или кнопка HUD на панели скроет его
 HUD overlay = Оверлей HUD
 ICE BLUE = ЛЕДЯНОЙ СИНИЙ
 Ice Blue = Ледяной синий
@@ -265,7 +269,7 @@ Physics = Физика
 Physics enabled = Физика включена
 Post FX: Hermite downscale = Пост-эффект: понижение Hermite
 Post FX: Hermite downscale (mipmap) = Пост-эффект: понижение Hermite (мипмап)
-Post FX: Khronos PBR Neutral tone map = Пост-эффект: тонмаппинг Khronos PBR Neutral
+Post FX: Khronos PBR Neutral tone map = Пост-эффект: тонмап Khronos PBR Neutral
 Post FX: SSIM downscale = Пост-эффект: понижение SSIM
 Prompt = Приглашение
 Quit immediately; red EXIT button needs a second press to confirm = Немедленный выход; красная кнопка EXIT требует повторного нажатия
@@ -275,6 +279,9 @@ REAL FILES / NATIVE SHM = РЕАЛЬНЫЕ ФАЙЛЫ / NATIVE SHM
 Real Wayland apps. One virtual monitor for every window. = Настоящие приложения Wayland. Свой виртуальный монитор для каждого окна.
 REAR DECK / FIXED = ЗАДНЯЯ ПАЛУБА / ФИКС.
 REGEN BRAKE = РЕКУПЕРАЦИЯ
+Render downscale sampling = Фильтрация при уменьшении
+Render to texture = Рендер в текстуру
+Render upscale sampling = Фильтрация при увеличении
 Reset selected entry to defaults = Сбросить выбранную запись
 Reset tab to defaults = Сбросить вкладку
 RESTART = ПЕРЕЗАПУСК
@@ -298,6 +305,7 @@ Settings loaded = Настройки загружены
 Settings; Shift-click a tile for another instance = Настройки; Shift+клик по плитке — ещё один экземпляр
 SHELL = ОБОЛОЧКА
 Shell command. %root% expands to the ChromeDrive install directory. = Команда оболочки. %root% разворачивается в каталог установки ChromeDrive.
+Show or hide the 2D HUD; the dash HUD button mirrors it = Показать или скрыть 2D HUD; кнопка HUD на панели дублирует его
 SPLINE-BUILT ELECTRIC HOVER CAR = ЭЛЕКТРОХОВЕР НА СПЛАЙНАХ
 Start fullscreen = Запуск во весь экран
 Start fullscreen (windowed) = Запуск во весь экран (окно)

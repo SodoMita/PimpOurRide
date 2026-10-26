@@ -5,6 +5,7 @@
 #define _GNU_SOURCE
 #include <wayland-client.h>
 #include "xdg-shell-client.h"
+#include "fontprobe.h"
 #include "i18n.h"
 #include "textfit_cairo.h"
 #include "telemetry.h"
@@ -73,7 +74,7 @@ static void read_dir(App *a){a->file_count=0;a->scroll=0;a->scroll_axis=0;a->pre
 }
 static void go_up(App *a){if(a->preview_open){a->preview_open=false;a->dirty=true;return;}char *slash=strrchr(a->directory,'/');if(slash&&slash!=a->directory)*slash=0;else strcpy(a->directory,"/");read_dir(a);}
 static void open_file(App *a,int index){if(index<0||index>=a->file_count)return;FileEntry *e=&a->files[index];char path[4352];snprintf(path,sizeof(path),"%s/%s",a->directory,e->name);if(e->directory){char resolved[4096];if(realpath(path,resolved)){snprintf(a->directory,sizeof(a->directory),"%s",resolved);read_dir(a);}return;}
- snprintf(a->preview_name,sizeof(a->preview_name),"%s",e->name);FILE *f=fopen(path,"rb");if(!f){cd_utf8_printf(a->preview,sizeof(a->preview),tr("Cannot read: %s"),strerror(errno));}else{size_t n=fread(a->preview,1,sizeof(a->preview)-1,f);a->preview[n]=0;fclose(f);bool binary=false;for(size_t i=0;i<n;i++)if(a->preview[i]==0){binary=true;break;}if(binary)snprintf(a->preview,sizeof(a->preview),"Binary file — preview unavailable.\n\n%s\n%lld bytes\n\nThis browser is intentionally read-only.",e->name,(long long)e->size);else for(size_t i=0;i<n;i++)if((unsigned char)a->preview[i]>=128)a->preview[i]='?';}
+ snprintf(a->preview_name,sizeof(a->preview_name),"%s",e->name);FILE *f=fopen(path,"rb");if(!f){cd_utf8_printf(a->preview,sizeof(a->preview),tr("Cannot read: %s"),strerror(errno));}else{size_t n=fread(a->preview,1,sizeof(a->preview)-1,f);a->preview[n]=0;fclose(f);bool binary=false;for(size_t i=0;i<n;i++)if(a->preview[i]==0){binary=true;break;}if(binary)cd_utf8_printf(a->preview,sizeof(a->preview),tr("Binary file — preview unavailable.\n\n%s\n%lld bytes\n\nThis browser is intentionally read-only."),e->name,(long long)e->size);else for(size_t i=0;i<n;i++)if((unsigned char)a->preview[i]>=128)a->preview[i]='?';}
  a->preview_open=true;a->dirty=true;
 }
 static void files_draw(App *a,cairo_t *c){
@@ -249,8 +250,25 @@ int main(int argc,char **argv){
                      "               (no Wayland connection, so text-fitting checks\n"
                      "               do not depend on a compositor)\n",argv[0]);return 2;}
  /* Catalogs live in <root>/assets/locale; a demo client is launched from the
-  * cockpit, so it must speak the same language the compositor does. */
- {char root[4096];if(i18n_root_from_exe(root,sizeof(root))){const char *want=getenv("CHROMEDRIVE_LANG");i18n_init(root,want&&*want?want:"auto");}}
+  * cockpit, so it must speak the same language the compositor does. Probe the
+  * catalog before the first offscreen/drawn frame: a family that does not
+  * cover its own text falls back to English instead of painting tofu. */
+ {char root[4096];if(i18n_root_from_exe(root,sizeof(root))){
+  const char *want=getenv("CHROMEDRIVE_LANG");
+  const char *lang=i18n_init(root,want&&*want?want:"auto");
+  if(strcmp(lang,"en")!=0){
+   const char *family=i18n_font();if(!family)family="DejaVu Sans";
+   char first_bad[8]="";
+   int missing=cd_font_probe_catalog("DejaVu Sans",first_bad,sizeof(first_bad));
+   if(missing>0){
+    cd_font_report_missing(lang,family,missing,first_bad);
+    i18n_set_language(root,"en");
+   }else{
+    char samples[12][8];int n=i18n_sample_glyphs(samples,12);
+    fprintf(stderr,"[font] %s: %d sample glyphs covered by '%s'\n",lang,n,family);
+   }
+  }
+ }}
  /* Offscreen render: no Wayland connection, no compositor, no mount angle.
   * Used by tools/check-client-overflow.sh to verify the text fitting. */
  for(int i=2;i<argc;i++)if(!strcmp(argv[i],"--screenshot")&&i+1<argc){

@@ -7,7 +7,7 @@ LDLIBS = $(shell pkg-config --libs $(PKGS)) -lm -pthread
 PROTO_DIR := $(shell pkg-config --variable=pkgdatadir wayland-protocols)
 GEN = .generated
 BIN = bin
-SOURCES = src/main.c src/wayland.c src/scene.c src/city_scene.c src/vehicle.c src/city.c src/city_stream.c src/vehicle_scene.c src/vehicle_seat.c src/keymap.c src/wheel_input.c src/ui.c src/math3d.c src/telemetry.c src/dmabuf.c src/cdconfig.c src/i18n.c src/frame_pacing.c src/input_wait.c src/backend_sdl.c src/backend_headless.c src/backend_egl.c src/backend_vnc.c src/backend_fbdev.c src/backend_drm.c src/backend_vt.c src/backend_evdev.c src/evdev_queue.c src/evdev_util.c src/fbdev_pixfmt.c
+SOURCES = src/main.c src/wayland.c src/scene.c src/city_scene.c src/vehicle.c src/city.c src/city_stream.c src/vehicle_scene.c src/vehicle_seat.c src/keymap.c src/wheel_input.c src/ui.c src/math3d.c src/telemetry.c src/dmabuf.c src/cdconfig.c src/i18n.c src/fontprobe.c src/textfit.c src/textfit_cairo.c src/frame_pacing.c src/input_wait.c src/backend_sdl.c src/backend_headless.c src/backend_egl.c src/backend_vnc.c src/backend_fbdev.c src/backend_drm.c src/backend_vt.c src/backend_evdev.c src/evdev_queue.c src/evdev_util.c src/fbdev_pixfmt.c
 PROTOCOLS = $(GEN)/xdg-shell-protocol.c $(GEN)/xdg-decoration-protocol.c $(GEN)/linux-dmabuf-protocol.c
 HEADERS = $(GEN)/xdg-shell-server.h $(GEN)/xdg-decoration-server.h $(GEN)/linux-dmabuf-server.h
 .PHONY: all clean test check-text sanitize garage3d garage3d-test garage3d-clean
@@ -30,19 +30,19 @@ $(GEN)/linux-dmabuf-protocol.c: | $(GEN)
 	wayland-scanner private-code $(PROTO_DIR)/stable/linux-dmabuf/linux-dmabuf-v1.xml $@
 $(GEN)/linux-dmabuf-client.h: | $(GEN)
 	wayland-scanner client-header $(PROTO_DIR)/stable/linux-dmabuf/linux-dmabuf-v1.xml $@
-$(BIN)/chromedrive: $(SOURCES) include/chrome.h include/math3d.h include/vehicle.h include/city.h include/vehicle_seat.h include/wheel_input.h include/telemetry.h include/cdconfig.h include/i18n.h include/fbdev_pixfmt.h include/input_wait.h $(HEADERS) $(PROTOCOLS) | $(BIN)
+$(BIN)/chromedrive: $(SOURCES) include/chrome.h include/textfit.h include/textfit_cairo.h include/math3d.h include/vehicle.h include/city.h include/vehicle_seat.h include/wheel_input.h include/telemetry.h include/cdconfig.h include/i18n.h include/fbdev_pixfmt.h include/input_wait.h include/fontprobe.h $(HEADERS) $(PROTOCOLS) | $(BIN)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(SOURCES) $(PROTOCOLS) -o $@ $(LDLIBS)
 # Both cairo clients share the text-fitting policy in src/textfit.c (pure) +
 # src/textfit_cairo.c (drawing), so a fixed-width slot can never spill or clip.
-FITTEXT = src/textfit.c src/textfit_cairo.c include/textfit.h include/textfit_cairo.h
+FITTEXT = src/textfit.c src/textfit_cairo.c src/fontprobe.c include/textfit.h include/textfit_cairo.h include/fontprobe.h
 $(BIN)/chromedrive-demo: clients/demo.c src/i18n.c src/wheel_input.c $(FITTEXT) include/telemetry.h include/i18n.h include/wheel_input.h $(GEN)/xdg-shell-client.h $(GEN)/xdg-shell-protocol.c | $(BIN)
-	$(CC) -Iinclude -I$(GEN) $(CFLAGS) $(shell pkg-config --cflags wayland-client cairo xkbcommon libwebp) clients/demo.c src/i18n.c src/wheel_input.c src/textfit.c src/textfit_cairo.c $(GEN)/xdg-shell-protocol.c -o $@ $(shell pkg-config --libs wayland-client cairo xkbcommon libwebp) -lm
+	$(CC) -Iinclude -I$(GEN) $(CFLAGS) $(shell pkg-config --cflags wayland-client cairo xkbcommon libwebp) clients/demo.c src/i18n.c src/wheel_input.c src/textfit.c src/textfit_cairo.c src/fontprobe.c $(GEN)/xdg-shell-protocol.c -o $@ $(shell pkg-config --libs wayland-client cairo xkbcommon libwebp) -lm
 # Settings GUI (launch-menu editor + all config): wl_shm/cairo client like
 # the demo, linking the same INI store the compositor reads. No new deps
 # beyond what the compositor already needs (libwebp included), so it is
 # part of `all`.
 $(BIN)/chromedrive-config: clients/config.c src/cdconfig.c src/i18n.c $(FITTEXT) include/cdconfig.h include/i18n.h $(GEN)/xdg-shell-client.h $(GEN)/xdg-shell-protocol.c | $(BIN)
-	$(CC) -Iinclude -I$(GEN) $(CFLAGS) $(shell pkg-config --cflags wayland-client cairo xkbcommon libwebp) clients/config.c src/cdconfig.c src/i18n.c src/textfit.c src/textfit_cairo.c $(GEN)/xdg-shell-protocol.c -o $@ $(shell pkg-config --libs wayland-client cairo xkbcommon libwebp) -lm
+	$(CC) -Iinclude -I$(GEN) $(CFLAGS) $(shell pkg-config --cflags wayland-client cairo xkbcommon libwebp) clients/config.c src/cdconfig.c src/i18n.c src/textfit.c src/textfit_cairo.c src/fontprobe.c $(GEN)/xdg-shell-protocol.c -o $@ $(shell pkg-config --libs wayland-client cairo xkbcommon libwebp) -lm
 $(BIN)/test-math: tests/test_math.c src/math3d.c include/math3d.h | $(BIN)
 	$(CC) -Iinclude $(CFLAGS) tests/test_math.c src/math3d.c -o $@ -lm
 $(BIN)/test-cursor: tests/test_cursor.c src/scene.c src/wayland.c src/vehicle.c src/math3d.c include/chrome.h include/math3d.h | $(BIN)
@@ -88,9 +88,13 @@ $(BIN)/test-input-wait: tests/test_input_wait.c src/input_wait.c include/input_w
 	$(CC) -Iinclude $(CFLAGS) tests/test_input_wait.c src/input_wait.c -o $@ -pthread
 $(BIN)/test-client-input-lock: tests/test_client_input_lock.c src/main.c src/math3d.c include/chrome.h include/math3d.h | $(BIN)
 	$(CC) $(CPPFLAGS) $(CFLAGS) -ffunction-sections -fdata-sections tests/test_client_input_lock.c src/math3d.c -o $@ -Wl,--gc-sections $(shell pkg-config --libs sdl2) -lm
+# The coverage probe talks to cairo and to the translator; it renders, so it
+# needs the same cairo flags the clients use.
+$(BIN)/test-fontprobe: tests/test_fontprobe.c src/fontprobe.c src/i18n.c include/fontprobe.h include/i18n.h | $(BIN)
+	$(CC) -Iinclude $(CFLAGS) $(shell pkg-config --cflags cairo) tests/test_fontprobe.c src/fontprobe.c src/i18n.c -o $@ $(shell pkg-config --libs cairo)
 $(BIN)/test-vt: tests/test_vt.c src/backend_vt.c include/chrome.h | $(BIN)
 	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_vt.c src/backend_vt.c -o $@ -Wl,--wrap=open,--wrap=ioctl,--wrap=close,--wrap=clock_gettime
-test: $(BIN)/test-math $(BIN)/test-cursor $(BIN)/test-config $(BIN)/test-vehicle $(BIN)/test-city $(BIN)/test-telemetry $(BIN)/test-keymap $(BIN)/test-wheel-input $(BIN)/test-fbdev $(BIN)/test-i18n $(BIN)/test-textfit $(BIN)/test-drm $(BIN)/test-evdev $(BIN)/test-frame-pacing $(BIN)/test-input-wait $(BIN)/test-client-input-lock $(BIN)/test-vt $(BIN)/chromedrive-config
+test: all $(BIN)/test-math $(BIN)/test-cursor $(BIN)/test-config $(BIN)/test-vehicle $(BIN)/test-city $(BIN)/test-telemetry $(BIN)/test-keymap $(BIN)/test-wheel-input $(BIN)/test-fbdev $(BIN)/test-i18n $(BIN)/test-textfit $(BIN)/test-fontprobe $(BIN)/test-drm $(BIN)/test-evdev $(BIN)/test-frame-pacing $(BIN)/test-input-wait $(BIN)/test-client-input-lock $(BIN)/test-vt $(BIN)/chromedrive-config
 	./$(BIN)/test-math
 	./$(BIN)/test-cursor
 	./$(BIN)/test-config
@@ -102,6 +106,7 @@ test: $(BIN)/test-math $(BIN)/test-cursor $(BIN)/test-config $(BIN)/test-vehicle
 	./$(BIN)/test-fbdev
 	./$(BIN)/test-i18n
 	./$(BIN)/test-textfit
+	./$(BIN)/test-fontprobe
 	./$(BIN)/test-drm
 	./$(BIN)/test-evdev
 	./$(BIN)/test-frame-pacing

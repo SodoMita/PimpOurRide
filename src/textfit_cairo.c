@@ -1,6 +1,8 @@
 /* Cairo glue for textfit. See include/textfit_cairo.h. */
 #include "textfit_cairo.h"
 #include "textfit.h"
+#include "fontprobe.h"
+#include "i18n.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -22,8 +24,12 @@ static double measure(void *ctx, const char *s, double scale) {
 }
 void cd_font(cairo_t *c, double size, bool bold, bool mono) {
     if (size < 1.0) size = 1.0; /* cairo_rejects non-positive sizes */
-    cairo_select_font_face(c, mono ? "DejaVu Sans Mono" : "DejaVu Sans",
-                           CAIRO_FONT_SLANT_NORMAL,
+    /* Resolve every call, not once at startup, so a live language switch picks
+     * up the new catalog's @font/@monofont immediately. NULL means the
+     * catalog asks for nothing and the built-in default stays. */
+    const char *family = mono ? i18n_monofont() : i18n_font();
+    if (!family) family = mono ? "DejaVu Sans Mono" : "DejaVu Sans";
+    cairo_select_font_face(c, family, CAIRO_FONT_SLANT_NORMAL,
                            bold ? CAIRO_FONT_WEIGHT_BOLD : CAIRO_FONT_WEIGHT_NORMAL);
     cairo_set_font_size(c, size);
 }
