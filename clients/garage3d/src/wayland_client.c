@@ -634,10 +634,10 @@ static const struct wl_registry_listener registry_listener = {
 static void frame_done(void *data, struct wl_callback *callback, uint32_t time_ms) {
     WlClient *c = data;
     /* The callback object is single-shot: destroy it in the handler, always.
-     * Its arrival means the compositor has presented (or is about to
-     * present) our last buffer and is ready for the next one - this flag is
-     * the entire 60 fps throttle. If the window is occluded many compositors
-     * withhold frame callbacks, and the client simply sleeps in poll(). */
+     * Its arrival means the compositor sampled our last buffer and offers
+     * render credit for the next one; it is not a physical-scanout timestamp.
+     * This flag is the frame throttle. If the window is occluded many
+     * compositors withhold callbacks, and the client simply sleeps in poll(). */
     if (callback) wl_callback_destroy(callback);
     if (c->frame_callback == callback) c->frame_callback = NULL;
     c->last_frame_time_ms = time_ms;
@@ -828,9 +828,10 @@ static bool init_egl(WlClient *c) {
         return false;
     }
     /* Swap interval 1 (don't outrun presentation) *plus* frame callbacks:
-     * the interval alone would throttle inside the driver with an extra
-     * buffer of latency; frame callbacks tell us the exact presented moment.
-     * Using both is the standard Mesa/Wayland recommendation. */
+     * the interval alone can throttle inside the driver with an extra buffer
+     * of latency; callbacks supply compositor render credit, not a guarantee
+     * that physical scanout has completed. Using both is the usual Mesa/
+     * Wayland backpressure pattern. */
     eglSwapInterval(c->egl_display, 1);
     if (c->scale > 1 && wl_surface_get_version(c->surface) >= 3)
         wl_surface_set_buffer_scale(c->surface, c->scale);

@@ -386,7 +386,7 @@ fbdev_pan = true           # use FBIOPAN_DISPLAY only if yres_virtual has >=2 pa
 fbdev_vnc_mirror = false   # opt-in loopback-only RFB mirror/control for fbdev (restart; file-only)
 fbdev_evdev = true         # enable asynchronous local evdev input for fbdev and DRM (restart; file-only)
 fbdev_grab_input = false   # grab evdev devices (restart; file-only; DRM needs managed VT or downgrades; fbdev warns)
-fbdev_input_devices =      # comma/whitespace-separated explicit device paths (max 8); replaces auto-enumeration (restart; file-only)
+fbdev_input_devices =      # comma/whitespace-separated explicit device paths (max 32); replaces auto-enumeration (restart; file-only)
 vnc_port = 5900       # headless VNC or fbdev mirror, 1..65535; GUI typed field 1024..65535 (restart)
 demo = false          # launch autostart apps (restart)
 socket =              # Wayland socket name, empty = automatic (restart; file-only)
@@ -414,7 +414,10 @@ with no valid previous mode is disabled instead. A missing device, active KMS ma
 unavailable output is a fatal backend-init error—there is no implicit fbdev
 fallback. Use `--drm [DEVICE]`, `--drm-device PATH`, or `--drm-mode WxH` on the
 command line. Actual scanout requires KMS hardware and appropriate seat/udev
-access.
+access. Presentation queues at most one page flip and never waits for scanout
+in the normal frame loop; a pending flip skips that output present while
+Wayland clients continue on the compositor FPS clock. Bounded flip drains are
+retained for VT release and shutdown so GBM/KMS buffer lifetime stays safe.
 
 When started on a controlling Linux VT, DRM uses `VT_PROCESS` plus a main-thread
 `signalfd` handshake. **Ctrl+Alt+F1…F12** from the physical evdev keyboard asks
@@ -452,8 +455,11 @@ unmanaged, so this retains a VT/console lockout warning there; DRM instead uses
 the managed lifecycle above or downgrades the grab when no controlling VT is
 available. `fbdev_input_devices`
 accepts a comma/whitespace-separated list of explicit `/dev/input/event*` paths
-(max 8); when set it replaces auto-enumeration of `/dev/input/event*`.
-Enumeration is startup-only; no hotplug rescans. Non-direct multitouch devices
+(max 32); when set it replaces auto-enumeration of `/dev/input/event*`.
+Auto-enumeration examines every event node until 32 usable devices are open;
+unreadable/unsupported nodes do not consume slots, so earlier mice cannot hide
+a later keyboard merely by directory order. Hybrid pointer/keyboard devices
+retain both routes. Enumeration is startup-only; no hotplug rescans. Non-direct multitouch devices
 (touchpads) are treated as pointer-only; raw touchpad motion is not translated
 to `wl_touch`. `wl_touch` is advertised only when a direct-touch device is
 present at startup. Without `fbdev_vnc_mirror` and no evdev devices opened,

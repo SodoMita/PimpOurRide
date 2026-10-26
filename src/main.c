@@ -169,7 +169,10 @@ static void apply_config(Server *s,const CdConfig *cfg,bool startup,const char *
     if(copy){
      char *tok=strtok(copy," ,\t\n");
      s->fbdev_input_device_count=0;
-     while(tok && s->fbdev_input_device_count<8){
+     while(tok){
+      if(s->fbdev_input_device_count>=EVDEV_MAX_DEVICES){
+       fprintf(stderr,"[config] too many input devices (max %d); ignoring %s\n",EVDEV_MAX_DEVICES,tok);break;
+      }
       snprintf(s->fbdev_input_devices[s->fbdev_input_device_count],sizeof(s->fbdev_input_devices[0]),"%s",tok);
       s->fbdev_input_device_count++;
       tok=strtok(NULL," ,\t\n");
@@ -800,8 +803,8 @@ static PresentResult backend_present(Server *s){
  case CD_BACKEND_FBDEV:backend_fbdev_present(s);break;
  case CD_BACKEND_DRM:result=backend_drm_present(s);break;
  }
- /* A VT-aware page-flip wait returns before handling the signal, avoiding
-  * recursive release from inside the wait. Service it before frame_done. */
+ /* VT-aware DRM polls return before handling the signal, avoiding recursive
+  * release from inside event handling. Service it before frame_done. */
  backend_vt_service(s);return result;
 }
 static void backend_shutdown(Server *s){
@@ -812,7 +815,7 @@ static void backend_shutdown(Server *s){
  case CD_BACKEND_DRM:backend_drm_shutdown(s);break;
  }
 }
-static void usage(const char *name){printf("ChromeDrive " CD_VERSION " \xe2\x80\x94 native, first-person Wayland cockpit\n\nUsage: %s [options]\n  --demo                Start the configured autostart Wayland clients\n  --socket NAME         Wayland socket (default: automatic)\n  --exec COMMAND        Launch an extra Wayland client (repeatable)\n  --size WIDTHxHEIGHT   Framebuffer/host window size (default 1600x1000)\n  --fps N               Frame cap, 1..120 (default 60)\n  --backend MODE        headless (default) | windowed | fbdev | drm\n  --headless            Alias for --backend headless: surfaceless EGL + built-in VNC\n  --windowed            Alias for --backend windowed: SDL2/GLX dev window on X\n  --fbdev [DEVICE]      Direct Linux framebuffer output (default /dev/fb0)\n  --fbdev-device PATH   Framebuffer device for --backend fbdev\n  --drm [DEVICE]        Direct DRM/KMS + GBM/EGL output (default /dev/dri/card0)\n  --drm-device PATH     KMS card device for --backend drm\n  --drm-mode WxH        Require an exact KMS mode; default current or preferred\n  --evdev / --no-evdev  Enable/disable local input for fbdev and DRM\n  --grab-input          EVIOCGRAB local devices (DRM needs managed VT or downgrades)\n  --input-device PATH   Restrict local input (repeatable, max 8)\n  --fbdev-modeset       Select fbdev backend and request modeset to configured render size\n  --fbdev-mode WxH[@BPP] Select fbdev backend, imply modeset, set size/BPP (BPP in 16,24,32)\n  --no-fbdev-vsync      Do not wait for FBIO_WAITFORVSYNC\n  --no-fbdev-pan        Do not use FBIOPAN_DISPLAY double buffering\n  --fbdev-vnc-mirror    Loopback-only RFB input/output companion for fbdev\n  --vnc-mirror          Alias for --fbdev-vnc-mirror\n  --fbdev-evdev         Enable local evdev input for direct backends (default: on)\n  --no-fbdev-evdev      Disable local evdev input for direct backends\n  --fbdev-grab-input    Grab evdev devices (fbdev VT lockout warning; DRM managed VT)\n  --fbdev-input-device PATH Restrict evdev to explicit device (repeatable, max 8)\n  --vnc-port N          VNC port for headless or the fbdev mirror (default 5900)\n  --fullscreen          --windowed only: start fullscreen, F11 to leave\n  --exit-after SECONDS   Useful for automated checks\n  --screenshot PATH     Capture a WebP after 3 seconds\n  --config PATH         Config file (default: ~/.config/chromedrive/chromedrive.conf)\n  --no-config           Ignore the config file entirely\n  --help                Show this help\n\nfbdev adopts the current kernel framebuffer mode by default (no modesetting);\nwith --fbdev-modeset or --fbdev-mode it requests a modeset via FBIOPUT_VSCREENINFO.\nThe original mode is restored on exit. Local evdev input (keyboard/mouse/touchscreen)\nis enabled by default for fbdev and DRM; use --no-evdev to disable. Explicit devices\nvia --input-device replace auto-enumeration. Startup-only enumeration; no hotplug.\nDRM/KMS uses direct GBM/EGL scanout with page-flip events (no readback blit).\nIt retains the current mode or chooses the preferred one; --drm-mode requires an exact mode.\nOn a controlling Linux VT, physical Ctrl+Alt+F1..F12 releases input/DRM master and resumes on return.\nWithout a managed VT, DRM downgrades input grabbing; fbdev VT switching remains unmanaged.\nLocal evdev is shared by fbdev and DRM, with monotonic kernel timestamps and a bounded async queue.\n\nF1 help | F2 selected seat | F3 focus/next | F4 neon | F6 arrange | Meta+H HUD | Meta+O doors\nF7 client/drive input | F8 driver/exterior/systems | F9 switch seat | F10 recover car\nMeta+Shift+Q quit | red dash EXIT button: press twice\nF5 is unbound for browser/client restart or reload\nDrive: WASD/arrows + Space + drag wheel\nMiddle-drag/VNC-drag to look | Drag a titlebar to move | HANDLES shows the Arrange gizmo\nArrange: Tab next window, Esc/F6 exit | Ctrl+Alt+Enter new terminal\n",name);}
+static void usage(const char *name){printf("ChromeDrive " CD_VERSION " \xe2\x80\x94 native, first-person Wayland cockpit\n\nUsage: %s [options]\n  --demo                Start the configured autostart Wayland clients\n  --socket NAME         Wayland socket (default: automatic)\n  --exec COMMAND        Launch an extra Wayland client (repeatable)\n  --size WIDTHxHEIGHT   Framebuffer/host window size (default 1600x1000)\n  --fps N               Frame cap, 1..120 (default 60)\n  --backend MODE        headless (default) | windowed | fbdev | drm\n  --headless            Alias for --backend headless: surfaceless EGL + built-in VNC\n  --windowed            Alias for --backend windowed: SDL2/GLX dev window on X\n  --fbdev [DEVICE]      Direct Linux framebuffer output (default /dev/fb0)\n  --fbdev-device PATH   Framebuffer device for --backend fbdev\n  --drm [DEVICE]        Direct DRM/KMS + GBM/EGL output (default /dev/dri/card0)\n  --drm-device PATH     KMS card device for --backend drm\n  --drm-mode WxH        Require an exact KMS mode; default current or preferred\n  --evdev / --no-evdev  Enable/disable local input for fbdev and DRM\n  --grab-input          EVIOCGRAB local devices (DRM needs managed VT or downgrades)\n  --input-device PATH   Restrict local input (repeatable, max 32)\n  --fbdev-modeset       Select fbdev backend and request modeset to configured render size\n  --fbdev-mode WxH[@BPP] Select fbdev backend, imply modeset, set size/BPP (BPP in 16,24,32)\n  --no-fbdev-vsync      Do not wait for FBIO_WAITFORVSYNC\n  --no-fbdev-pan        Do not use FBIOPAN_DISPLAY double buffering\n  --fbdev-vnc-mirror    Loopback-only RFB input/output companion for fbdev\n  --vnc-mirror          Alias for --fbdev-vnc-mirror\n  --fbdev-evdev         Enable local evdev input for direct backends (default: on)\n  --no-fbdev-evdev      Disable local evdev input for direct backends\n  --fbdev-grab-input    Grab evdev devices (fbdev VT lockout warning; DRM managed VT)\n  --fbdev-input-device PATH Restrict evdev to explicit device (repeatable, max 32)\n  --vnc-port N          VNC port for headless or the fbdev mirror (default 5900)\n  --fullscreen          --windowed only: start fullscreen, F11 to leave\n  --exit-after SECONDS   Useful for automated checks\n  --screenshot PATH     Capture a WebP after 3 seconds\n  --config PATH         Config file (default: ~/.config/chromedrive/chromedrive.conf)\n  --no-config           Ignore the config file entirely\n  --help                Show this help\n\nfbdev adopts the current kernel framebuffer mode by default (no modesetting);\nwith --fbdev-modeset or --fbdev-mode it requests a modeset via FBIOPUT_VSCREENINFO.\nThe original mode is restored on exit. Local evdev input (keyboard/mouse/touchscreen)\nis enabled by default for fbdev and DRM; use --no-evdev to disable. Explicit devices\nvia --input-device replace auto-enumeration. Startup-only enumeration; no hotplug.\nDRM/KMS uses direct GBM/EGL scanout with page-flip events (no readback blit).\nIt retains the current mode or chooses the preferred one; --drm-mode requires an exact mode.\nOn a controlling Linux VT, physical Ctrl+Alt+F1..F12 releases input/DRM master and resumes on return.\nWithout a managed VT, DRM downgrades input grabbing; fbdev VT switching remains unmanaged.\nLocal evdev is shared by fbdev and DRM, with monotonic kernel timestamps and a bounded async queue.\n\nF1 help | F2 selected seat | F3 focus/next | F4 neon | F6 arrange | Meta+H HUD | Meta+O doors\nF7 client/drive input | F8 driver/exterior/systems | F9 switch seat | F10 recover car\nMeta+Shift+Q quit | red dash EXIT button: press twice\nF5 is unbound for browser/client restart or reload\nDrive: WASD/arrows + Space + drag wheel\nMiddle-drag/VNC-drag to look | Drag a titlebar to move | HANDLES shows the Arrange gizmo\nArrange: Tab next window, Esc/F6 exit | Ctrl+Alt+Enter new terminal\n",name);}
 int main(int argc,char **argv){
  Server s={.width=1600,.height=1000,.fps_limit=60,.running=true,.hud_visible=true,.hover_button=-1,.hover_close=-1,.keymap_fd=-1,.arrange_slot=-1,.frame_drag_slot=-1,.fov=65,.target_fov=65,.base_fov=65,.backend=CD_BACKEND_HEADLESS,.fbdev_vsync=true,.fbdev_pan=true,.fbdev_evdev=true,.fbdev_grab_input=false,.vnc_port=5900,.telemetry_fd=-1,.fbdev_modeset=false,.fbdev_mode_width=0,.fbdev_mode_height=0,.fbdev_mode_bpp=0,.fbdev_input_device_count=0,.render_to_texture=true,.render_scale=1,.render_mag_filter=GL_LINEAR,.render_min_filter=GL_LINEAR_MIPMAP_LINEAR};
  vehicle_init(&s.vehicle);
@@ -851,10 +854,10 @@ int main(int argc,char **argv){
    else if(!strcmp(argv[i],"--fbdev-grab-input")||!strcmp(argv[i],"--grab-input"))s.fbdev_grab_input=true;
    else if((!strcmp(argv[i],"--fbdev-input-device")||!strcmp(argv[i],"--input-device"))&&i+1<argc){
     const char *path=argv[++i]; /* consume the path even when the limit is reached */
-    if(s.fbdev_input_device_count<8){
+    if(s.fbdev_input_device_count<EVDEV_MAX_DEVICES){
      snprintf(s.fbdev_input_devices[s.fbdev_input_device_count],sizeof(s.fbdev_input_devices[0]),"%s",path);
      s.fbdev_input_device_count++;
-    }else fprintf(stderr,"[cli] too many input devices (max 8): %s\n",path);
+    }else fprintf(stderr,"[cli] too many input devices (max %d): %s\n",EVDEV_MAX_DEVICES,path);
    }
  else if(!strcmp(argv[i],"--fbdev-vnc-mirror")||!strcmp(argv[i],"--vnc-mirror"))s.fbdev_vnc_mirror=true;
     else if(!strcmp(argv[i],"--fbdev-modeset")){s.fbdev_modeset=true;s.backend=CD_BACKEND_FBDEV;}
@@ -964,17 +967,15 @@ int main(int argc,char **argv){
   ui_draw_overlay(&s);
   if(auto_screenshot&&s.time>3){s.screenshot_requested=true;auto_screenshot=false;}if(s.screenshot_requested){scene_save_screenshot(&s,s.screenshot_path);s.screenshot_requested=false;app_notice(&s,tr("Screenshot saved"));}
   PresentResult presented=backend_present(&s);
-  /* Frame callback render loop pattern:
-   * Only AFTER scene_render() and backend_*_present() have sampled the newly
-   * committed Wayland textures and pushed the finished frame to RFB/SDL—or
-   * completed the DRM page-flip event—do we fire wl_callback.done(compositor_ms)
-   * via server_frame_done() and flush the client sockets. This paces Wayland
-   * clients to actual display consumption rather than allowing them to spin in
-   * an unthrottled render loop. A VT-interrupted/failed present is not a
-   * completed frame and therefore cannot release waiting client callbacks. */
-  if(s.running&&presented==CD_PRESENT_OK&&!backend_vt_is_suspended(&s)){
-   server_frame_done(&s,(uint32_t)(clock_now()*1000));wl_display_flush_clients(s.display);s.frames++;fps_frames++;
-  }
+  /* Frame callback render loop pattern: scene_render() and the present attempt
+   * sample newly committed Wayland textures before wl_callback.done is sent.
+   * DRM CD_PRESENT_SKIPPED can simply mean that an earlier page flip is still
+   * scanning out; that must not stall otherwise-independent Wayland clients.
+   * One callback per committed surface plus the fps_limit below still provides
+   * bounded client backpressure—this is a compositor clock, not an unthrottled
+   * render loop. A managed VT suspension remains the exception: its clients
+   * are deliberately paused until the output/input session resumes. */
+  if(server_complete_frame(&s,presented,(uint32_t)(clock_now()*1000))&&presented==CD_PRESENT_OK)fps_frames++;
   if(frame_start-fps_start>.5){s.fps=fps_frames/(frame_start-fps_start);fps_frames=0;fps_start=frame_start;}
   if(exit_after>0&&s.time>=exit_after)s.running=false;
   double remain=1.0/s.fps_limit-(clock_now()-frame_start);if(remain>0)SDL_Delay((uint32_t)(remain*1000));

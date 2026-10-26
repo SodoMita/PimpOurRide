@@ -159,7 +159,9 @@ static struct {
  int vt_state;
 
  int poll_calls;
- int poll_timeouts;
+ int poll_timeouts; /* blocking waits that expired */
+ int poll_nonblocking_calls;
+ int poll_nonblocking_empty;
  int poll_errors;
 
  int violations;
@@ -750,8 +752,8 @@ const GLubyte *glGetString(GLenum name) {
 }
 
 int poll(struct pollfd *fds,nfds_t nfds,int timeout) {
- (void)timeout;
  W.poll_calls++;
+ if(timeout==0)W.poll_nonblocking_calls++;
  if(W.poll_fail){W.poll_errors++;errno=EIO;return -1;}
  if(!fds||nfds<1){W.poll_errors++;errno=EINVAL;return -1;}
  for(nfds_t i=0;i<nfds;i++)fds[i].revents=0;
@@ -763,7 +765,7 @@ int poll(struct pollfd *fds,nfds_t nfds,int timeout) {
  }
  if(W.poll_bad_revents){fds[0].revents=POLLERR;W.poll_errors++;return 1;}
  if(W.event_count>0){fds[0].revents=POLLIN;return 1;}
- W.poll_timeouts++;
+ if(timeout>0)W.poll_timeouts++;else W.poll_nonblocking_empty++;
  return 0;
 }
 
@@ -885,12 +887,16 @@ static void test_success_lifecycle(void) {
  CHECK(W.crtc_calls[0].mode.vdisplay==600);
 
  for(int i=0;i<4;i++){
-  backend_drm_present(&s);
+  CHECK(backend_drm_present(&s)==CD_PRESENT_OK);
+  CHECK(W.page_flip_calls==i+1);
+  CHECK(W.fb_count==2); /* queued, not synchronously completed */
+  CHECK(active_locked_bos()==2);
+  CHECK(W.rm_fb_calls==i);
+  CHECK(W.poll_timeouts==0);
+  backend_drm_poll(&s); /* ordinary main-loop event collection */
   CHECK(W.fb_count==1);
   CHECK(active_locked_bos()==1);
-  CHECK(W.page_flip_calls==i+1);
   CHECK(W.rm_fb_calls==i+1);
-  CHECK(W.fb_count<=2);
  }
  CHECK(W.add_fb_calls==5);
  CHECK(W.max_fb_count==2);
@@ -1015,36 +1021,41 @@ static void test_cloned_connector_restore_fallback(void) {
  unlink(path);
 }
 
-static void test_pending_flip_timeout_recovery(void) {
+static void test_pending_flip_nonblocking_recovery(void) {
  reset_world();
  char path[64];
  make_temp_card(path,sizeof(path));
  Server s;
  CHECK(init_ok(&s,path));
 
- backend_drm_present(&s);
+ CHECK(backend_drm_present(&s)==CD_PRESENT_OK);
  CHECK(W.fb_count==1);
  CHECK(W.set_crtc_calls==1);
 
  W.auto_complete_flip=false;
- backend_drm_present(&s);
+ CHECK(backend_drm_present(&s)==CD_PRESENT_OK); /* queued, not waited out */
  CHECK(W.page_flip_calls==1);
  CHECK(W.fb_count==2);
  CHECK(active_locked_bos()==2);
  CHECK(W.rm_fb_calls==0);
- CHECK(W.poll_timeouts>=1);
+ CHECK(W.poll_timeouts==0);
  CHECK(W.event_count==0);
 
- int timeouts_before=W.poll_timeouts;
  int swaps_before=W.egl_swap_calls;
  int adds_before=W.add_fb_calls;
- backend_drm_present(&s);
- CHECK(W.poll_timeouts>timeouts_before);
+ int nonblocking_before=W.poll_nonblocking_calls;
+ /* A blocked physical flip must not apply backpressure to compositor/client
+  * iterations. Every attempt returns immediately and the two-BO bound holds. */
+ for(int i=0;i<120;i++)CHECK(backend_drm_present(&s)==CD_PRESENT_SKIPPED);
+ CHECK(W.poll_nonblocking_calls>=nonblocking_before+120);
+ CHECK(W.poll_nonblocking_empty>=120);
+ CHECK(W.poll_timeouts==0);
  CHECK(W.egl_swap_calls==swaps_before);
  CHECK(W.add_fb_calls==adds_before);
  CHECK(W.page_flip_calls==1);
  CHECK(W.fb_count==2);
  CHECK(active_locked_bos()==2);
+ CHECK(W.max_locked_bos==2);
 
  enqueue_flip_event(W.last_flip_user_data);
  CHECK(W.event_count==1);
@@ -1056,8 +1067,12 @@ static void test_pending_flip_timeout_recovery(void) {
  CHECK(W.poll_errors==0);
 
  W.auto_complete_flip=true;
- backend_drm_present(&s);
+ CHECK(backend_drm_present(&s)==CD_PRESENT_OK);
  CHECK(W.page_flip_calls==2);
+ CHECK(W.fb_count==2);
+ CHECK(active_locked_bos()==2);
+ CHECK(W.rm_fb_calls==1);
+ backend_drm_poll(&s);
  CHECK(W.fb_count==1);
  CHECK(active_locked_bos()==1);
  CHECK(W.rm_fb_calls==2);
@@ -1116,13 +1131,23 @@ static void test_vt_flip_interruption_and_drain(void) {
  char path[64];make_temp_card(path,sizeof(path));
  Server s;CHECK(init_ok(&s,path));
  CHECK(backend_drm_present(&s)==CD_PRESENT_OK);
- W.auto_complete_flip=false;W.vt_fd=55;W.vt_ready=true;
+ W.vt_fd=55;W.vt_ready=true;
+ int swaps=W.egl_swap_calls,adds=W.add_fb_calls;
+ /* With no older flip, the post-swap check releases the newly locked BO. */
  CHECK(backend_drm_present(&s)==CD_PRESENT_INTERRUPTED);
+ CHECK(W.egl_swap_calls==swaps+1);
+ CHECK(W.add_fb_calls==adds);
+ CHECK(W.page_flip_calls==0);
+ CHECK(W.fb_count==1);
+ CHECK(active_locked_bos()==1);
+ W.vt_ready=false;W.auto_complete_flip=false;
+ CHECK(backend_drm_present(&s)==CD_PRESENT_OK); /* queueing itself never waits */
  CHECK(W.page_flip_calls==1);
  CHECK(W.fb_count==2);
  CHECK(active_locked_bos()==2);
- int swaps=W.egl_swap_calls,adds=W.add_fb_calls;
- /* A second pre-swap wait is also interrupted and cannot lock a third BO. */
+ swaps=W.egl_swap_calls;adds=W.add_fb_calls;
+ W.vt_ready=true;
+ /* A pending flip is polled before swapping and cannot lock a third BO. */
  CHECK(backend_drm_present(&s)==CD_PRESENT_INTERRUPTED);
  CHECK(W.egl_swap_calls==swaps);
  CHECK(W.add_fb_calls==adds);
@@ -1165,9 +1190,11 @@ static void test_vt_failed_drain_shutdown(void) {
  Server s;CHECK(init_ok(&s,path));
  CHECK(backend_drm_present(&s)==CD_PRESENT_OK);
  W.auto_complete_flip=false;
- CHECK(backend_drm_present(&s)==CD_PRESENT_INTERRUPTED);
+ CHECK(backend_drm_present(&s)==CD_PRESENT_OK);
+ CHECK(W.poll_timeouts==0); /* only the VT drain below may block/expire */
  CHECK(W.fb_count==2);
  CHECK(!backend_drm_release_for_vt(&s));
+ CHECK(W.poll_timeouts==1);
  W.vt_suspended=true;
  CHECK(W.fb_count==2);
  CHECK(active_locked_bos()==2);
@@ -1231,6 +1258,7 @@ static void test_addfb_failure(void) {
  backend_drm_present(&s);
  CHECK(W.add_fb_calls==4);
  CHECK(W.page_flip_calls==1);
+ backend_drm_poll(&s);
  CHECK(W.fb_count==1);
  CHECK(active_locked_bos()==1);
  CHECK(W.rm_fb_calls==1);
@@ -1291,6 +1319,7 @@ static void test_pageflip_failure(void) {
  backend_drm_present(&s);
  CHECK(W.page_flip_calls==2);
  CHECK(W.add_fb_calls==3);
+ backend_drm_poll(&s);
  CHECK(W.fb_count==1);
  CHECK(active_locked_bos()==1);
  CHECK(W.rm_fb_calls==2);
@@ -1572,7 +1601,7 @@ int main(void) {
  test_nonlinear_without_modifier_cap_is_rejected();
  test_cloned_connector_restore();
  test_cloned_connector_restore_fallback();
- test_pending_flip_timeout_recovery();
+ test_pending_flip_nonblocking_recovery();
  test_vt_release_acquire_lifecycle();
  test_vt_flip_interruption_and_drain();
  test_vt_failed_retire_shutdown();

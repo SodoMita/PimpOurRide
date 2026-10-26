@@ -293,27 +293,42 @@ fail:
  backend_drm_shutdown(s);return false;
 }
 
+static int drm_poll_events(Server *s,DrmState *st){
+ int result=0;
+ while((result=drm_wait_event(s,0))>0){}
+ if(result==-1&&!st->warned_event){fprintf(stderr,"[drm] DRM event polling failed: %s\n",strerror(errno));st->warned_event=true;}
+ return result;
+}
+
 void backend_drm_poll(Server *s){
  DrmState *st=drm_state(s);if(!st)return;
  if(s->fbdev_evdev)backend_evdev_poll(s);
- int result;
- while((result=drm_wait_event(s,0))>0){}
- if(result==-1&&!st->warned_event){fprintf(stderr,"[drm] DRM event polling failed: %s\n",strerror(errno));st->warned_event=true;}
+ drm_poll_events(s,st);
 }
 
 PresentResult backend_drm_present(Server *s){
  DrmState *st=drm_state(s);
  if(!st||st->egl_surface==EGL_NO_SURFACE||!st->master)return CD_PRESENT_SKIPPED;
  if(backend_vt_is_suspended(s))return CD_PRESENT_SKIPPED;
- /* Rendering a third frame before the prior flip completes would lock too
-  * many GBM buffers. Wait before swapping, never after locking a new buffer. */
- if(!drm_wait_for_flip(s,1000))return CD_PRESENT_INTERRUPTED;
+ /* A pending flip owns the next GBM buffer until its event releases the old
+  * one. Reap only events that are already available; if scanout is still busy,
+  * skip this output frame rather than blocking client callbacks on vblank.
+  * VT release/shutdown retain their bounded drains before destroying buffers. */
+ if(st->page_flip_pending){
+  if(drm_poll_events(s,st)==-2)return CD_PRESENT_INTERRUPTED;
+  if(st->page_flip_pending)return CD_PRESENT_SKIPPED;
+ }
  if(!st->master||backend_vt_is_suspended(s))return CD_PRESENT_SKIPPED;
  if(!eglSwapBuffers(s->egl_display,st->egl_surface)){
   fprintf(stderr,"[drm] eglSwapBuffers failed: 0x%x\n",eglGetError());return CD_PRESENT_SKIPPED;
  }
  struct gbm_bo *bo=gbm_surface_lock_front_buffer(st->surface);
  if(!bo){fprintf(stderr,"[drm] gbm_surface_lock_front_buffer failed\n");return CD_PRESENT_SKIPPED;}
+ /* A VT signal can arrive while EGL is swapping even when no older flip was
+  * pending. Poll once more before KMS registration/queueing; on interruption
+  * release this newly locked BO and let main perform the managed VT release. */
+ if(drm_poll_events(s,st)==-2){drm_release_bo(st,bo);return CD_PRESENT_INTERRUPTED;}
+ if(!st->master||backend_vt_is_suspended(s)){drm_release_bo(st,bo);return CD_PRESENT_SKIPPED;}
  uint32_t fb_id=drm_bo_framebuffer(st,bo);
  if(!fb_id){drm_release_bo(st,bo);return CD_PRESENT_SKIPPED;}
  if(!st->mode_set){
@@ -321,18 +336,16 @@ PresentResult backend_drm_present(Server *s){
    fprintf(stderr,"[drm] initial drmModeSetCrtc failed: %s\n",strerror(errno));drm_release_bo(st,bo);return CD_PRESENT_SKIPPED;
   }
   st->mode_set=true;st->current_bo=bo;
-  /* Preserve the existing first-frame contract: SetCrtc installs this buffer
-   * immediately; subsequent presents are paced by their page-flip events. */
+  /* SetCrtc installs the first buffer immediately. Later presents queue at
+   * most one flip and use its event solely for buffer retirement, not pacing. */
   return CD_PRESENT_OK;
  }
  if(drmModePageFlip(st->fd,st->crtc_id,fb_id,DRM_MODE_PAGE_FLIP_EVENT,st)<0){
   fprintf(stderr,"[drm] drmModePageFlip failed: %s\n",strerror(errno));drm_release_bo(st,bo);return CD_PRESENT_SKIPPED;
  }
  st->pending_bo=bo;st->page_flip_pending=true;
- /* main emits wl_callback.done immediately after backend_*_present. Waiting
-  * for the flip here preserves its contract: clients are paced to completed
-  * scanout, not merely to an ioctl that queued a future frame. */
- if(!drm_wait_for_flip(s,1000))return CD_PRESENT_INTERRUPTED;
+ /* The flip is queued, not completed. Its event is collected by the ordinary
+  * nonblocking backend poll; client pacing must not wait for physical scanout. */
  return CD_PRESENT_OK;
 }
 

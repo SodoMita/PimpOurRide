@@ -30,9 +30,9 @@
  * renderer; DRM uses a GBM window surface/default framebuffer with explicit
  * KMS page flips; WINDOWED is the nested SDL2/GLX development window. */
 typedef enum { CD_BACKEND_HEADLESS=0,CD_BACKEND_WINDOWED=1,CD_BACKEND_FBDEV=2,CD_BACKEND_DRM=3 } Backend;
-/* DRM presentation result: interrupted is distinct from a skipped frame so
- * main can service a VT release outside the page-flip wait and withhold the
- * frame callback until a frame is actually presented. */
+/* Output-attempt result for diagnostics/statistics, not client frame pacing.
+ * SKIPPED includes a still-pending DRM flip; INTERRUPTED lets main service a
+ * VT release before deciding whether callbacks must pause with the session. */
 typedef enum { CD_PRESENT_OK=0,CD_PRESENT_SKIPPED=1,CD_PRESENT_INTERRUPTED=2 } PresentResult;
 #define CD_APP_BAYS 8
 #define CD_CLUSTER_SLOT 8
@@ -44,6 +44,11 @@ typedef enum { CD_PRESENT_OK=0,CD_PRESENT_SKIPPED=1,CD_PRESENT_INTERRUPTED=2 } P
 #define CD_VERSION "0.3.0"
 #define CD_DMABUF_MAX_FORMATS 8
 #define CD_DMABUF_MAX_MODIFIERS 16
+/* Startup-only evdev slots are stable queue/disconnect indices. Keep this at
+ * 32: EvdevAsync.disconnects is a reliable 32-bit device-index bitmask. The
+ * bound applies to usable devices, never to how many directory entries we
+ * inspect while discovering them. */
+#define EVDEV_MAX_DEVICES 32
 #include <linux/input.h>
 typedef struct Server Server;
 typedef struct Surface Surface;
@@ -173,7 +178,7 @@ SdlTouchFinger sdl_touch[CD_MAX_TOUCH_POINTS];int sdl_touch_chrome_id;
  void *vnc_screen;int vnc_port;                        /* rfbScreenInfoPtr, opaque here (see backend_vnc.c) */
  void *headless_state;                                 /* asynchronous pixel-pack ring, owned by backend_headless.c */
  int vnc_prev_mask,vnc_prev_x,vnc_prev_y;              /* RFB pointer edge-detection state (no separate down/up events in the protocol) */
- char fbdev_path[256];bool fbdev_vsync,fbdev_pan,fbdev_vnc_mirror,fbdev_modeset,fbdev_evdev,fbdev_grab_input;int fbdev_mode_width,fbdev_mode_height,fbdev_mode_bpp;void *fbdev_state;char fbdev_input_devices[8][256];int fbdev_input_device_count;void *evdev_state;
+ char fbdev_path[256];bool fbdev_vsync,fbdev_pan,fbdev_vnc_mirror,fbdev_modeset,fbdev_evdev,fbdev_grab_input;int fbdev_mode_width,fbdev_mode_height,fbdev_mode_bpp;void *fbdev_state;char fbdev_input_devices[EVDEV_MAX_DEVICES][256];int fbdev_input_device_count;void *evdev_state;
  char drm_path[256];int drm_mode_width,drm_mode_height;void *drm_state;
  void *vt_state; /* backend_vt.c: managed VT signalfd/mode state for DRM */
  bool dmabuf_supported;int dmabuf_format_count;DmabufFormat dmabuf_formats[CD_DMABUF_MAX_FORMATS];
@@ -224,6 +229,8 @@ bool server_init(Server *s,const char *socket_name);
 void server_dispatch(Server *s);
 void server_finish(Server *s);
 void server_frame_done(Server *s,uint32_t time);
+/* frame_pacing.c: returns true when client render credit was emitted. */
+bool server_complete_frame(Server *s,PresentResult presented,uint32_t time);
 void server_pointer_motion(Server *s,Hit hit,uint32_t time);
 void server_pointer_button(Server *s,uint32_t button,bool down,uint32_t time);
 void server_release_pointer_buttons(Server *s,uint32_t time);
@@ -364,7 +371,6 @@ void backend_evdev_shutdown(Server *s);
 void backend_evdev_suspend(Server *s);
 bool backend_evdev_resume(Server *s);
 
-#define EVDEV_MAX_DEVICES 8
 #define EVDEV_MAX_SLOTS 16
 typedef enum {
     EVDEV_DEV_NONE = 0,
