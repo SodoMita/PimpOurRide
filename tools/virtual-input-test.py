@@ -149,6 +149,9 @@ def grab_test(device,out):
 def latency_run(device,out,mode,repeat,pairs):
  session=start_session(device,out,f'{mode}-{repeat}',mode=='wakeup',pairs*2)
  try:
+  backend_log=session['compositor_log'].read_text()
+  if 'kernel-monotonic timestamps' not in backend_log:
+   raise RuntimeError('latency measurement requires EVIOCSCLOCKID CLOCK_MONOTONIC; refusing read-time fallback')
   rng=random.Random(0xC0FFEE+repeat*17+(mode=='wakeup'))
   period=1.0/ARGS.fps
   for _ in range(pairs):
@@ -178,7 +181,7 @@ def main():
  global ARGS;ARGS=parser.parse_args()
  if ARGS.grab_only and ARGS.benchmark_only:parser.error('choose at most one mode')
  if ARGS.fps<1 or ARGS.fps>120 or ARGS.pairs<1 or ARGS.repeats<1:parser.error('invalid fps/pairs/repeats')
- device=VirtualInput();result={'method':'uinput kernel event timestamp to Wayland client callback; not visual/photon latency','fps_cap':ARGS.fps,'pairs_per_run':ARGS.pairs,'repeats':ARGS.repeats}
+ device=VirtualInput();result={'method':'uinput kernel input_event.time (EVIOCSCLOCKID CLOCK_MONOTONIC asserted per run) to Wayland client callback; not visual/photon latency','fps_cap':ARGS.fps,'pairs_per_run':ARGS.pairs,'repeats':ARGS.repeats}
  try:
   drop_privileges();ARGS.output.mkdir(parents=True,exist_ok=True)
   subprocess.run(['make','-j2','bin/chromedrive','bin/input-latency-client'],cwd=ROOT,check=True)

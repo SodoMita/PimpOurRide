@@ -61,6 +61,8 @@ void cd_vnc_ptr(int mask,int x,int y,rfbClientPtr cl){
    if(left&&s->frame_dragging)app_frame_pointer_motion(s,x,y);
   }else{
    server_pointer_motion(s,hit,now);
+   /* In the persistent client lock, middle is an ordinary wl_pointer button;
+    * only the non-lock path above turns it into compositor look-drag. */
    if(s->client_input_lock&&middle!=prev_middle&&(hit.kind==HIT_APP||s->pointer_grab))server_pointer_button(s,BTN_MIDDLE,middle,now);
    if(left&&!prev_left&&hit.kind==HIT_WHEEL)scene_wheel_button(s,hit,x,y,true,now);
    else if(left&&!prev_left&&hit.kind==HIT_BUTTON)app_launch(s,hit.button,false);

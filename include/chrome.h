@@ -441,6 +441,8 @@ typedef struct {
     char explicit_paths[EVDEV_MAX_DEVICES][256];
     int explicit_count;
     bool evdev_enabled;
+    /* Main thread only. The worker never reads this flag: VT stop/join uses
+     * EvdevAsync.stop (atomic), its epoll wake fd and pthread_join. */
     bool suspended; /* worker stopped for a VT switch; fds stay open */
     void *async_state; /* backend_evdev.c: epoll worker + bounded main-thread queue */
 } EvdevState;

@@ -571,7 +571,9 @@ Use `--grab-only` or `--benchmark-only` for one half. The script needs elevated
 privileges only to create the uinput device and adjust its temporary event-node
 permissions; it drops back to the invoking user before building or running the
 compositor. Latency is measured from the kernel's monotonic input timestamp to
-the Wayland client callback. It is **not** visual/photon latency and does not
+the Wayland client callback, and each run fails closed unless the compositor
+confirms `EVIOCSCLOCKID(CLOCK_MONOTONIC)` rather than read-time fallback. It is
+**not** visual/photon latency and does not
 make worker-side Wayland, GL, vehicle, or scene/raycast access thread-safe.
 
 ## Known limitations / next steps
