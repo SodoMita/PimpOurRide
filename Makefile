@@ -7,7 +7,7 @@ LDLIBS = $(shell pkg-config --libs $(PKGS)) -lm -pthread
 PROTO_DIR := $(shell pkg-config --variable=pkgdatadir wayland-protocols)
 GEN = .generated
 BIN = bin
-SOURCES = src/main.c src/wayland.c src/scene.c src/city_scene.c src/vehicle.c src/city.c src/city_stream.c src/vehicle_scene.c src/vehicle_seat.c src/keymap.c src/wheel_input.c src/ui.c src/math3d.c src/telemetry.c src/dmabuf.c src/cdconfig.c src/i18n.c src/frame_pacing.c src/backend_sdl.c src/backend_headless.c src/backend_egl.c src/backend_vnc.c src/backend_fbdev.c src/backend_drm.c src/backend_vt.c src/backend_evdev.c src/evdev_queue.c src/evdev_util.c src/fbdev_pixfmt.c
+SOURCES = src/main.c src/wayland.c src/scene.c src/city_scene.c src/vehicle.c src/city.c src/city_stream.c src/vehicle_scene.c src/vehicle_seat.c src/keymap.c src/wheel_input.c src/ui.c src/math3d.c src/telemetry.c src/dmabuf.c src/cdconfig.c src/i18n.c src/frame_pacing.c src/input_wait.c src/backend_sdl.c src/backend_headless.c src/backend_egl.c src/backend_vnc.c src/backend_fbdev.c src/backend_drm.c src/backend_vt.c src/backend_evdev.c src/evdev_queue.c src/evdev_util.c src/fbdev_pixfmt.c
 PROTOCOLS = $(GEN)/xdg-shell-protocol.c $(GEN)/xdg-decoration-protocol.c $(GEN)/linux-dmabuf-protocol.c
 HEADERS = $(GEN)/xdg-shell-server.h $(GEN)/xdg-decoration-server.h $(GEN)/linux-dmabuf-server.h
 .PHONY: all clean test check-text sanitize garage3d garage3d-test garage3d-clean
@@ -30,7 +30,7 @@ $(GEN)/linux-dmabuf-protocol.c: | $(GEN)
 	wayland-scanner private-code $(PROTO_DIR)/stable/linux-dmabuf/linux-dmabuf-v1.xml $@
 $(GEN)/linux-dmabuf-client.h: | $(GEN)
 	wayland-scanner client-header $(PROTO_DIR)/stable/linux-dmabuf/linux-dmabuf-v1.xml $@
-$(BIN)/chromedrive: $(SOURCES) include/chrome.h include/math3d.h include/vehicle.h include/city.h include/vehicle_seat.h include/wheel_input.h include/telemetry.h include/cdconfig.h include/i18n.h include/fbdev_pixfmt.h $(HEADERS) $(PROTOCOLS) | $(BIN)
+$(BIN)/chromedrive: $(SOURCES) include/chrome.h include/math3d.h include/vehicle.h include/city.h include/vehicle_seat.h include/wheel_input.h include/telemetry.h include/cdconfig.h include/i18n.h include/fbdev_pixfmt.h include/input_wait.h $(HEADERS) $(PROTOCOLS) | $(BIN)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(SOURCES) $(PROTOCOLS) -o $@ $(LDLIBS)
 # Both cairo clients share the text-fitting policy in src/textfit.c (pure) +
 # src/textfit_cairo.c (drawing), so a fixed-width slot can never spill or clip.
@@ -45,6 +45,8 @@ $(BIN)/chromedrive-config: clients/config.c src/cdconfig.c src/i18n.c $(FITTEXT)
 	$(CC) -Iinclude -I$(GEN) $(CFLAGS) $(shell pkg-config --cflags wayland-client cairo xkbcommon libwebp) clients/config.c src/cdconfig.c src/i18n.c src/textfit.c src/textfit_cairo.c $(GEN)/xdg-shell-protocol.c -o $@ $(shell pkg-config --libs wayland-client cairo xkbcommon libwebp) -lm
 $(BIN)/test-math: tests/test_math.c src/math3d.c include/math3d.h | $(BIN)
 	$(CC) -Iinclude $(CFLAGS) tests/test_math.c src/math3d.c -o $@ -lm
+$(BIN)/input-latency-client: tests/input_latency_client.c $(GEN)/xdg-shell-client.h $(GEN)/xdg-shell-protocol.c | $(BIN)
+	$(CC) -I$(GEN) $(CFLAGS) $(shell pkg-config --cflags wayland-client) tests/input_latency_client.c $(GEN)/xdg-shell-protocol.c -o $@ $(shell pkg-config --libs wayland-client)
 $(BIN)/protocol-probe: tests/protocol_probe.c $(GEN)/xdg-shell-client.h $(GEN)/xdg-shell-protocol.c $(GEN)/linux-dmabuf-protocol.c $(GEN)/linux-dmabuf-client.h | $(BIN)
 	$(CC) -I$(GEN) $(CFLAGS) $(shell pkg-config --cflags wayland-client) tests/protocol_probe.c $(GEN)/xdg-shell-protocol.c $(GEN)/linux-dmabuf-protocol.c -o $@ $(shell pkg-config --libs wayland-client)
 # garage3d (clients/garage3d) is a standalone native Wayland/GLES client with
@@ -76,13 +78,15 @@ $(BIN)/test-textfit: tests/test_textfit.c src/textfit.c include/textfit.h | $(BI
 	$(CC) -Iinclude $(CFLAGS) tests/test_textfit.c src/textfit.c -o $@
 $(BIN)/test-drm: tests/test_drm.c src/backend_drm.c include/chrome.h | $(BIN)
 	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_drm.c src/backend_drm.c -o $@
-$(BIN)/test-evdev: tests/test_evdev.c src/backend_evdev.c src/evdev_queue.c src/evdev_util.c src/math3d.c include/chrome.h | $(BIN)
-	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_evdev.c src/backend_evdev.c src/evdev_queue.c src/evdev_util.c src/math3d.c -o $@ -Wl,--wrap=open,--wrap=ioctl,--wrap=close,--wrap=opendir,--wrap=readdir,--wrap=closedir -lm -pthread
+$(BIN)/test-evdev: tests/test_evdev.c src/backend_evdev.c src/evdev_queue.c src/evdev_util.c src/math3d.c src/input_wait.c include/chrome.h include/input_wait.h | $(BIN)
+	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_evdev.c src/backend_evdev.c src/evdev_queue.c src/evdev_util.c src/math3d.c src/input_wait.c -o $@ -Wl,--wrap=open,--wrap=ioctl,--wrap=close,--wrap=opendir,--wrap=readdir,--wrap=closedir -lm -pthread
 $(BIN)/test-frame-pacing: tests/test_frame_pacing.c src/frame_pacing.c include/chrome.h | $(BIN)
 	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_frame_pacing.c src/frame_pacing.c -o $@
+$(BIN)/test-input-wait: tests/test_input_wait.c src/input_wait.c include/input_wait.h | $(BIN)
+	$(CC) -Iinclude $(CFLAGS) tests/test_input_wait.c src/input_wait.c -o $@ -pthread
 $(BIN)/test-vt: tests/test_vt.c src/backend_vt.c include/chrome.h | $(BIN)
 	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_vt.c src/backend_vt.c -o $@ -Wl,--wrap=open,--wrap=ioctl,--wrap=close,--wrap=clock_gettime
-test: $(BIN)/test-math $(BIN)/test-config $(BIN)/test-vehicle $(BIN)/test-city $(BIN)/test-telemetry $(BIN)/test-keymap $(BIN)/test-wheel-input $(BIN)/test-fbdev $(BIN)/test-i18n $(BIN)/test-textfit $(BIN)/test-drm $(BIN)/test-evdev $(BIN)/test-frame-pacing $(BIN)/test-vt $(BIN)/chromedrive-config
+test: $(BIN)/test-math $(BIN)/test-config $(BIN)/test-vehicle $(BIN)/test-city $(BIN)/test-telemetry $(BIN)/test-keymap $(BIN)/test-wheel-input $(BIN)/test-fbdev $(BIN)/test-i18n $(BIN)/test-textfit $(BIN)/test-drm $(BIN)/test-evdev $(BIN)/test-frame-pacing $(BIN)/test-input-wait $(BIN)/test-vt $(BIN)/chromedrive-config
 	./$(BIN)/test-math
 	./$(BIN)/test-config
 	./$(BIN)/test-vehicle
@@ -96,6 +100,7 @@ test: $(BIN)/test-math $(BIN)/test-config $(BIN)/test-vehicle $(BIN)/test-city $
 	./$(BIN)/test-drm
 	./$(BIN)/test-evdev
 	./$(BIN)/test-frame-pacing
+	./$(BIN)/test-input-wait
 	./$(BIN)/test-vt
 	./$(BIN)/chromedrive-config --selftest
 	# Report-only here: an ellipsis means a slot is too small for a shipped

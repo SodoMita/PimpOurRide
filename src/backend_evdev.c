@@ -30,7 +30,7 @@ static EvdevState *evdev_state(Server *s) {
 
 typedef struct {
     EvdevState *state;
-    int epoll_fd,wake_fd;
+    int epoll_fd,wake_fd,main_wake_fd;
     pthread_t worker;
     bool worker_started;
     bool queue_initialized;
@@ -50,6 +50,11 @@ static uint32_t evdev_event_time(const EvdevDevice *d,const struct input_event *
 }
 static void evdev_wake(EvdevAsync *a){
     if(a&&a->wake_fd>=0){uint64_t one=1;ssize_t ignored=write(a->wake_fd,&one,sizeof(one));(void)ignored;}
+}
+static void evdev_main_wake(EvdevAsync *a){
+    /* EAGAIN means the counter is already nonzero: the compositor has a
+     * wakeup pending, so no event can be lost by coalescing this write. */
+    if(a&&a->main_wake_fd>=0){uint64_t one=1;ssize_t ignored=write(a->main_wake_fd,&one,sizeof(one));(void)ignored;}
 }
 
 static void evdev_device_close(EvdevDevice *d) {
@@ -500,6 +505,7 @@ static void evdev_finger_down(Server *s, EvdevDevice *d, EvdevFinger *f, int x, 
 }
 
 static void evdev_finger_motion(Server *s, EvdevDevice *d, EvdevFinger *f, int x, int y, uint32_t time) {
+    if(s->client_input_lock&&f->route!=CD_TOUCH_ROUTE_APP&&f->route!=CD_TOUCH_ROUTE_POINTER){f->last_x=x;f->last_y=y;return;}
     if (f->last_x == x && f->last_y == y) return;
     int dx = x - f->last_x;
     int dy = y - f->last_y;
@@ -668,7 +674,7 @@ static void evdev_dispatch_pointer_buttons(Server *s, EvdevDevice *d, uint32_t t
 
         bool down = (pressed & bit) != 0;
 
-        if (button == BTN_MIDDLE) {
+        if (button == BTN_MIDDLE && !s->client_input_lock) {
             s->middle_look = down;
             d->middle_look_held = down;
             if (down) {
@@ -863,7 +869,7 @@ static void *evdev_worker_main(void *arg){
             if(index==UINT32_MAX){evdev_drain_wake(a->wake_fd);continue;}
             if(index>=(uint32_t)st->device_count||!active[index])continue;
             EvdevDevice *d=&st->devices[index];int fd=d->fd;
-            bool disconnect=false,blocked=false;
+            bool disconnect=false,blocked=false,queued=false;
             for(;;){
                 struct input_event input[64];
                 ssize_t bytes=read(fd,input,sizeof(input));
@@ -873,6 +879,7 @@ static void *evdev_worker_main(void *arg){
                         CdEvdevEvent event={.input=input[j],.time=evdev_event_time(d,&input[j]),
                             .device=(uint8_t)index,.kind=CD_EVDEV_EVENT_RAW};
                         if(!cd_evdev_queue_push(&a->queue,&event)){blocked=true;break;}
+                        queued=true;
                     }
                     /* Discard the unread suffix of this pre-reset batch. Even
                      * a very fast consumer ack must never make it reappear as
@@ -886,11 +893,16 @@ static void *evdev_worker_main(void *arg){
                  * must be retired by the compositor after its older events. */
                 disconnect=true;break;
             }
+            /* Notify only after the queue/disconnect state is visible. The
+             * compositor may still be rendering; its eventfd wait will drain
+             * on the main thread rather than racing Wayland/GL state here. */
+            if(queued||blocked)evdev_main_wake(a);
             if(blocked)break;
             if(disconnect){
                 active[index]=false;
                 epoll_ctl(a->epoll_fd,EPOLL_CTL_DEL,fd,NULL);
                 atomic_fetch_or_explicit(&a->disconnects,1u<<index,memory_order_release);
+                evdev_main_wake(a);
             }
         }
     }
@@ -904,16 +916,18 @@ static void evdev_async_destroy(EvdevState *st){
     }
     if(a->epoll_fd>=0)close(a->epoll_fd);
     if(a->wake_fd>=0)close(a->wake_fd);
+    if(a->main_wake_fd>=0)close(a->main_wake_fd);
     if(a->queue_initialized)cd_evdev_queue_destroy(&a->queue);
     free(a);st->async_state=NULL;
 }
 static bool evdev_async_start(EvdevState *st){
     EvdevAsync *a=calloc(1,sizeof(*a));if(!a)return false;
-    a->state=st;a->epoll_fd=a->wake_fd=-1;atomic_init(&a->stop,false);atomic_init(&a->disconnects,0);st->async_state=a;
+    a->state=st;a->epoll_fd=a->wake_fd=a->main_wake_fd=-1;atomic_init(&a->stop,false);atomic_init(&a->disconnects,0);st->async_state=a;
     a->queue_initialized=cd_evdev_queue_init(&a->queue);
     a->epoll_fd=epoll_create1(EPOLL_CLOEXEC);
     a->wake_fd=eventfd(0,EFD_NONBLOCK|EFD_CLOEXEC);
-    if(!a->queue_initialized||a->epoll_fd<0||a->wake_fd<0)goto fail;
+    a->main_wake_fd=eventfd(0,EFD_NONBLOCK|EFD_CLOEXEC);
+    if(!a->queue_initialized||a->epoll_fd<0||a->wake_fd<0||a->main_wake_fd<0)goto fail;
     struct epoll_event wake={.events=EPOLLIN,.data.u32=UINT32_MAX};
     if(epoll_ctl(a->epoll_fd,EPOLL_CTL_ADD,a->wake_fd,&wake)<0)goto fail;
     int active_devices=0;
@@ -1012,9 +1026,18 @@ bool backend_evdev_init(Server *s) {
     return true;
 }
 
+int backend_evdev_wait_fd(Server *s){
+    EvdevState *st=evdev_state(s);EvdevAsync *a=evdev_async(st);
+    return st&&st->evdev_enabled&&!st->suspended&&a?a->main_wake_fd:-1;
+}
+
 void backend_evdev_poll(Server *s) {
     EvdevState *st=evdev_state(s);EvdevAsync *a=evdev_async(st);
     if(!st||!st->evdev_enabled||st->suspended||!a)return;
+    /* Clear before popping, never after: a producer that queues after this
+     * read will signal again, whereas clearing after the pop could erase a
+     * wakeup for an event appended just after the queue looked empty. */
+    evdev_drain_wake(a->main_wake_fd);
     CdEvdevEvent event;
     while(cd_evdev_queue_pop(&a->queue,&event)){
         if(event.device>=st->device_count)continue;

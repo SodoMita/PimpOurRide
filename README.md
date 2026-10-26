@@ -392,6 +392,7 @@ reverse proxy and firewall before exposing them to an untrusted network.
 | F5 | Unbound in the compositor; reserved for browser/client restart or reload |
 | F6 | Toggle Arrange for the selected screen (move / rotate / roll / scale / resize) |
 | F7 | Toggle client input / hover-drive ownership |
+| Meta+ScrollLock | Grab/release all ordinary keyboard, pointer, scroll and touch input for the focused Wayland window; while grabbed, other compositor hotkeys and cockpit clicks pass to that window. Physical managed-VT Ctrl+Alt+Fn remains a session-safety escape |
 | F8 | Cycle driver / exterior concept / EV systems cutaway |
 | F9 | Switch between driver and passenger seats |
 | F10 | Recover the car pose, disengage autopilot and close the doors (battery and odometer are preserved) |
@@ -525,7 +526,8 @@ src/backend_vnc.c             embedded RFB server + RFB input (headless/fbdev mi
 src/backend_headless.c        --headless (default): shared EGL renderer + VNC presentation
 src/backend_fbdev.c           --fbdev: direct /dev/fb* output, pan/vsync best effort
 src/backend_drm.c             --drm: GBM/EGL direct scanout, KMS modeset + page-flip events
-src/backend_evdev.c           direct-input evdev: epoll worker + main-thread dispatch
+src/backend_evdev.c           direct-input evdev: epoll worker + eventfd/main-thread dispatch
+src/input_wait.c              deadline-bounded eventfd wait (no queue polling)
 src/evdev_queue.c             bounded timestamped queue with overflow release barrier
 src/evdev_util.c              pure evdev helpers: abs scaling, touch-id pool
 src/fbdev_pixfmt.c            pure packed 16/24/32bpp conversion + fb geometry helpers
@@ -546,9 +548,33 @@ tests/test_keymap.c           RFB typing/WASD/function-key mapping regressions
 tests/test_fbdev.c            fbdev format/geometry tests + evdev helpers and async queue/overflow tests
 tests/test_drm.c              fake-KMS/GBM/EGL lifecycle, modifier, flip-failure and restore tests
 tests/protocol_probe.c        end-to-end Wayland protocol conformance test (incl. dma-buf)
+tests/input_latency_client.c  timestamp-recording Wayland receiver for virtual-input tests
+tools/virtual-input-test.py   real uinput grab-conformance + frame-pacing comparison
 tools/run-web.sh              one-command native backend + browser bridge
 tools/viewer/                 static noVNC remote desktop + safe hold-to-drive controls
 ```
+
+### Real virtual-input conformance and latency
+
+On a Linux host with `/dev/uinput`, the following creates a temporary virtual
+keyboard/relative pointer, runs the actual headless compositor and a Wayland
+receiver, checks Meta+ScrollLock ownership/destruction behavior, then compares
+frame-paced queue draining (`--no-input-wakeup`) with eventfd dispatch during
+idle frame time:
+
+```sh
+sudo -n python3 tools/virtual-input-test.py \
+  --output /tmp/chromedrive-uinput-results --fps 20 --pairs 100 --repeats 2
+```
+
+Use `--grab-only` or `--benchmark-only` for one half. The script needs elevated
+privileges only to create the uinput device and adjust its temporary event-node
+permissions; it drops back to the invoking user before building or running the
+compositor. Latency is measured from the kernel's monotonic input timestamp to
+the Wayland client callback, and each run fails closed unless the compositor
+confirms `EVIOCSCLOCKID(CLOCK_MONOTONIC)` rather than read-time fallback. It is
+**not** visual/photon latency and does not
+make worker-side Wayland, GL, vehicle, or scene/raycast access thread-safe.
 
 ## Known limitations / next steps
 
@@ -562,8 +588,10 @@ tools/viewer/                 static noVNC remote desktop + safe hold-to-drive c
 - fbdev and DRM share asynchronous raw evdev input (keyboard,
   relative/absolute pointer, multitouch type B, single-touch). An epoll worker
   preserves monotonic kernel timestamps in a bounded queue; only the
-  compositor thread dispatches to Wayland/vehicle state. Overflow and device
-  loss force safe input release. Managed DRM grabs successfully opened
+  compositor thread dispatches to Wayland/vehicle/scene state. An eventfd
+  wakes that thread during the idle frame remainder (disable with
+  `--no-input-wakeup` for comparison); rendering and frame callbacks remain
+  capped. Overflow and device loss force safe input release. Managed DRM grabs successfully opened
   startup devices by default and fails closed on grab/regrab errors. Enumeration
   is startup-only; no hotplug rescans. Consequently, a keyboard attached after
   startup is outside the isolation guarantee, as are unreadable nodes, an

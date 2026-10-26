@@ -97,6 +97,7 @@ static void sdl_touch_down(Server *s,const SDL_TouchFingerEvent *ev,uint32_t now
 static void sdl_touch_motion(Server *s,const SDL_TouchFingerEvent *ev,uint32_t now){
  if(ev->touchId==SDL_MOUSE_TOUCHID)return;
  SdlTouchFinger *f=sdl_touch_find(s,ev->touchId,ev->fingerId,false);if(!f)return;
+ if(s->client_input_lock&&f->route!=CD_TOUCH_ROUTE_APP&&f->route!=CD_TOUCH_ROUTE_POINTER){f->last_x=sdl_touch_coord(ev->x,s->width);f->last_y=sdl_touch_coord(ev->y,s->height);return;}
  int x=sdl_touch_coord(ev->x,s->width),y=sdl_touch_coord(ev->y,s->height);
  int dx=x-f->last_x,dy=y-f->last_y;
  if(f->route==CD_TOUCH_ROUTE_APP)server_touch_motion(s,f->id,x,y,now);
@@ -152,10 +153,10 @@ void backend_sdl_poll(Server *s){
   }else if(e.type==SDL_MOUSEBUTTONDOWN||e.type==SDL_MOUSEBUTTONUP){
    if(e.button.which==SDL_TOUCH_MOUSEID)continue;
    bool down=e.type==SDL_MOUSEBUTTONDOWN;s->mouse_x=e.button.x;s->mouse_y=e.button.y;
-   if(e.button.button==SDL_BUTTON_MIDDLE){s->middle_look=down;if(down)server_pointer_motion(s,(Hit){0},now);continue;}
+   if(e.button.button==SDL_BUTTON_MIDDLE&&!s->client_input_lock){s->middle_look=down;if(down)server_pointer_motion(s,(Hit){0},now);continue;}
    Hit hit=scene_pick(s,s->mouse_x,s->mouse_y,s->pointer_grab!=NULL);
    if(e.button.button==SDL_BUTTON_LEFT&&scene_wheel_button(s,hit,e.button.x,e.button.y,down,now))continue;
-   uint32_t button=e.button.button==SDL_BUTTON_LEFT?BTN_LEFT:e.button.button==SDL_BUTTON_RIGHT?BTN_RIGHT:e.button.button==SDL_BUTTON_X1?BTN_SIDE:BTN_EXTRA;
+   uint32_t button=e.button.button==SDL_BUTTON_LEFT?BTN_LEFT:e.button.button==SDL_BUTTON_RIGHT?BTN_RIGHT:e.button.button==SDL_BUTTON_MIDDLE?BTN_MIDDLE:e.button.button==SDL_BUTTON_X1?BTN_SIDE:BTN_EXTRA;
    if(s->arrange_mode){app_arrange_pointer_button(s,hit,button,down);continue;}
    if(s->frame_dragging||hit.kind==HIT_FRAME||hit.kind==HIT_HANDLES_BUTTON){app_frame_pointer_button(s,hit,button,down);continue;}
    server_pointer_motion(s,hit,now);
