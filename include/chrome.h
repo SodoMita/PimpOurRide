@@ -181,6 +181,7 @@ SdlTouchFinger sdl_touch[CD_MAX_TOUCH_POINTS];int sdl_touch_chrome_id;
  GLuint post_temp_tex[2],post_temp_fbo[2];             /* output-size RGBA8 ping-pong destinations while a chain is active */
  int post_temp_w,post_temp_h;
  void *vnc_screen;int vnc_port;                        /* rfbScreenInfoPtr, opaque here (see backend_vnc.c) */
+ bool vnc_loopback;                                    /* RFB binds 127.0.0.1 instead of 0.0.0.0 (RFB here has no auth) */
  void *headless_state;                                 /* asynchronous pixel-pack ring, owned by backend_headless.c */
  int vnc_prev_mask,vnc_prev_x,vnc_prev_y;              /* RFB pointer edge-detection state (no separate down/up events in the protocol) */
  char fbdev_path[256];bool fbdev_vsync,fbdev_pan,fbdev_vnc_mirror,fbdev_modeset,fbdev_evdev,fbdev_grab_input;int fbdev_mode_width,fbdev_mode_height,fbdev_mode_bpp;void *fbdev_state;char fbdev_input_devices[EVDEV_MAX_DEVICES][256];int fbdev_input_device_count;void *evdev_state;
@@ -335,7 +336,14 @@ void backend_sdl_poll(Server *s);
 void backend_sdl_present(Server *s);
 void backend_sdl_shutdown(Server *s);
 /* backend_vnc.c: embedded RFB server used by headless and the fbdev mirror. */
+/* `loopback_only` is decided by the *effective* setting: set it from the
+ * command line (--vnc-loopback) or the config file (session.vnc_loopback) -
+ * backend_vnc_loopback_for() in src/main.c resolves both and announces the
+ * choice. */
 bool backend_vnc_init(Server *s,bool loopback_only);
+
+/* Print-only: announce an all-interface RFB bind before the backend starts. */
+void backend_vnc_warn_exposed(Server *s);
 void backend_vnc_poll(Server *s);
 bool backend_vnc_has_clients(Server *s);
 void backend_vnc_present_pixels(Server *s,const uint8_t *pixels);

@@ -389,6 +389,7 @@ fbdev_grab_input = false   # fbdev-only EVIOCGRAB opt-in (restart; file-only; un
 drm_grab_input = true      # managed-DRM TTY input isolation (restart; file-only; no managed VT downgrades)
 fbdev_input_devices =      # comma/whitespace-separated explicit device paths (max 32); replaces auto-enumeration (restart; file-only)
 vnc_port = 5900       # headless VNC or fbdev mirror, 1..65535; GUI typed field 1024..65535 (restart)
+vnc_loopback = true   # bind RFB to 127.0.0.1; false = 0.0.0.0 (no VNC password exists!)
 demo = false          # launch autostart apps (restart)
 socket =              # Wayland socket name, empty = automatic (restart; file-only)
 
@@ -469,7 +470,10 @@ retain both routes. Enumeration is startup-only; no hotplug rescans. Non-direct 
 (touchpads) are treated as pointer-only; raw touchpad motion is not translated
 to `wl_touch`. `wl_touch` is advertised only when a direct-touch device is
 present at startup. Without `fbdev_vnc_mirror` and no evdev devices opened,
-fbdev is output-only; with it, RFB binds `127.0.0.1` on `vnc_port`. Use
+fbdev is output-only; with it, RFB binds `127.0.0.1` on `vnc_port`. The headless
+backend does the same by default (`vnc_loopback = true`); RFB here has no
+authentication, so an all-interface bind is opt-in (`--vnc-listen-all` or
+`vnc_loopback = false`) and is announced at startup. Use
 `--backend headless|windowed|fbdev|drm`, `--fbdev [DEVICE]`, `--fbdev-device
 PATH`, `--fbdev-modeset`, `--fbdev-mode WxH[@BPP]`, `--no-fbdev-vsync`,
 `--no-fbdev-pan`, `--drm [DEVICE]`, `--drm-device PATH`, `--drm-mode WxH`, and

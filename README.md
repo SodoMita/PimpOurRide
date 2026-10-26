@@ -337,10 +337,14 @@ complete control table: [`docs/vehicle-and-remote.md`](docs/vehicle-and-remote.m
 
 ### Watching the headless session (VNC / browser preview)
 
-`--headless` starts an RFB server on `--vnc-port` (default 5900) listening on
-all interfaces. `--fbdev --fbdev-vnc-mirror` starts the same RFB input/output
-companion but binds loopback only, because that mode is opt-in and RFB here has
-no authentication. Point any VNC client at the appropriate port directly:
+`--headless` starts an RFB server on `--vnc-port` (default 5900), bound to
+**loopback** (`127.0.0.1`) because RFB as embedded here has no authentication —
+an all-interface listener would hand remote control of the session to anyone on
+the network. Pass `--vnc-listen-all` (or set `vnc_loopback = false` in
+`~/.config/chromedrive/chromedrive.conf`) to bind `0.0.0.0` on a trusted
+network; the startup log then says so in capitals. `--fbdev
+--fbdev-vnc-mirror` starts the same RFB input/output companion, always
+loopback-only. Point any VNC client at the port directly:
 
 ```sh
 vncviewer HOST:5900

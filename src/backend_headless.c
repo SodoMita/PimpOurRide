@@ -97,7 +97,10 @@ static bool headless_reap(Server *s,HeadlessState *st){
 
 bool backend_headless_init(Server *s){
  if(!backend_egl_init(s,"headless"))return false;
- if(!backend_vnc_init(s,false)){backend_egl_shutdown(s);return false;}
+ /* The bind is a session setting, not a backend constant: it defaults to
+  * loopback because RFB here has no authentication (see src/backend_vnc.c),
+  * and --vnc-listen-all / session.vnc_loopback opt out. */
+ if(!backend_vnc_init(s,s->vnc_loopback)){backend_egl_shutdown(s);return false;}
  headless_init_readback(s);return true;
 }
 
