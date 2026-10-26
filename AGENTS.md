@@ -141,6 +141,20 @@ The rule is the same shape as the PNG ban: there is exactly one right way.
 - Bake-time, not frame-time: textures with text in them are built once. If
   you add a new baked-with-text texture, add it to `ui_refresh_text()` in
   `src/ui.c` or it will keep the old language until restart.
+- **Adding an English label means adding it to every catalog in the same
+  commit.** `make test` now fails on both sides of that: *drift* (a catalog key
+  that no longer appears verbatim in `src/`/`clients/`, so a reworded label
+  cannot silently orphan its translations) and *parity* (a catalog whose key
+  set differs from `assets/locale/ru.lang`, the reference set). A language the
+  menu offers must not be half English; if a string genuinely stays English,
+  list it with the English text as its value.
+- **Prove it by drawing, not by grepping.** `tr("...")` call sites cannot see a
+  label that arrives from a table (`tr(d->label)` in the settings GUI), and
+  that is exactly how a whole column stayed English in four catalogs at once.
+  `CHROMEDRIVE_TEXT_AUDIT=1` makes `tr()` report every prose string it could
+  not translate; `make check-text` runs it over every language, over the
+  clients *and* the compositor, and fails on anything not declared in
+  `assets/locale/untranslated.allow`.
 - `make test` runs `tests/test_i18n.c`, which fails if a shipped catalog key
   no longer appears verbatim in the sources. Rewording an English string
   means updating `assets/locale/ru.lang` in the same commit. It also runs
