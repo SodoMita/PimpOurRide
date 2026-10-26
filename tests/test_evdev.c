@@ -24,6 +24,9 @@ typedef struct {
     FakeKind kind;
     int fd,write_fd;
     int opens;
+    int grab_calls,grab_value;
+    int fail_grab_value; /* -1: never; 0: fail release; 1: fail acquire */
+    int grab_errno;
     uint8_t evbit[EV_MAX/8+1];
     uint8_t keybit[KEY_MAX/8+1];
     uint8_t relbit[REL_MAX/8+1];
@@ -54,6 +57,7 @@ static void add_device(int index,FakeKind kind){
     snprintf(d->path,sizeof(d->path),"/dev/input/event%d",index);
     snprintf(d->name,sizeof(d->name),"fake-%d",index);
     d->kind=kind;d->fd=-1;d->write_fd=-1;
+    d->grab_value=-1;d->fail_grab_value=-1;d->grab_errno=EBUSY;
     if(kind==FAKE_UNSUPPORTED)return;
     bit_set(d->evbit,EV_KEY);
     if(kind==FAKE_KEYBOARD){
@@ -102,10 +106,19 @@ static void copy_bits(void *argument,const uint8_t *source,size_t source_size,un
     memset(argument,0,size);memcpy(argument,source,size);
 }
 int __wrap_ioctl(int fd,unsigned long request,...){
-    va_list ap;va_start(ap,request);void *argument=va_arg(ap,void *);va_end(ap);
+    va_list ap;va_start(ap,request);
+    if(request==EVIOCGRAB){
+        int value=va_arg(ap,int);va_end(ap);
+        FakeDevice *d=find_fd(fd);
+        if(!d)return __real_ioctl(fd,request,value);
+        d->grab_calls++;d->grab_value=value;
+        if(d->fail_grab_value==value){errno=d->grab_errno;return -1;}
+        return 0;
+    }
+    void *argument=va_arg(ap,void *);va_end(ap);
     FakeDevice *d=find_fd(fd);
     if(!d)return __real_ioctl(fd,request,argument);
-    if(request==EVIOCSCLOCKID||request==EVIOCGRAB)return 0;
+    if(request==EVIOCSCLOCKID)return 0;
     unsigned nr=_IOC_NR(request);
     if(nr>=_IOC_NR(EVIOCGBIT(0,0))&&nr<=_IOC_NR(EVIOCGBIT(EV_MAX,0))){
         unsigned ev=nr-_IOC_NR(EVIOCGBIT(0,0));
@@ -173,18 +186,22 @@ static void test_mouse_nodes_do_not_hide_keyboard(void){
         FakeKind kind=i==8?FAKE_UNSUPPORTED:(i==9?FAKE_KEYBOARD:(i==0?FAKE_HYBRID:FAKE_MOUSE));
         add_device(i,kind);
     }
-    Server s;init_server(&s);CHECK(backend_evdev_init(&s));
+    Server s;init_server(&s);s.drm_grab_input=true;s.fbdev_grab_input=false;
+    CHECK(backend_evdev_init(&s));
     EvdevState *st=(EvdevState *)s.evdev_state;
     CHECK(st!=NULL);
     if(st){
         CHECK(st->device_count==11); /* one unusable node must not consume a slot */
-        bool keyboard=false,hybrid=false;
+        CHECK(st->grab_input&&st->grab_required);
+        bool keyboard=false,hybrid=false,all_grabbed=true;
         for(int i=0;i<st->device_count;i++){
             EvdevDevice *d=&st->devices[i];
             if(!strcmp(d->path,"/dev/input/event9"))keyboard=d->type==EVDEV_DEV_KEYBOARD;
             if(!strcmp(d->path,"/dev/input/event0"))hybrid=d->type==EVDEV_DEV_REL_POINTER&&d->has_keys;
+            FakeDevice *fake=find_path(d->path);
+            all_grabbed&=d->grabbed&&fake&&fake->grab_value==1;
         }
-        CHECK(keyboard);CHECK(hybrid);
+        CHECK(keyboard);CHECK(hybrid);CHECK(all_grabbed);
         /* Drive the real epoll worker + bounded queue. Distinct keys prove
          * that both the late keyboard and hybrid pointer retain key delivery. */
         fake_vt_managed=true;
@@ -198,6 +215,7 @@ static void test_mouse_nodes_do_not_hide_keyboard(void){
         CHECK(last_vt==1);CHECK(!(key_seen&(1ull<<KEY_F1)));
     }
     backend_evdev_shutdown(&s);check_all_closed();
+    for(int i=0;i<12;i++)if(i!=8)CHECK(devices[i].grab_value==0);
 }
 static void test_discovery_scans_past_unusable_candidates(void){
     reset_fake();
@@ -229,6 +247,94 @@ static void test_explicit_devices_use_full_capacity(void){
     EvdevState *st=(EvdevState *)s.evdev_state;
     CHECK(st&&st->device_count==12);
     if(st&&st->device_count==12)CHECK(st->devices[11].type==EVDEV_DEV_KEYBOARD);
+    backend_evdev_shutdown(&s);check_all_closed();
+}
+
+static void test_fbdev_policy_remains_opt_in(void){
+    reset_fake();add_device(0,FAKE_KEYBOARD);
+    Server s;init_server(&s);s.backend=CD_BACKEND_FBDEV;
+    s.drm_grab_input=true;s.fbdev_grab_input=false;
+    CHECK(backend_evdev_init(&s));
+    EvdevState *st=(EvdevState *)s.evdev_state;
+    CHECK(st&&st->device_count==1);
+    if(st){
+        CHECK(!st->grab_input&&!st->grab_required);
+        CHECK(!st->devices[0].grabbed);
+    }
+    CHECK(devices[0].grab_calls==0);
+    backend_evdev_shutdown(&s);check_all_closed();
+}
+
+static void test_startup_grab_failure_fails_closed(void){
+    reset_fake();add_device(0,FAKE_KEYBOARD);add_device(1,FAKE_MOUSE);
+    devices[0].fail_grab_value=1;devices[0].grab_errno=EPERM;
+    Server s;init_server(&s);s.drm_grab_input=true;
+    CHECK(!backend_evdev_init(&s));
+    CHECK(s.evdev_state==NULL);
+    CHECK(devices[0].fd<0&&devices[1].fd<0);
+    CHECK(devices[1].grab_value==0); /* partial acquisition was released */
+    check_all_closed();
+
+    /* fbdev's explicitly requested grab retains its documented weaker
+     * fallback; the new fail-closed guarantee belongs to managed DRM. */
+    reset_fake();add_device(0,FAKE_KEYBOARD);devices[0].fail_grab_value=1;
+    init_server(&s);s.backend=CD_BACKEND_FBDEV;s.fbdev_grab_input=true;
+    CHECK(backend_evdev_init(&s));
+    EvdevState *st=(EvdevState *)s.evdev_state;
+    CHECK(st&&st->grab_input&&!st->grab_required&&st->device_count==1);
+    if(st)CHECK(!st->devices[0].grabbed);
+    backend_evdev_shutdown(&s);check_all_closed();
+}
+
+static void test_grab_suspend_resume_and_resume_failure(void){
+    reset_fake();add_device(0,FAKE_KEYBOARD);add_device(1,FAKE_MOUSE);
+    Server s;init_server(&s);s.drm_grab_input=true;
+    CHECK(backend_evdev_init(&s));
+    EvdevState *st=(EvdevState *)s.evdev_state;
+    CHECK(st&&st->device_count==2);
+    backend_evdev_suspend(&s);
+    CHECK(st->suspended);
+    for(int i=0;i<2;i++){
+        CHECK(st->devices[i].fd>=0&&!st->devices[i].grabbed);
+        CHECK(devices[i].grab_value==0);
+    }
+    CHECK(backend_evdev_resume(&s));
+    CHECK(!st->suspended);
+    for(int i=0;i<2;i++)CHECK(st->devices[i].grabbed&&devices[i].grab_value==1);
+
+    backend_evdev_suspend(&s);
+    devices[1].fail_grab_value=1;
+    CHECK(!backend_evdev_resume(&s));
+    CHECK(st->suspended); /* the VT layer must now enter cleanup */
+    for(int i=0;i<2;i++)CHECK(!st->devices[i].grabbed);
+    CHECK(devices[0].grab_value==0); /* earlier partial regrab was released */
+    backend_evdev_shutdown(&s);check_all_closed();
+}
+
+static void test_failed_release_cannot_resume_unverified_device(void){
+    reset_fake();add_device(0,FAKE_KEYBOARD);
+    Server s;init_server(&s);s.drm_grab_input=true;
+    CHECK(backend_evdev_init(&s));
+    EvdevState *st=(EvdevState *)s.evdev_state;
+    devices[0].fail_grab_value=0;
+    backend_evdev_suspend(&s);
+    CHECK(st&&st->suspended);
+    if(st){
+        CHECK(st->devices[0].fd<0&&st->devices[0].grab_release_failed);
+        CHECK(!backend_evdev_resume(&s));
+        CHECK(st->suspended);
+    }
+    backend_evdev_shutdown(&s);check_all_closed();
+}
+
+static void test_virtual_device_is_excluded_before_grab(void){
+    reset_fake();add_device(0,FAKE_KEYBOARD);
+    snprintf(devices[0].name,sizeof(devices[0].name),"ChromeDrive test steering wheel");
+    Server s;init_server(&s);s.drm_grab_input=true;
+    CHECK(backend_evdev_init(&s));
+    EvdevState *st=(EvdevState *)s.evdev_state;
+    CHECK(st&&st->device_count==0);
+    CHECK(devices[0].grab_calls==0);
     backend_evdev_shutdown(&s);check_all_closed();
 }
 
@@ -265,6 +371,11 @@ int main(void){
     test_mouse_nodes_do_not_hide_keyboard();
     test_discovery_scans_past_unusable_candidates();
     test_explicit_devices_use_full_capacity();
+    test_fbdev_policy_remains_opt_in();
+    test_startup_grab_failure_fails_closed();
+    test_grab_suspend_resume_and_resume_failure();
+    test_failed_release_cannot_resume_unverified_device();
+    test_virtual_device_is_excluded_before_grab();
     if(failures){fprintf(stderr,"test_evdev: %d failure(s)\n",failures);return 1;}
     puts("test_evdev: ok");return 0;
 }

@@ -181,6 +181,10 @@ SdlTouchFinger sdl_touch[CD_MAX_TOUCH_POINTS];int sdl_touch_chrome_id;
  int vnc_prev_mask,vnc_prev_x,vnc_prev_y;              /* RFB pointer edge-detection state (no separate down/up events in the protocol) */
  char fbdev_path[256];bool fbdev_vsync,fbdev_pan,fbdev_vnc_mirror,fbdev_modeset,fbdev_evdev,fbdev_grab_input;int fbdev_mode_width,fbdev_mode_height,fbdev_mode_bpp;void *fbdev_state;char fbdev_input_devices[EVDEV_MAX_DEVICES][256];int fbdev_input_device_count;void *evdev_state;
  char drm_path[256];int drm_mode_width,drm_mode_height;void *drm_state;
+ /* DRM has managed VT release/reacquire and can isolate input by default.
+  * Keep this separate from the legacy fbdev option: an old generated config
+  * containing fbdev_grab_input=false must not silently disable DRM safety. */
+ bool drm_grab_input;
  void *vt_state; /* backend_vt.c: managed VT signalfd/mode state for DRM */
  bool dmabuf_supported;int dmabuf_format_count;DmabufFormat dmabuf_formats[CD_DMABUF_MAX_FORMATS];
  int width,height,fps_limit,theme,hover_button,hover_close,active_slot;
@@ -397,6 +401,10 @@ typedef struct {
     char name[256];
     EvdevDevType type;
     bool grabbed;
+    /* A failed EVIOCGRAB release closes the fd as the kernel release fallback.
+     * Managed DRM must fail closed on resume instead of forgetting that this
+     * still-present device could type into the console ungrabbed. */
+    bool grab_release_failed;
     bool monotonic_timestamps; /* EVIOCSCLOCKID(CLOCK_MONOTONIC), else read-time fallback */
     bool has_rel_x, has_rel_y;
     bool has_abs_x, has_abs_y;
@@ -420,6 +428,9 @@ typedef struct {
     EvdevDevice devices[EVDEV_MAX_DEVICES];
     int device_count;
     bool grab_input;
+    /* Managed DRM promises exclusive input: startup/resume grab failures are
+     * session-fatal. Explicit fbdev grabbing retains its weaker opt-in fallback. */
+    bool grab_required,grab_failed;
     char explicit_paths[EVDEV_MAX_DEVICES][256];
     int explicit_count;
     bool evdev_enabled;

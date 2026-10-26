@@ -218,7 +218,7 @@ static void test_signals_shortcuts_and_retry(void){
  check_shutdown(&s,true);
 }
 
-static void test_input_resume_failure_does_not_lock_vt(void){
+static void test_input_resume_failure_enters_cleanup(void){
  reset_world();
  Server s;init_server(&s);CHECK(backend_vt_init(&s));
  CHECK(raise(SIGUSR1)==0);backend_vt_service(&s);
@@ -226,10 +226,11 @@ static void test_input_resume_failure_does_not_lock_vt(void){
  W.evdev_resume_result=false;
  CHECK(raise(SIGUSR2)==0);backend_vt_service(&s);
  CHECK(W.evdev_resume_calls==1);
- /* Presentation may resume, but the evdev implementation has ungrabbed all
-  * devices on this path; the VT itself must not remain in resume limbo. */
- CHECK(!backend_vt_is_suspended(&s));
- CHECK(s.running);
+ /* Do not resume presentation after a failed regrab. Keeping the suspended
+  * state also prevents another frame before the normal cleanup/VT restore. */
+ CHECK(backend_vt_is_suspended(&s));
+ CHECK(backend_vt_needs_resume(&s));
+ CHECK(!s.running);
  check_shutdown(&s,true);
 }
 
@@ -281,7 +282,7 @@ int main(void){
  test_no_tty();
  test_non_tty_and_mode_failure();
  test_signals_shortcuts_and_retry();
- test_input_resume_failure_does_not_lock_vt();
+ test_input_resume_failure_enters_cleanup();
  test_ack_failures_enter_cleanup();
  test_shutdown_acknowledges_pending_release();
  drain_pending_signals();

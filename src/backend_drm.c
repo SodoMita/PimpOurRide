@@ -281,9 +281,9 @@ bool backend_drm_init(Server *s){
   st->connector_name,st->connector_id,st->crtc_id,st->mode.hdisplay,st->mode.vdisplay,st->mode.vrefresh);
  /* Managed VT switching needs /dev/tty. Without it, grab would make the
   * kernel Ctrl+Alt+F* chord unreachable, so downgrade rather than trap input. */
- if(s->fbdev_grab_input&&!backend_vt_managed(s)){
-  s->fbdev_grab_input=false;
-  fprintf(stderr,"[drm] no managed VT available; EVIOCGRAB downgraded so kernel VT switching stays reachable\n");
+ if(s->drm_grab_input&&!backend_vt_managed(s)){
+  s->drm_grab_input=false;
+  fprintf(stderr,"[drm] no managed VT available; EVIOCGRAB downgraded so kernel VT switching stays reachable (TTY input isolation is unavailable)\n");
  }
  if(s->fbdev_evdev&&!backend_evdev_init(s))goto fail;
  if(s->fbdev_evdev&&(!s->evdev_state||((EvdevState*)s->evdev_state)->device_count==0))
@@ -447,6 +447,16 @@ static void drm_destroy(Server *s,bool inactive){
 }
 
 void backend_drm_shutdown(Server *s){
- drm_destroy(s,backend_vt_is_suspended(s));
+ DrmState *st=drm_state(s);
+ /* Input reacquisition runs after drmSetMaster. If it then fails, the VT
+  * stays suspended to prevent frames, but this VT is active and master is
+  * held again: cleanup must restore the saved CRTC rather than taking the
+  * inactive-VT path. A genuinely released session is masterless. */
+ bool suspended=backend_vt_is_suspended(s);
+ bool reacquired=suspended&&st&&st->master;
+ /* Release cleared mode_set after disabling the CRTC. No new frame is allowed
+  * on this failure path, but the original console mode still needs restoring. */
+ if(reacquired)st->mode_set=true;
+ drm_destroy(s,suspended&&!reacquired);
  backend_vt_shutdown(s);
 }
