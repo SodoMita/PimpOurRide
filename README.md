@@ -282,12 +282,17 @@ render_scale = 2
 post_shader = shaders/hermite-downscale.frag;shaders/khronos-pbr-neutral.frag
 ```
 
-Settings > Display exposes four preset checkboxes (Hermite downscale, Hermite
-downscale mipmap, SSIM downscale, Khronos PBR Neutral tone map). They write the
-chain in top-to-bottom order and keep any custom (non-preset) paths already
-stored in the file. Arbitrary `.frag` paths still go in the config file; the
-GUI toggles only its bundled presets. `off`, empty or missing means no post;
-empty entries and an `off` token anywhere in the list are skipped, so a single
+Settings > Display discovers `.frag` files in three places: the install's
+`shaders/` directory, `./shaders`, and the config directory's
+`chromedrive/shaders/` (`~/.config/chromedrive/shaders/` by default). Drop a
+shader into the user folder to add a checkbox without editing the config file.
+Rows are sorted by filename, which is also the chain order, so prefix files
+with `10-`, `20-`, etc. to control it; a user shader with the same basename
+shadows the bundled one. Toggling writes enabled rows in that order, then any
+stored paths the scan did not find (each keeps its own row) in their existing
+order. If no shader files are found at all, the four historical relative
+presets are shown so the section is never empty. `off`, empty or missing means
+no post; empty entries and an `off` token anywhere in the list are skipped, so a single
 path without `;` behaves exactly as before. While at least one stage is loaded
 the compositor forces the offscreen path even at `render_scale = 1`, bypassing
 the direct/windowed-MSAA path. Every stage receives `u_src`/`u_size` (the

@@ -259,12 +259,15 @@ render_scale = 2
 post_shader = shaders/hermite-downscale.frag;shaders/khronos-pbr-neutral.frag
 ```
 
-Settings > Display exposes four preset checkboxes, in chain order: Hermite
-downscale, Hermite downscale (mipmap), SSIM downscale, and Khronos PBR Neutral
-tone map. Each writes the full list with the known presets in that
-top-to-bottom order; custom (non-preset) entries already in the file are kept
-after the presets in their existing relative order. Arbitrary `.frag` paths
-are still set in the config file (the GUI has no free-text field for them).
+Settings > Display discovers `.frag` files in the install's `shaders/`
+directory, `./shaders`, and the config directory's `chromedrive/shaders/`
+(`~/.config/chromedrive/shaders/` by default). Drop a shader there to add a
+checkbox without editing this file. Rows are sorted by filename, and that is
+the chain order, so use `10-`/`20-` prefixes to order them. A user shader with
+the same basename shadows the bundled file. Toggling writes the enabled rows
+in that order, then any stored paths the scan did not find (each keeps its own
+row) in their existing order. If no shader files are found at all, the four
+historical relative presets are shown so the section is never empty.
 "Reset tab to defaults" writes `off` and drops custom entries.
 
 The compositor supplies the vertex shader (the post quad) and these uniforms

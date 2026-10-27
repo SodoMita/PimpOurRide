@@ -136,6 +136,16 @@ static const Def G3_DEFS[] = {
 /* Row 0 is filled in at runtime by gui_load_languages(): its choices are the
  * catalogs actually installed, which is not knowable at compile time. */
 #define CD_LANGUAGE_ROW 0
+
+/* Post FX rows are filled at runtime by gui_load_post_fx_rows(). Every slot
+ * starts inactive (fmt == NULL) and invisible until a .frag is discovered.
+ * Def keeps bare pointers, so these backing stores must outlive the table. */
+#define POST_FX_SLOTS 16
+static char post_fx_label_buf[POST_FX_SLOTS][320];
+static char post_fx_path_buf[POST_FX_SLOTS][4096];
+#define POST_FX_ROW(n) { "Display", "display", "post_shader", post_fx_label_buf[n], \
+                         K_BOOL, 0, 0, 0, NULL, "off", {0}, 0, false, false }
+
 static Def CD_DEFS[] = {
     { "Interface", "ui", "language", "Interface language", K_ENUM, 0, 0, 1, NULL, "auto", {0}, 0, true, false },
     { "Display", "display", "width", "Framebuffer width", K_INT, 640, 3840, 10, "%.0f", "1600", {0}, 0, false, true },
@@ -146,12 +156,25 @@ static Def CD_DEFS[] = {
     { "Display", "display", "render_scale", "3D render scale (HUD stays native)", K_FLOAT_INPUT, 0.001, 100, 0, "%.6g", "1", {0}, 0, false, false },
     { "Display", "display", "render_upscale", "Render upscale sampling", K_ENUM, 0, 1, 1, NULL, "linear", { "nearest", "linear" }, 2, true, false },
     { "Display", "display", "render_downscale", "Render downscale sampling", K_ENUM, 0, 5, 1, NULL, "linear_mipmap_linear", { "nearest", "linear", "nearest_mipmap_nearest", "linear_mipmap_nearest", "nearest_mipmap_linear", "linear_mipmap_linear" }, 6, true, false },
-    /* Four preset toggles share display.post_shader; fmt holds the path and
-     * toggles write the whole ';'-chain in canonical row order. */
-    { "Display", "display", "post_shader", "Post FX: Hermite downscale", K_BOOL, 0, 0, 0, "shaders/hermite-downscale.frag", "off", {0}, 0, false, false },
-    { "Display", "display", "post_shader", "Post FX: Hermite downscale (mipmap)", K_BOOL, 0, 0, 0, "shaders/hermite-downscale-mipmap.frag", "off", {0}, 0, false, false },
-    { "Display", "display", "post_shader", "Post FX: SSIM downscale", K_BOOL, 0, 0, 0, "shaders/ssim-downscale.frag", "off", {0}, 0, false, false },
-    { "Display", "display", "post_shader", "Post FX: Khronos PBR Neutral tone map", K_BOOL, 0, 0, 0, "shaders/khronos-pbr-neutral.frag", "off", {0}, 0, false, false },
+    /* All post-FX rows share display.post_shader; fmt holds the discovered
+     * path (NULL while inactive) and toggles write the whole ';'-chain in
+     * slot order. */
+    POST_FX_ROW(0),
+    POST_FX_ROW(1),
+    POST_FX_ROW(2),
+    POST_FX_ROW(3),
+    POST_FX_ROW(4),
+    POST_FX_ROW(5),
+    POST_FX_ROW(6),
+    POST_FX_ROW(7),
+    POST_FX_ROW(8),
+    POST_FX_ROW(9),
+    POST_FX_ROW(10),
+    POST_FX_ROW(11),
+    POST_FX_ROW(12),
+    POST_FX_ROW(13),
+    POST_FX_ROW(14),
+    POST_FX_ROW(15),
     { "Display", "display", "fullscreen", "Start fullscreen (windowed)", K_BOOL, 0, 0, 0, NULL, "false", {0}, 0, false, true },
     { "Cockpit", "cockpit", "neon", "Underglow colour", K_ENUM, 0, 2, 1, NULL, "0", { "Ultraviolet", "Ice Blue", "Acid Lime" }, 3, false, false },
     { "Cockpit", "cockpit", "hud", "HUD overlay", K_BOOL, 0, 0, 0, NULL, "true", {0}, 0, false, false },
@@ -162,6 +185,34 @@ static Def CD_DEFS[] = {
     { "Session", "session", "demo", "Launch autostart apps at start", K_BOOL, 0, 0, 0, NULL, "false", {0}, 0, false, true },
 };
 #define N_CD_DEFS ((int)(sizeof(CD_DEFS) / sizeof(CD_DEFS[0])))
+
+/* The post-FX rows are contiguous in CD_DEFS. Locate the first one instead of
+ * hard-coding an index that could drift if the Display section is reordered. */
+static int cd_post_first_row(void) {
+    for (int i = 0; i < N_CD_DEFS; i++)
+        if (CD_DEFS[i].kind == K_BOOL && !strcmp(CD_DEFS[i].key, "post_shader"))
+            return i;
+    return -1;
+}
+static Def *cd_post_slot(int slot) {
+    int first = cd_post_first_row();
+    if (first < 0 || slot < 0 || slot >= POST_FX_SLOTS) return NULL;
+    return &CD_DEFS[first + slot];
+}
+static int cd_post_slot_of(const Def *d) {
+    if (!d || d->kind != K_BOOL || strcmp(d->key, "post_shader")) return -1;
+    int first = cd_post_first_row();
+    if (first < 0) return -1;
+    int slot = (int)(d - CD_DEFS) - first;
+    return slot >= 0 && slot < POST_FX_SLOTS ? slot : -1;
+}
+static int cd_post_slot_of_row(int row) {
+    if (row < 0 || row >= N_CD_DEFS) return -1;
+    return cd_post_slot_of(&CD_DEFS[row]);
+}
+static bool post_slot_inactive(const Def *d) {
+    return d->kind == K_BOOL && !strcmp(d->key, "post_shader") && !d->fmt;
+}
 
 /* -------------------------------------------------- launch-menu app slots */
 
@@ -283,28 +334,32 @@ static void gui_sync_language(Gui *g);
 
 /* ---- display.post_shader chain helpers ---------------------------------
  * The config value is a ';'-separated list of .frag paths (engine side: empty
- * tokens and "off" skipped, max eight stages). The GUI exposes four preset
- * booleans that all write the same key; fmt carries each preset's path and
+ * tokens and "off" skipped, max eight stages). The GUI exposes one boolean
+ * row per discovered shader; fmt carries the row's written path and
  * def_get_bool answers membership in the parsed list. Recomputing a write
- * puts known presets first in canonical row order, then preserves any custom
- * (non-preset) entries in their existing relative order. */
-#define CD_POST_PRESET_COUNT 4
-static const char *const post_shader_presets[CD_POST_PRESET_COUNT] = {
-    "shaders/hermite-downscale.frag",
-    "shaders/hermite-downscale-mipmap.frag",
-    "shaders/ssim-downscale.frag",
-    "shaders/khronos-pbr-neutral.frag",
-};
+ * puts enabled slots first in row order, then preserves stored entries that
+ * no slot represents in their existing relative order. */
 #define CD_POST_LIST_CAP 2048
+static const char *post_fx_basename(const char *path) {
+    const char *slash = strrchr(path, '/');
+    return slash ? slash + 1 : path;
+}
 static bool post_shader_token_live(const char *tok, size_t len) {
     return len > 0 && !(len == 3 && memcmp(tok, "off", 3) == 0);
 }
-static bool post_shader_token_is_preset(const char *tok, size_t len) {
-    for (int i = 0; i < CD_POST_PRESET_COUNT; i++)
-        if (strlen(post_shader_presets[i]) == len &&
-            memcmp(tok, post_shader_presets[i], len) == 0)
-            return true;
-    return false;
+/* A stored entry represents a slot when it is the exact written value or its
+ * basename matches the slot file, so hand-edited "./shaders/x.frag" still
+ * checks the "shaders/x.frag" row. */
+static bool post_shader_token_matches(const char *tok, size_t len, const char *value) {
+    size_t vlen = strlen(value);
+    if (len == vlen && memcmp(tok, value, len) == 0) return true;
+    const char *tb = tok;
+    for (size_t i = 0; i < len; i++)
+        if (tok[i] == '/') tb = tok + i + 1;
+    const char *vb = post_fx_basename(value);
+    size_t tbl = len - (size_t)(tb - tok);
+    size_t vbl = strlen(vb);
+    return tbl == vbl && memcmp(tb, vb, tbl) == 0;
 }
 /* Trimmed token iterator over a ';' list. Empty tokens are skipped; returns
  * the next scan position, or NULL when the list is exhausted. */
@@ -322,13 +377,12 @@ static const char *post_shader_next_token(const char *p, const char **tok, size_
     }
     return NULL;
 }
-static bool post_shader_contains(const char *list, const char *path) {
-    size_t want = strlen(path);
+static bool post_shader_contains(const char *list, const char *value) {
     const char *tok = NULL, *p = list;
     size_t len = 0;
     while ((p = post_shader_next_token(p, &tok, &len)) != NULL)
-        if (post_shader_token_live(tok, len) && len == want &&
-            memcmp(tok, path, len) == 0)
+        if (post_shader_token_live(tok, len) &&
+            post_shader_token_matches(tok, len, value))
             return true;
     return false;
 }
@@ -340,27 +394,210 @@ static void post_shader_append(char *out, size_t *used, const char *tok, size_t 
     *used += len;
     out[*used] = 0;
 }
-static void post_shader_toggle(CdConfig *st, const char *toggled, bool on) {
+static void post_shader_toggle(CdConfig *st, int row, bool on) {
+    int toggled = cd_post_slot_of_row(row);
+    if (toggled < 0) return;
     const char *cur = cd_config_get_string(st, "display", "post_shader", "");
     char out[CD_POST_LIST_CAP];
     size_t used = 0;
     out[0] = 0;
-    for (int i = 0; i < CD_POST_PRESET_COUNT; i++) {
-        const char *preset = post_shader_presets[i];
-        bool want = strcmp(preset, toggled) == 0 ? on : post_shader_contains(cur, preset);
-        if (want) post_shader_append(out, &used, preset, strlen(preset));
+    for (int s = 0; s < POST_FX_SLOTS; s++) {
+        const Def *d = cd_post_slot(s);
+        if (!d || !d->fmt) continue;
+        bool want = s == toggled ? on : post_shader_contains(cur, d->fmt);
+        if (want) post_shader_append(out, &used, d->fmt, strlen(d->fmt));
     }
     const char *tok = NULL, *p = cur;
     size_t len = 0;
     while ((p = post_shader_next_token(p, &tok, &len)) != NULL) {
-        if (!post_shader_token_live(tok, len) || post_shader_token_is_preset(tok, len))
-            continue;
-        post_shader_append(out, &used, tok, len);
+        if (!post_shader_token_live(tok, len)) continue;
+        bool represented = false;
+        for (int s = 0; s < POST_FX_SLOTS && !represented; s++) {
+            const Def *d = cd_post_slot(s);
+            if (d && d->fmt && post_shader_token_matches(tok, len, d->fmt))
+                represented = true;
+        }
+        if (!represented) post_shader_append(out, &used, tok, len);
     }
     cd_config_set_string(st, "display", "post_shader", used ? out : "off");
 }
 static void post_shader_reset(CdConfig *st) {
     cd_config_set_string(st, "display", "post_shader", "off");
+}
+
+/* ---- post shader discovery ---------------------------------------------
+ * Folders are scanned for regular *.frag files (case-sensitive, dotfiles
+ * skipped): <root>/shaders, ./shaders when it is a different directory, and
+ * <config-dir>/chromedrive/shaders. The user config folder wins over the
+ * bundled folder and the bundled folder wins over the current directory when
+ * two files share a basename. Rows are sorted by basename, which is also the
+ * chain order. */
+typedef struct {
+    char base[256];
+    char value[4096];
+    int prio;                   /* config 3 > install root 2 > cwd 1 */
+} PostFxCandidate;
+
+static bool post_fx_push(PostFxCandidate **list, int *count, int *cap,
+                         const char *base, const char *value, int prio) {
+    if (*count == *cap) {
+        int ncap = *cap ? *cap * 2 : 32;
+        PostFxCandidate *grown = realloc(*list, (size_t)ncap * sizeof(**list));
+        if (!grown) return false;
+        *list = grown;
+        *cap = ncap;
+    }
+    PostFxCandidate *c = &(*list)[(*count)++];
+    snprintf(c->base, sizeof c->base, "%s", base);
+    snprintf(c->value, sizeof c->value, "%s", value);
+    c->prio = prio;
+    return true;
+}
+static void post_fx_add_dir(PostFxCandidate **list, int *count, int *cap,
+                            const char *dir, int prio, bool absolute) {
+    DIR *d = opendir(dir);
+    if (!d) return;
+    char absdir[4096];
+    absdir[0] = 0;
+    if (absolute) {
+        if (dir[0] == '/') {
+            if (snprintf(absdir, sizeof absdir, "%s", dir) >= (int)sizeof absdir)
+                absdir[0] = 0;
+        } else {
+            char cwd[4096];
+            if (!getcwd(cwd, sizeof cwd) ||
+                snprintf(absdir, sizeof absdir, "%s/%s", cwd, dir) >= (int)sizeof absdir)
+                absdir[0] = 0;
+        }
+    }
+    struct dirent *e;
+    while ((e = readdir(d)) != NULL) {
+        if (e->d_name[0] == '.') continue;
+        size_t n = strlen(e->d_name);
+        if (n <= 5 || strcmp(e->d_name + n - 5, ".frag")) continue;
+        char path[4096];
+        if (snprintf(path, sizeof path, "%s/%s", dir, e->d_name) >= (int)sizeof path)
+            continue;
+        struct stat st;
+        if (stat(path, &st) != 0 || !S_ISREG(st.st_mode)) continue;
+        char value[4096];
+        if (absolute) {
+            if (!absdir[0] ||
+                snprintf(value, sizeof value, "%s/%s", absdir, e->d_name) >= (int)sizeof value)
+                continue;
+        } else {
+            if (snprintf(value, sizeof value, "shaders/%s", e->d_name) >= (int)sizeof value)
+                continue;
+        }
+        if (!post_fx_push(list, count, cap, e->d_name, value, prio)) break;
+    }
+    closedir(d);
+}
+static int post_fx_cmp(const void *pa, const void *pb) {
+    const PostFxCandidate *a = pa, *b = pb;
+    int c = strcmp(a->base, b->base);
+    if (c) return c;
+    if (a->prio != b->prio) return b->prio - a->prio;
+    return strcmp(a->value, b->value);
+}
+static void post_fx_clear_slots(void) {
+    for (int s = 0; s < POST_FX_SLOTS; s++) {
+        Def *d = cd_post_slot(s);
+        if (!d) continue;
+        d->fmt = NULL;
+        d->label = post_fx_label_buf[s];
+        post_fx_label_buf[s][0] = 0;
+        post_fx_path_buf[s][0] = 0;
+    }
+}
+static void post_fx_fill_slot(int slot, const char *base, bool strip_suffix,
+                              const char *value) {
+    Def *d = cd_post_slot(slot);
+    if (!d) return;
+    char stem[256];
+    snprintf(stem, sizeof stem, "%s", base);
+    size_t blen = strlen(stem);
+    if (strip_suffix && blen > 5 && !strcmp(stem + blen - 5, ".frag")) stem[blen - 5] = 0;
+    char label[320];
+    snprintf(label, sizeof label, "Post FX: %s", stem);
+    snprintf(post_fx_label_buf[slot], sizeof post_fx_label_buf[slot], "%s", label);
+    snprintf(post_fx_path_buf[slot], sizeof post_fx_path_buf[slot], "%s", value);
+    d->label = post_fx_label_buf[slot];
+    d->fmt = post_fx_path_buf[slot];
+}
+static void gui_load_post_fx_rows(Gui *g) {
+    post_fx_clear_slots();
+    PostFxCandidate *cand = NULL;
+    int n = 0, cap = 0;
+    char root_shaders[4096];
+    bool have_root = g->root[0] &&
+                     snprintf(root_shaders, sizeof root_shaders, "%s/shaders", g->root) <
+                         (int)sizeof root_shaders;
+    if (have_root) post_fx_add_dir(&cand, &n, &cap, root_shaders, 2, false);
+    if (!have_root || strcmp(root_shaders, "./shaders"))
+        post_fx_add_dir(&cand, &n, &cap, "./shaders", 1, false);
+    const char *conf = g->path[FILE_CD];
+    const char *slash = strrchr(conf, '/');
+    char cdir[4096];
+    if (slash) {
+        size_t dlen = (size_t)(slash - conf);
+        if (dlen < sizeof cdir) { memcpy(cdir, conf, dlen); cdir[dlen] = 0; }
+        else cdir[0] = 0;
+    } else snprintf(cdir, sizeof cdir, ".");
+    if (cdir[0]) {
+        char csh[4096];
+        if (snprintf(csh, sizeof csh, "%s/shaders", cdir) < (int)sizeof csh)
+            post_fx_add_dir(&cand, &n, &cap, csh, 3, true);
+    }
+    int found = n;
+    if (n > 1) qsort(cand, (size_t)n, sizeof *cand, post_fx_cmp);
+    int w = 0;
+    for (int i = 0; i < n; i++) {
+        if (w > 0 && !strcmp(cand[w - 1].base, cand[i].base)) continue;
+        cand[w++] = cand[i];
+    }
+    n = w;
+    int slot = 0;
+    for (int i = 0; i < n && slot < POST_FX_SLOTS; i++, slot++)
+        post_fx_fill_slot(slot, cand[i].base, true, cand[i].value);
+    /* Odd run layouts (an installed binary outside its tree, no shaders on
+     * disk) would otherwise leave Display with no post rows at all. Keep the
+     * four historical relative presets as a visible, still-editable fallback. */
+    if (found == 0) {
+        static const char *const fallback[] = {
+            "shaders/hermite-downscale.frag",
+            "shaders/hermite-downscale-mipmap.frag",
+            "shaders/ssim-downscale.frag",
+            "shaders/khronos-pbr-neutral.frag",
+        };
+        for (int i = 0; i < 4 && slot < POST_FX_SLOTS; i++, slot++)
+            post_fx_fill_slot(slot, post_fx_basename(fallback[i]), true, fallback[i]);
+    }
+    /* Keep stored entries the scan did not find visible and removable (the
+     * file may have been deleted, or the path may live outside the folders). */
+    if (g->store[FILE_CD]) {
+        const char *cur = cd_config_get_string(g->store[FILE_CD], "display",
+                                               "post_shader", "");
+        const char *tok = NULL, *p = cur;
+        size_t len = 0;
+        while ((p = post_shader_next_token(p, &tok, &len)) != NULL) {
+            if (!post_shader_token_live(tok, len) || slot >= POST_FX_SLOTS) continue;
+            bool represented = false;
+            for (int s = 0; s < POST_FX_SLOTS && !represented; s++) {
+                const Def *d = cd_post_slot(s);
+                if (d && d->fmt && post_shader_token_matches(tok, len, d->fmt))
+                    represented = true;
+            }
+            if (represented) continue;
+            char entry[4096];
+            if (len >= sizeof entry) continue;
+            memcpy(entry, tok, len);
+            entry[len] = 0;
+            post_fx_fill_slot(slot, post_fx_basename(entry), false, entry);
+            slot++;
+        }
+    }
+    free(cand);
 }
 
 static void touch_file(Gui *g, int file) {
@@ -399,7 +636,7 @@ static double def_get_num(Gui *g, int file, const Def *d) {
 }
 static bool def_get_bool(Gui *g, int file, const Def *d) {
     if (d->kind == K_BOOL && !strcmp(d->key, "post_shader"))
-        return post_shader_contains(
+        return d->fmt && post_shader_contains(
             cd_config_get_string(store_of(g, file), d->sec, d->key, d->def), d->fmt);
     return cd_config_get_bool(store_of(g, file), d->sec, d->key,
                               strcmp(d->def, "true") == 0);
@@ -437,7 +674,8 @@ static void def_set_enum(Gui *g, int file, const Def *d, int idx) {
  * is never written. */
 static const Def *num_def(Gui *g) {
     if (g->num_idx < 0) return NULL;
-    return g->num_file == FILE_G3 ? &G3_DEFS[g->num_idx] : &CD_DEFS[g->num_idx];
+    const Def *d = g->num_file == FILE_G3 ? &G3_DEFS[g->num_idx] : &CD_DEFS[g->num_idx];
+    return post_slot_inactive(d) ? NULL : d;
 }
 static bool num_parse(const Def *d, const char *s, double *out) {
     if (!s || !*s) return false;
@@ -1258,6 +1496,9 @@ static void draw_schema_tab(Gui *g, cairo_t *c, int file, const Def *defs, int n
     cairo_clip(c);
     for (int i = 0; i < n; i++) {
         const Def *d = &defs[i];
+        /* Inactive post-FX slots are not rows at all: no heading, height,
+         * background, label or hitbox. */
+        if (post_slot_inactive(d)) continue;
         if (strcmp(d->group, last_group) != 0) {
             last_group = d->group;
             y += 12;
@@ -1834,7 +2075,7 @@ static void gui_press(Gui *g, double x, double y) {
         const Def *d = &defs[hit->b];
         bool on = !def_get_bool(g, hit->a, d);
         if (d->kind == K_BOOL && !strcmp(d->key, "post_shader"))
-            post_shader_toggle(store_of(g, hit->a), d->fmt, on);
+            post_shader_toggle(store_of(g, hit->a), hit->b, on);
         else
             cd_config_set_bool(store_of(g, hit->a), d->sec, d->key, on);
         touch_file(g, hit->a); flush_saves(g, true);
@@ -1895,10 +2136,11 @@ static void gui_press(Gui *g, double x, double y) {
         int nd = file == FILE_CD ? N_CD_DEFS : N_G3_DEFS;
         bool post_reset = false;
         for (int i = 0; i < nd; i++) {
-            /* The four post-FX rows share display.post_shader. Reset means
-             * defaults, so write "off" once (dropping custom entries) and skip
-             * the sibling rows; otherwise each generic write would race the
-             * others and could resurrect a previously stored chain. */
+            /* All post-FX slots share display.post_shader. Reset means
+             * defaults, so write "off" once (dropping custom entries) when the
+             * first slot is reached - active or not - and skip the remaining
+             * slots; otherwise each generic write would race the others and
+             * could resurrect a previously stored chain. */
             if (dd[i].kind == K_BOOL && !strcmp(dd[i].key, "post_shader")) {
                 if (post_reset) continue;
                 post_shader_reset(store_of(g, file));
@@ -2205,6 +2447,9 @@ static bool gui_init(Gui *g, const char *config_dir) {
     /* Language before any text is built: gui_load_languages() needs the root,
      * and the status note below is drawn through tr(). */
     gui_resolve_root(g);
+    /* Discover post shaders after the root and stores are known. Labels are
+     * user filenames, so they are built here rather than translated. */
+    gui_load_post_fx_rows(g);
     /* $CHROMEDRIVE_LANG beats the config file, matching the compositor's
      * apply_language() and the CHROMEDRIVE_* override convention. */
     const char *lang_env = getenv("CHROMEDRIVE_LANG");
@@ -2356,6 +2601,41 @@ static void restore_env(const char *name, char *old) {
     free(old);
 }
 
+static int post_slot_find_basename(const char *base) {
+    for (int s = 0; s < POST_FX_SLOTS; s++) {
+        Def *d = cd_post_slot(s);
+        if (d && d->fmt && !strcmp(post_fx_basename(d->fmt), base)) return s;
+    }
+    return -1;
+}
+static int post_slot_row_index(int slot) {
+    Def *d = cd_post_slot(slot);
+    return d ? (int)(d - CD_DEFS) : -1;
+}
+/* Rows can be below the fold once discovery adds many shaders; scroll until
+ * the requested hitbox exists, click it, then restore the caller's scroll. */
+static bool scroll_to_box(Gui *g, int kind, int file, int row) {
+    for (int step = 0; step < 40; step++) {
+        g->scroll[g->tab] = step * 34;
+        cairo_surface_t *img = render_tab_image(g, g->tab);
+        cairo_surface_destroy(img);
+        if (find_box(g, kind, file, row)) return true;
+    }
+    return false;
+}
+static bool click_row_scrolled(Gui *g, int kind, int file, int row) {
+    double saved = g->scroll[g->tab];
+    bool ok = false;
+    for (int step = 0; step < 40 && !ok; step++) {
+        g->scroll[g->tab] = step * 34;
+        cairo_surface_t *img = render_tab_image(g, g->tab);
+        cairo_surface_destroy(img);
+        if (find_box(g, kind, file, row)) ok = click_box(g, kind, file, row);
+    }
+    g->scroll[g->tab] = saved;
+    return ok;
+}
+
 static int selftest(const char *config_dir_arg) {
     char dirbuf[] = "/tmp/cdconfig-gui-XXXXXX";
     const char *dir = config_dir_arg;
@@ -2363,11 +2643,39 @@ static int selftest(const char *config_dir_arg) {
         if (!mkdtemp(dirbuf)) { perror("mkdtemp"); return 1; }
         dir = dirbuf;
     }
+    /* User shaders live under the config dir's chromedrive/shaders/. One has
+     * the same basename as a bundled shader to prove user-over-bundled. */
+    bool shader_fixtures =
+        write_fixture(dir, "chromedrive/shaders/10-user-a.frag", "void main() {}\n") &&
+        write_fixture(dir, "chromedrive/shaders/20-user-b.frag", "void main() {}\n") &&
+        write_fixture(dir, "chromedrive/shaders/khronos-pbr-neutral.frag", "void main() {}\n");
     Gui g;
     if (!gui_init(&g, dir)) { fprintf(stderr, "selftest: gui_init failed\n"); return 1; }
     int fails = 0;
 #define CHECK(cond, ...) do { if (!(cond)) { \
     fprintf(stderr, "selftest FAIL: " __VA_ARGS__); fputc('\n', stderr); fails++; } } while (0)
+    CHECK(shader_fixtures, "could not create post-shader fixtures");
+
+    /* Post shader discovery: user config rows are absolute and shadow bundled
+     * basenames; bundled rows stay relative; rows sort by basename. */
+    int pua = post_slot_find_basename("10-user-a.frag");
+    int pub = post_slot_find_basename("20-user-b.frag");
+    int pkh = post_slot_find_basename("khronos-pbr-neutral.frag");
+    int phm = post_slot_find_basename("hermite-downscale.frag");
+    char user_a_path[4200], user_b_path[4200], bundled_hermite[4200];
+    snprintf(user_a_path, sizeof user_a_path, "%s/chromedrive/shaders/10-user-a.frag", dir);
+    snprintf(user_b_path, sizeof user_b_path, "%s/chromedrive/shaders/20-user-b.frag", dir);
+    snprintf(bundled_hermite, sizeof bundled_hermite, "%s/shaders/hermite-downscale.frag", g.root);
+    CHECK(pua >= 0 && pub >= 0 && pua < pub, "user shader rows missing or unsorted");
+    CHECK(pua >= 0 && !strcmp(cd_post_slot(pua)->fmt, user_a_path),
+          "user shader row is not an absolute path");
+    CHECK(pub >= 0 && !strcmp(cd_post_slot(pub)->fmt, user_b_path),
+          "second user shader row is not an absolute path");
+    CHECK(pkh >= 0 && strstr(cd_post_slot(pkh)->fmt, "/chromedrive/shaders/khronos-pbr-neutral.frag"),
+          "user shader did not shadow the bundled basename");
+    if (file_exists(bundled_hermite))
+        CHECK(phm >= 0 && !strcmp(cd_post_slot(phm)->fmt, "shaders/hermite-downscale.frag"),
+              "bundled hermite shader row missing");
 
     /* Render tab 0 (builds hitboxes), then drive it like a user would. */
     cairo_surface_t *img = render_tab_image(&g, TAB_APPS);
@@ -2443,56 +2751,73 @@ static int selftest(const char *config_dir_arg) {
     img = render_tab_image(&g, TAB_CD); cairo_surface_destroy(img);
     for (int i = 0; i < N_CD_DEFS; i++)
         if (!strcmp(CD_DEFS[i].key, "background")) def_set_enum(&g, FILE_CD, &CD_DEFS[i], 1);
-    /* Post FX chain: four K_BOOL rows share display.post_shader. Exercise the
-     * real toggle path for canonical ordering, custom preservation and the
+    /* Post FX chain: discovered rows share display.post_shader. Exercise the
+     * real toggle path for canonical row order, stored custom entries, and the
      * all-off value. */
-    int herm = -1, mip = -1, ssm = -1, khr = -1;
-    for (int i = 0; i < N_CD_DEFS; i++) {
-        if (strcmp(CD_DEFS[i].key, "post_shader") || CD_DEFS[i].kind != K_BOOL) continue;
-        if (!strcmp(CD_DEFS[i].fmt, "shaders/hermite-downscale.frag")) herm = i;
-        else if (!strcmp(CD_DEFS[i].fmt, "shaders/hermite-downscale-mipmap.frag")) mip = i;
-        else if (!strcmp(CD_DEFS[i].fmt, "shaders/ssim-downscale.frag")) ssm = i;
-        else if (!strcmp(CD_DEFS[i].fmt, "shaders/khronos-pbr-neutral.frag")) khr = i;
-    }
-    CHECK(herm >= 0 && mip >= 0 && ssm >= 0 && khr >= 0 &&
-          herm < mip && mip < ssm && ssm < khr, "post_shader preset rows missing/out of order");
+    CHECK(pua >= 0 && pub >= 0, "post_shader discovered rows missing");
+    int pua_row = post_slot_row_index(pua);
+    int pub_row = post_slot_row_index(pub);
+    CHECK(pua_row >= 0 && pub_row >= 0, "post_shader row indexes invalid");
     g.scroll[TAB_CD] = 0;
     cd_config_set_string(g.store[FILE_CD], "display", "post_shader", "off");
     img = render_tab_image(&g, TAB_CD); cairo_surface_destroy(img);
-    CHECK(click_box(&g, H_TOGGLE, FILE_CD, khr), "no Khronos tone-map toggle");
-    CHECK(click_box(&g, H_TOGGLE, FILE_CD, herm), "no Hermite toggle");
-    CHECK(!strcmp(cd_config_get_string(g.store[FILE_CD], "display", "post_shader", ""),
-                  "shaders/hermite-downscale.frag;shaders/khronos-pbr-neutral.frag"),
+    /* Inactive slots are not drawn and therefore never register a hitbox. */
+    for (int i = 0; i < g.box_count; i++) {
+        if (g.boxes[i].kind != H_TOGGLE || g.boxes[i].a != FILE_CD) continue;
+        int ps = cd_post_slot_of_row(g.boxes[i].b);
+        CHECK(ps < 0 || (cd_post_slot(ps) && cd_post_slot(ps)->fmt),
+              "inactive post slot drew a toggle hitbox");
+    }
+    CHECK(click_row_scrolled(&g, H_TOGGLE, FILE_CD, pub_row), "no user-b toggle");
+    CHECK(click_row_scrolled(&g, H_TOGGLE, FILE_CD, pua_row), "no user-a toggle");
+    char expect[CD_POST_LIST_CAP];
+    snprintf(expect, sizeof expect, "%s;%s", cd_post_slot(pua)->fmt, cd_post_slot(pub)->fmt);
+    CHECK(!strcmp(cd_config_get_string(g.store[FILE_CD], "display", "post_shader", ""), expect),
           "post_shader toggle did not write canonical row order");
-    cd_config_set_string(g.store[FILE_CD], "display", "post_shader",
-                         "shaders/hermite-downscale.frag;custom/hello.frag");
+    char custom_list[CD_POST_LIST_CAP];
+    snprintf(custom_list, sizeof custom_list, "%s;custom/hello.frag", cd_post_slot(pua)->fmt);
+    cd_config_set_string(g.store[FILE_CD], "display", "post_shader", custom_list);
+    gui_load_post_fx_rows(&g);
+    int pcu = post_slot_find_basename("hello.frag");
+    CHECK(pcu >= 0 && !strcmp(cd_post_slot(pcu)->fmt, "custom/hello.frag"),
+          "stored custom entry did not get a row");
+    CHECK(pcu >= 0 && !strcmp(cd_post_slot(pcu)->label, "Post FX: hello.frag"),
+          "stored custom row label is wrong");
+    pua = post_slot_find_basename("10-user-a.frag");
+    pub = post_slot_find_basename("20-user-b.frag");
+    pua_row = post_slot_row_index(pua);
     img = render_tab_image(&g, TAB_CD); cairo_surface_destroy(img);
-    CHECK(click_box(&g, H_TOGGLE, FILE_CD, herm), "cannot toggle Hermite off");
+    CHECK(click_row_scrolled(&g, H_TOGGLE, FILE_CD, pua_row), "cannot toggle user-a off");
     CHECK(!strcmp(cd_config_get_string(g.store[FILE_CD], "display", "post_shader", ""),
-                  "custom/hello.frag"), "preset toggle dropped a custom entry");
-    CHECK(click_box(&g, H_TOGGLE, FILE_CD, herm), "cannot toggle Hermite on");
-    CHECK(!strcmp(cd_config_get_string(g.store[FILE_CD], "display", "post_shader", ""),
-                  "shaders/hermite-downscale.frag;custom/hello.frag"),
-          "preset re-toggle lost custom ordering");
-    CHECK(click_box(&g, H_TOGGLE, FILE_CD, ssm), "cannot toggle SSIM on");
-    CHECK(!strcmp(cd_config_get_string(g.store[FILE_CD], "display", "post_shader", ""),
-                  "shaders/hermite-downscale.frag;shaders/ssim-downscale.frag;custom/hello.frag"),
-          "custom entry not kept after canonical presets");
+                  "custom/hello.frag"), "slot toggle dropped a stored custom entry");
+    CHECK(click_row_scrolled(&g, H_TOGGLE, FILE_CD, pua_row), "cannot toggle user-a on");
+    snprintf(expect, sizeof expect, "%s;custom/hello.frag", cd_post_slot(pua)->fmt);
+    CHECK(!strcmp(cd_config_get_string(g.store[FILE_CD], "display", "post_shader", ""), expect),
+          "slot re-toggle lost custom ordering");
+    int psm = post_slot_find_basename("ssim-downscale.frag");
+    CHECK(psm >= 0, "ssim shader row missing");
+    int psm_row = post_slot_row_index(psm);
+    CHECK(click_row_scrolled(&g, H_TOGGLE, FILE_CD, psm_row), "cannot toggle SSIM on");
+    snprintf(expect, sizeof expect, "%s;%s;custom/hello.frag",
+             cd_post_slot(pua)->fmt, cd_post_slot(psm)->fmt);
+    CHECK(!strcmp(cd_config_get_string(g.store[FILE_CD], "display", "post_shader", ""), expect),
+          "custom entry not kept after canonical rows");
     cd_config_set_string(g.store[FILE_CD], "display", "post_shader", "off");
+    gui_load_post_fx_rows(&g);
+    pua = post_slot_find_basename("10-user-a.frag");
+    pua_row = post_slot_row_index(pua);
     img = render_tab_image(&g, TAB_CD); cairo_surface_destroy(img);
-    CHECK(click_box(&g, H_TOGGLE, FILE_CD, herm), "cannot toggle Hermite on for all-off test");
-    CHECK(click_box(&g, H_TOGGLE, FILE_CD, herm), "cannot toggle Hermite off for all-off test");
+    CHECK(click_row_scrolled(&g, H_TOGGLE, FILE_CD, pua_row), "cannot toggle user-a on for all-off test");
+    CHECK(click_row_scrolled(&g, H_TOGGLE, FILE_CD, pua_row), "cannot toggle user-a off for all-off test");
     CHECK(!strcmp(cd_config_get_string(g.store[FILE_CD], "display", "post_shader", ""), "off"),
           "all-off chain did not write off");
     /* VNC port is a typed input, never a 1024..65535 slider. */
     int pi = -1;
     for (int i = 0; i < N_CD_DEFS; i++) if (!strcmp(CD_DEFS[i].key, "vnc_port")) pi = i;
     CHECK(pi >= 0 && CD_DEFS[pi].kind == K_INT_INPUT, "vnc_port is not an input def");
-    /* The localization row and render-scale controls add height; keep both the
-     * render_scale input and the Session VNC input inside the visible fold. */
-    g.scroll[TAB_CD] = 270;
-    img = render_tab_image(&g, TAB_CD); cairo_surface_destroy(img);
-    CHECK(find_box(&g, H_NUM_FIELD, FILE_CD, pi) != NULL, "no VNC port input hitbox");
+    /* The localization, render-scale and discovered post-shader rows add
+     * height; scroll until each typed input is inside the visible fold. */
+    CHECK(scroll_to_box(&g, H_NUM_FIELD, FILE_CD, pi), "no VNC port input hitbox");
     CHECK(find_box(&g, H_SLIDER, FILE_CD, pi) == NULL, "VNC port still has a slider hitbox");
     CHECK(click_box(&g, H_NUM_FIELD, FILE_CD, pi), "cannot focus VNC port input");
     clear_field(&g); type_text(&g, "5917");
@@ -2512,8 +2837,7 @@ static int selftest(const char *config_dir_arg) {
     int ri = -1;
     for (int i = 0; i < N_CD_DEFS; i++) if (!strcmp(CD_DEFS[i].key, "render_scale")) ri = i;
     CHECK(ri >= 0 && CD_DEFS[ri].kind == K_FLOAT_INPUT, "render_scale is not a float input def");
-    img = render_tab_image(&g, TAB_CD); cairo_surface_destroy(img);
-    CHECK(find_box(&g, H_NUM_FIELD, FILE_CD, ri) != NULL, "no render_scale input hitbox");
+    CHECK(scroll_to_box(&g, H_NUM_FIELD, FILE_CD, ri), "no render_scale input hitbox");
     CHECK(find_box(&g, H_SLIDER, FILE_CD, ri) == NULL, "render_scale still has a slider hitbox");
     CHECK(click_box(&g, H_NUM_FIELD, FILE_CD, ri), "cannot focus render_scale input");
     clear_field(&g); type_text(&g, "2.5");
@@ -2653,6 +2977,41 @@ static int selftest(const char *config_dir_arg) {
             restore_env("HOME", old_home);
             restore_env("XDG_DATA_HOME", old_data_home);
             restore_env("XDG_DATA_DIRS", old_data_dirs);
+        }
+    }
+
+    /* No shader folders anywhere: the four historical presets keep Display
+     * non-empty. Force an empty root/cwd so the repo's own shaders are not
+     * discovered during this check. */
+    {
+        char empty[] = "/tmp/cdconfig-empty-XXXXXX";
+        if (!mkdtemp(empty)) {
+            CHECK(false, "could not create fallback temp dir");
+        } else {
+            Gui fg;
+            if (!gui_init(&fg, empty)) {
+                CHECK(false, "fallback gui_init failed");
+            } else {
+                char cwd[4096];
+                bool have_cwd = getcwd(cwd, sizeof cwd) != NULL;
+                fg.root[0] = 0;
+                if (!have_cwd || chdir(empty) != 0) {
+                    CHECK(false, "could not chdir for fallback test");
+                } else {
+                    gui_load_post_fx_rows(&fg);
+                    int active = 0;
+                    for (int s = 0; s < POST_FX_SLOTS; s++) {
+                        Def *d = cd_post_slot(s);
+                        if (d && d->fmt) active++;
+                    }
+                    CHECK(active == 4, "fallback did not fill four post rows (got %d)", active);
+                    CHECK(cd_post_slot(0) && cd_post_slot(0)->fmt &&
+                          !strcmp(cd_post_slot(0)->fmt, "shaders/hermite-downscale.frag"),
+                          "fallback first row is not hermite");
+                    chdir(cwd);
+                }
+                gui_free(&fg);
+            }
         }
     }
     if (fails) { fprintf(stderr, "selftest: %d failure(s)\n", fails); return 1; }
