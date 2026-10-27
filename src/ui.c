@@ -63,6 +63,11 @@ static void oblique_fit(cairo_t *c,double x,double y,double size,double maxw,con
     char buf[512];i18n_utf8_truncate(buf,sizeof(buf),s?s:"",sizeof(buf)-5);
     size_t n=strlen(buf);
     while(n>0){
+     /* Drop one byte, then back up over the rest of its code point. Without
+      * the first step n stays at the NUL terminator, buf[n]=0 changes nothing
+      * and the loop measures the same string forever (the Russian plate hung
+      * the compositor here). */
+     n--;
      while(n>0&&((unsigned char)buf[n]&0xC0)==0x80)n--;
      buf[n]=0;
      char cut[512];snprintf(cut,sizeof(cut),"%s\xe2\x80\xa6",buf);
