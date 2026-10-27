@@ -332,14 +332,21 @@ permanent-magnet motors, reduction housings, inverters, onboard charger,
 DC/DC converter, contactor box, low-voltage battery, cooling loop, and four
 hover pods. A single heave spring/damper replaces wheel simulation by design.
 
-In **client mode** (the default), dragging the 3D steering wheel sends
-continuous analog **horizontal** `wl_pointer.axis` input to the focused app
-(no stepped `axis_discrete` clicks and no vertical-axis events), and W/A/S/D
-remain app keys. In **drive mode**,
-W/up accelerates, S/down brakes then reverses,
-A/D/left/right steer, Space brakes, and dragging the wheel steers directly.
-Client mode applies a parking brake. The web viewer includes hold-to-drive
-buttons with stuck-key protection.
+In **client mode** (the default), dragging the 3D steering wheel drives the
+kernel virtual joystick **ChromeDrive Virtual Steering Wheel**: signed 16-bit
+analog `ABS_X` and `ABS_WHEEL` events for SDL2/evdev games, with no vertical
+scroll emulation. W/A/S/D remain app keys. In **drive mode**, W/up accelerates,
+S/down brakes then reverses, A/D/left/right steer, Space brakes, and dragging
+the wheel steers directly. Client mode applies a parking brake. The web viewer
+includes hold-to-drive buttons with stuck-key protection.
+
+The compositor user must be able to open `/dev/uinput` (or
+`/dev/input/uinput`) before launch. ChromeDrive uses only direct syscalls for
+best-effort missing-node setup and **never starts sudo, askpass, or another
+privilege helper**. If access is denied, only the virtual joystick is disabled;
+the compositor, Wayland clients, and managed VT input keep running. Configure
+uinput/device permissions as a host setup step rather than approving a hidden
+prompt from the cockpit.
 
 Implementation, protocol/EGL/frame-callback notes, physics limits, and the
 complete control table: [`docs/vehicle-and-remote.md`](docs/vehicle-and-remote.md).
@@ -558,6 +565,8 @@ tests/test_vehicle.c          spline/EV tests + multi-phase safe service and nor
 tests/test_city.c             infinite determinism, district/road coverage, clearance + Home campus
 tests/test_telemetry.c        shared cluster telemetry and seqlock tests
 tests/test_keymap.c           RFB typing/WASD/function-key mapping regressions
+tests/test_wheel_input.c      real uinput analog joystick + SDL2 integration
+tests/test_wheel_no_privilege.c denied/missing uinput: no privilege subprocesses
 tests/test_fbdev.c            fbdev format/geometry tests + evdev helpers and async queue/overflow tests
 tests/test_client_input_lock.c input-lock camera-preservation regression
 tests/test_drm.c              fake-KMS/GBM/EGL lifecycle, modifier, flip-failure and restore tests

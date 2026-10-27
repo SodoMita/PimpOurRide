@@ -50,10 +50,12 @@ float wheel_client_steer_from_angle(float angle_deg);
  * 16-bit Linux joystick axis value in [-32767, +32767] for ABS_X / ABS_WHEEL. */
 int wheel_client_joy_value(float angle_deg);
 
-/* Create and register the kernel virtual joystick via /dev/uinput, ensuring
- * its /dev/input/eventN node and udev joystick metadata are present even in
- * headless containers without udevd. Safe to call when /dev/uinput is
- * unavailable (leaves joy->active = false and logs a notice). */
+/* Create and register the kernel virtual joystick via an accessible
+ * /dev/uinput. Missing evdev/udev entries are prepared best-effort with direct
+ * syscalls only: the compositor never starts sudo/askpass or another privilege
+ * helper and never changes a pre-existing node's permissions. Safe to call
+ * when uinput is unavailable (leaves joy->active = false, logs a notice, and
+ * lets compositor input/VT handling continue). */
 bool wheel_joystick_init(WheelJoystick *joy);
 
 /* Emit EV_ABS (ABS_X and ABS_WHEEL) + EV_SYN (SYN_REPORT) for the given 3D

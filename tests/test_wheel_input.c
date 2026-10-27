@@ -50,7 +50,7 @@ static void test_steering_math(void){
 static void test_uinput_and_sdl_joystick(void){
  WheelJoystick joy;
  if(!wheel_joystick_init(&joy)){
-  fprintf(stderr,"SKIP: /dev/uinput not accessible in this environment\n");
+  fprintf(stderr,"SKIP: /dev/uinput or its evdev node is not accessible in this environment\n");
   return;
  }
  CHECK(joy.active && joy.uinput_fd>=0,"virtual joystick is active");

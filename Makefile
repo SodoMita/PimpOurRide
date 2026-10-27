@@ -72,6 +72,8 @@ $(BIN)/test-keymap: tests/test_keymap.c src/keymap.c include/keymap.h | $(BIN)
 	$(CC) -Iinclude $(CFLAGS) tests/test_keymap.c src/keymap.c -o $@
 $(BIN)/test-wheel-input: tests/test_wheel_input.c src/wheel_input.c include/wheel_input.h | $(BIN)
 	$(CC) -Iinclude $(CFLAGS) $(shell pkg-config --cflags sdl2) tests/test_wheel_input.c src/wheel_input.c -o $@ $(shell pkg-config --libs sdl2) -lm
+$(BIN)/test-wheel-no-privilege: tests/test_wheel_no_privilege.c src/wheel_input.c include/wheel_input.h | $(BIN)
+	$(CC) -Iinclude $(CFLAGS) tests/test_wheel_no_privilege.c -o $@ -Wl,--wrap=open,--wrap=mknod,--wrap=system,--wrap=access,--wrap=lstat,--wrap=chmod,--wrap=unlink -lm
 $(BIN)/test-fbdev: tests/test_fbdev.c src/fbdev_pixfmt.c src/evdev_util.c src/evdev_queue.c include/fbdev_pixfmt.h include/evdev_util.h include/evdev_queue.h | $(BIN)
 	$(CC) -Iinclude $(CFLAGS) tests/test_fbdev.c src/fbdev_pixfmt.c src/evdev_util.c src/evdev_queue.c -o $@ -pthread
 $(BIN)/test-i18n: tests/test_i18n.c src/i18n.c include/i18n.h | $(BIN)
@@ -94,7 +96,7 @@ $(BIN)/test-fontprobe: tests/test_fontprobe.c src/fontprobe.c src/i18n.c include
 	$(CC) -Iinclude $(CFLAGS) $(shell pkg-config --cflags cairo) tests/test_fontprobe.c src/fontprobe.c src/i18n.c -o $@ $(shell pkg-config --libs cairo)
 $(BIN)/test-vt: tests/test_vt.c src/backend_vt.c include/chrome.h | $(BIN)
 	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_vt.c src/backend_vt.c -o $@ -Wl,--wrap=open,--wrap=ioctl,--wrap=close,--wrap=clock_gettime
-test: all $(BIN)/test-math $(BIN)/test-cursor $(BIN)/test-config $(BIN)/test-vehicle $(BIN)/test-city $(BIN)/test-telemetry $(BIN)/test-keymap $(BIN)/test-wheel-input $(BIN)/test-fbdev $(BIN)/test-i18n $(BIN)/test-textfit $(BIN)/test-fontprobe $(BIN)/test-drm $(BIN)/test-evdev $(BIN)/test-frame-pacing $(BIN)/test-input-wait $(BIN)/test-client-input-lock $(BIN)/test-vt $(BIN)/chromedrive-config
+test: all $(BIN)/test-math $(BIN)/test-cursor $(BIN)/test-config $(BIN)/test-vehicle $(BIN)/test-city $(BIN)/test-telemetry $(BIN)/test-keymap $(BIN)/test-wheel-input $(BIN)/test-wheel-no-privilege $(BIN)/test-fbdev $(BIN)/test-i18n $(BIN)/test-textfit $(BIN)/test-fontprobe $(BIN)/test-drm $(BIN)/test-evdev $(BIN)/test-frame-pacing $(BIN)/test-input-wait $(BIN)/test-client-input-lock $(BIN)/test-vt $(BIN)/chromedrive-config
 	./$(BIN)/test-math
 	./$(BIN)/test-cursor
 	./$(BIN)/test-config
@@ -103,6 +105,7 @@ test: all $(BIN)/test-math $(BIN)/test-cursor $(BIN)/test-config $(BIN)/test-veh
 	./$(BIN)/test-telemetry
 	./$(BIN)/test-keymap
 	./$(BIN)/test-wheel-input
+	./$(BIN)/test-wheel-no-privilege
 	./$(BIN)/test-fbdev
 	./$(BIN)/test-i18n
 	./$(BIN)/test-textfit

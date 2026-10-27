@@ -69,23 +69,33 @@ static bool uinput_emit(int fd,uint16_t type,uint16_t code,int32_t value){
 
 static int open_uinput_device(void){
  static const char *const paths[]={"/dev/uinput","/dev/input/uinput",NULL};
- for(int attempt=0;attempt<2;attempt++){
-  bool need_priv=false;
-  for(int i=0;paths[i];i++){
-   int fd=open(paths[i],O_WRONLY|O_NONBLOCK|O_CLOEXEC);
-   if(fd>=0)return fd;
-   if(errno==EACCES||errno==EPERM||errno==ENOENT)need_priv=true;
-  }
-  if(attempt==0&&need_priv){
-   /* In unprivileged containers or minimal boots without udev ACL rules,
-    * /dev/uinput often defaults to 0600 root:root (and /dev/input/uinput
-    * may overwrite errno with ENOENT). Ensure the node exists and is
-    * accessible if passwordless sudo is available. */
-   int r=system("sudo -n mknod -m 0666 /dev/uinput c 10 223 >/dev/null 2>&1; "
-                "sudo -n chmod 0666 /dev/uinput /dev/input/uinput >/dev/null 2>&1");
-   (void)r;
-  }
+ int saved_errno=0;
+ for(int i=0;paths[i];i++){
+  int fd=open(paths[i],O_WRONLY|O_NONBLOCK|O_CLOEXEC);
+  if(fd>=0)return fd;
+  int e=errno;
+  /* Preserve a concrete permission/other failure over an earlier missing
+   * alternate path; only a genuinely missing pair earns the mknod attempt. */
+  if(!saved_errno||saved_errno==ENOENT)saved_errno=e;
  }
+
+ /* A missing node can be repaired directly on a minimal/root or suitably
+  * capability-enabled boot. Never invoke sudo, an askpass helper, or any
+  * other subprocess here: this runs on the compositor thread, where waiting
+  * for authentication would also stop evdev dispatch and managed VT escapes.
+  * Permission failure is deliberately soft; host device policy belongs to
+  * setup/udev, not to an interactive prompt hidden behind the cockpit. */
+ if(saved_errno==ENOENT){
+  bool created=false;
+  if(mknod("/dev/uinput",S_IFCHR|0600,makedev(10,223))==0)created=true;
+  if(created||errno==EEXIST){
+   int fd=open("/dev/uinput",O_WRONLY|O_NONBLOCK|O_CLOEXEC);
+   if(fd>=0)return fd;
+   saved_errno=errno;
+   if(created)unlink("/dev/uinput");
+  }else saved_errno=errno;
+ }
+ errno=saved_errno;
  return -1;
 }
 
@@ -133,54 +143,42 @@ static void ensure_event_node_and_udev(WheelJoystick *joy){
  }
  if(!joy->dev_node[0])return;
 
- /* Why we ensure /dev/input/eventN and /run/udev/data/c<maj>:<min> exist:
-  * On desktop systems udevd creates /dev/input/eventN and populates the udev
-  * database automatically upon UI_DEV_CREATE. In headless containers or raw
-  * fbdev boots where udevd is not running, the kernel registers the device in
-  * sysfs (/sys/class/input/inputX/eventN) without creating /dev/input/eventN
-  * or tagging ID_INPUT_JOYSTICK=1. Creating both when absent ensures SDL2,
-  * libudev, GLFW, and raw evdev driving games discover the wheel immediately. */
+ /* Why we best-effort prepare /dev/input/eventN and
+  * /run/udev/data/c<maj>:<min>: desktop udevd normally creates both after
+  * UI_DEV_CREATE. A minimal boot without udevd may expose only sysfs. Direct
+  * mknod/file creation preserves that container use case, but an unprivileged
+  * failure is not a reason to run a privilege helper or to chmod/unlink a
+  * pre-existing host node. In particular, no language/config reload or VT
+  * signal can ever become stuck behind an authentication process here. */
  if(access(joy->dev_node,R_OK)!=0){
-  mkdir("/dev/input",0755);
-  unlink(joy->dev_node);
-  if(mknod(joy->dev_node,S_IFCHR|0666,makedev((unsigned)joy->major_num,(unsigned)joy->minor_num))==0){
-   chmod(joy->dev_node,0666);
-   joy->created_node=true;
-  }else{
-   char cmd[512];
-   snprintf(cmd,sizeof(cmd),
-            "sudo -n mkdir -p /dev/input && sudo -n rm -f '%s' && "
-            "sudo -n mknod -m 0666 '%s' c %d %d && sudo -n chmod 0666 '%s' >/dev/null 2>&1",
-            joy->dev_node,joy->dev_node,joy->major_num,joy->minor_num,joy->dev_node);
-   if(system(cmd)==0&&access(joy->dev_node,R_OK)==0)joy->created_node=true;
+  struct stat st;
+  if(lstat(joy->dev_node,&st)!=0&&errno==ENOENT){
+   mkdir("/dev/input",0755);
+   if(mknod(joy->dev_node,S_IFCHR|0600,
+            makedev((unsigned)joy->major_num,(unsigned)joy->minor_num))==0)
+    joy->created_node=true;
   }
- }else{
-  if(chmod(joy->dev_node,0666)!=0){
-   char cmd[256];
-   snprintf(cmd,sizeof(cmd),"sudo -n chmod 0666 '%s' >/dev/null 2>&1",joy->dev_node);
-   int r=system(cmd);
-   (void)r;
-  }
+  if(access(joy->dev_node,R_OK)!=0)
+   fprintf(stderr,"[wheel] evdev node %s is not accessible (%s); leaving host permissions unchanged\n",
+           joy->dev_node,strerror(errno));
  }
 
  snprintf(joy->udev_file,sizeof(joy->udev_file),"/run/udev/data/c%d:%d",joy->major_num,joy->minor_num);
  if(access(joy->udev_file,R_OK)!=0){
-  mkdir("/run/udev",0755);
-  mkdir("/run/udev/data",0755);
-  FILE *uf=fopen(joy->udev_file,"w");
-  if(uf){
-   fputs("I:1\nE:ID_INPUT=1\nE:ID_INPUT_JOYSTICK=1\nG:input\n",uf);
-   fclose(uf);
-   joy->created_udev=true;
-  }else{
-   char cmd[512];
-   snprintf(cmd,sizeof(cmd),
-            "sudo -n mkdir -p /run/udev/data && "
-            "printf 'I:1\\nE:ID_INPUT=1\\nE:ID_INPUT_JOYSTICK=1\\nG:input\\n' | "
-            "sudo -n tee '%s' >/dev/null 2>&1",
-            joy->udev_file);
-   if(system(cmd)==0&&access(joy->udev_file,R_OK)==0)joy->created_udev=true;
+  struct stat st;
+  if(lstat(joy->udev_file,&st)!=0&&errno==ENOENT){
+   mkdir("/run/udev",0755);
+   mkdir("/run/udev/data",0755);
+   FILE *uf=fopen(joy->udev_file,"wx"); /* never truncate an existing host tag */
+   if(uf){
+    bool wrote=fputs("I:1\nE:ID_INPUT=1\nE:ID_INPUT_JOYSTICK=1\nG:input\n",uf)>=0;
+    if(fclose(uf)==0&&wrote)joy->created_udev=true;
+    else unlink(joy->udev_file);
+   }
   }
+  if(!joy->created_udev)
+   fprintf(stderr,"[wheel] could not write udev joystick tag %s (%s); leaving host configuration unchanged\n",
+           joy->udev_file,strerror(errno));
  }
 }
 
@@ -191,7 +189,7 @@ bool wheel_joystick_init(WheelJoystick *joy){
 
  int fd=open_uinput_device();
  if(fd<0){
-  fprintf(stderr,"[wheel] /dev/uinput unavailable (%s); virtual joystick disabled\n",strerror(errno));
+  fprintf(stderr,"[wheel] /dev/uinput unavailable (%s); virtual joystick disabled without blocking compositor input\n",strerror(errno));
   return false;
  }
 
@@ -240,7 +238,12 @@ bool wheel_joystick_init(WheelJoystick *joy){
   joy->sysname[0]=0;
 
  ensure_event_node_and_udev(joy);
- if(joy->dev_node[0])setenv("CHROMEDRIVE_WHEEL_EVDEV",joy->dev_node,1);
+ if(!joy->dev_node[0]||access(joy->dev_node,R_OK)!=0){
+  fprintf(stderr,"[wheel] no accessible evdev node for the virtual joystick; disabling it without blocking compositor input\n");
+  wheel_joystick_finish(joy);
+  return false;
+ }
+ setenv("CHROMEDRIVE_WHEEL_EVDEV",joy->dev_node,1);
 
  uinput_emit(fd,EV_ABS,ABS_X,0);
  uinput_emit(fd,EV_ABS,ABS_WHEEL,0);
@@ -272,22 +275,12 @@ void wheel_joystick_finish(WheelJoystick *joy){
   ioctl(joy->uinput_fd,UI_DEV_DESTROY);
   close(joy->uinput_fd);
  }
- if(joy->created_node&&joy->dev_node[0]){
-  if(unlink(joy->dev_node)!=0){
-   char cmd[256];
-   snprintf(cmd,sizeof(cmd),"sudo -n rm -f '%s' >/dev/null 2>&1",joy->dev_node);
-   int r=system(cmd);
-   (void)r;
-  }
- }
- if(joy->created_udev&&joy->udev_file[0]){
-  if(unlink(joy->udev_file)!=0){
-   char cmd[256];
-   snprintf(cmd,sizeof(cmd),"sudo -n rm -f '%s' >/dev/null 2>&1",joy->udev_file);
-   int r=system(cmd);
-   (void)r;
-  }
- }
+ if(joy->created_node&&joy->dev_node[0]&&unlink(joy->dev_node)!=0)
+  fprintf(stderr,"[wheel] could not remove temporary evdev node %s: %s\n",
+          joy->dev_node,strerror(errno));
+ if(joy->created_udev&&joy->udev_file[0]&&unlink(joy->udev_file)!=0)
+  fprintf(stderr,"[wheel] could not remove temporary udev tag %s: %s\n",
+          joy->udev_file,strerror(errno));
  unsetenv("CHROMEDRIVE_WHEEL_EVDEV");
  memset(joy,0,sizeof(*joy));
  joy->uinput_fd=-1;

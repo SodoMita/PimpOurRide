@@ -211,6 +211,11 @@ in an unrelated change:
   (SDL2/GLX) exists only as a local dev/debug fallback. Don't make
   `--windowed` the default, and don't reintroduce `Xvfb`/`x11vnc` as a
   required dependency — the compositor *is* its own VNC server now.
+- **Never run privilege/authentication helpers from the compositor runtime.**
+  No `sudo`, `pkexec`, askpass, or prompting shell command on the main/input
+  thread. Host device permissions are setup policy; direct syscalls may be
+  best-effort, but denial must fail only the optional feature while Wayland
+  input and managed VT release continue.
 - **Real 3D raycast picking for dashboard buttons**, not 2D/HTML hit-testing.
   Buttons are picked against actual cockpit geometry from the first-person
   camera. Don't flatten this into a 2D overlay-click shortcut.
