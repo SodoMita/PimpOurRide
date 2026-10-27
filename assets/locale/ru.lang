@@ -333,6 +333,7 @@ VOL. 01  /  NO AUDIO = ТОМ 01  /  БЕЗ ЗВУКА
 WAITING FOR COMPOSITOR SHARED STATE = ОЖИДАНИЕ ОБЩЕГО СОСТОЯНИЯ ОТ КОМПОЗИТОРА
 WARNING: $%s is set in this environment - compositor uses it instead. = ВНИМАНИЕ: $%s задан в окружении — композитор использует его.
 Welcome to the driver's seat. F1 for controls. = Добро пожаловать на место водителя. F1 — управление.
+Joystick disabled: grant uinput/input access (see README), then restart. = Руль-джойстик отключён: разрешите доступ к uinput/input (см. README) и перезапустите.
 Wet-floor reflections = Отражения на мокром полу
 Wheel = Колесо
 Window = Окно

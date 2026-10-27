@@ -335,6 +335,7 @@ VOL. 01  /  NO AUDIO = VOL. 01  /  音声なし
 WAITING FOR COMPOSITOR SHARED STATE = コンポジターの共有状態を待機中
 WARNING: $%s is set in this environment - compositor uses it instead. = 警告：この環境に $%s が設定されています — 代わりにコンポジターが使用します。
 Welcome to the driver's seat. F1 for controls. = ドライバーシートへようこそ。操作は F1 です。
+Joystick disabled: grant uinput/input access (see README), then restart. = ジョイスティック無効: uinput/input へのアクセスを許可し（README参照）、再起動してください。
 Wet-floor reflections = 濡れた床の反射
 Wheel = ハンドル
 Window = ウィンドウ

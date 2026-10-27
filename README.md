@@ -346,7 +346,25 @@ best-effort missing-node setup and **never starts sudo, askpass, or another
 privilege helper**. If access is denied, only the virtual joystick is disabled;
 the compositor, Wayland clients, and managed VT input keep running. Configure
 uinput/device permissions as a host setup step rather than approving a hidden
-prompt from the cockpit.
+prompt from the cockpit. A startup HUD notice points here if the joystick is
+unavailable.
+
+One host-setup option on a systemd/udev Linux installation is a dedicated
+`uinput` group (`sudo groupadd --system uinput`, then
+`sudo usermod --append --groups uinput "$USER"`) and a rule such as
+`/etc/udev/rules.d/60-chromedrive-uinput.rules`:
+
+```udev
+KERNEL=="uinput", SUBSYSTEM=="misc", GROUP="uinput", MODE="0660"
+ACTION=="add", SUBSYSTEM=="input", ATTRS{name}=="ChromeDrive Virtual Steering Wheel", GROUP="uinput", MODE="0660"
+```
+
+Adapt this to the distribution's seat/ACL policy, reload udev or reboot, and
+start ChromeDrive from a session where the new group membership is active.
+Do not run the compositor through sudo or make every input node world-writable.
+Mandatory KMS/VT/input-isolation permissions can still prevent a managed
+session from starting; those visible startup errors likewise require host
+seat/group configuration, never a hidden authentication prompt.
 
 Implementation, protocol/EGL/frame-callback notes, physics limits, and the
 complete control table: [`docs/vehicle-and-remote.md`](docs/vehicle-and-remote.md).

@@ -1027,7 +1027,7 @@ int main(int argc,char **argv){
   server_finish(&s);backend_shutdown(&s);SDL_Quit();return 1;
  }
  telemetry_init(&s);
- wheel_joystick_init(&s.wheel_joy);
+ const bool wheel_ready=wheel_joystick_init(&s.wheel_joy);
  /* Only after opening the host window/backend do we replace WAYLAND_DISPLAY. */
  /* Built-in menu defaults (%root% templates - the same strings the config
   * GUI shows as the editable starting point) + per-slot app_id/autostart.
@@ -1044,7 +1044,8 @@ int main(int argc,char **argv){
   * Skip a duplicate if a configured autostart slot also names that app_id. */
  char cluster_command[4400];snprintf(cluster_command,sizeof(cluster_command),"'%s/bin/chromedrive-demo' cluster",s.root);app_exec(&s,cluster_command);
  if(s.demo){for(int i=0;i<6;i++)if(s.buttons[i].enabled&&s.buttons[i].action==CD_BUTTON_APP&&s.app_autostart[i]&&s.launch_commands[i]&&!strstr(s.app_ids[i],"chromedrive.cluster"))app_exec(&s,s.launch_commands[i]);}for(int i=0;i<s.exec_count;i++)app_exec(&s,s.exec_commands[i]);
- app_notice(&s,tr("Welcome to the driver's seat. F1 for controls."));
+ if(wheel_ready)app_notice(&s,tr("Welcome to the driver's seat. F1 for controls."));
+ else app_notice(&s,tr("Joystick disabled: grant uinput/input access (see README), then restart."));
  while(s.running&&!interrupted){
   double frame_start=clock_now();s.time=frame_start-s.start_time;s.dt=frame_start-last;last=frame_start;
   backend_poll(&s);

@@ -334,6 +334,7 @@ VOL. 01  /  NO AUDIO = VOL. 01  /  无音频
 WAITING FOR COMPOSITOR SHARED STATE = 正在等待合成器共享状态
 WARNING: $%s is set in this environment - compositor uses it instead. = 警告：此环境中已设置 $%s - 合成器将改用它。
 Welcome to the driver's seat. F1 for controls. = 欢迎来到驾驶座。按 F1 查看控制说明。
+Joystick disabled: grant uinput/input access (see README), then restart. = 摇杆已禁用：请授予 uinput/input 访问权限（见 README），然后重新启动。
 Wet-floor reflections = 湿滑地面反射
 Wheel = 方向盘
 Window = 窗口
