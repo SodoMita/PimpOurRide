@@ -2895,7 +2895,69 @@ static int selftest(const char *config_dir_arg) {
     CHECK(click_box(&g, H_RESET_TAB, 0, 0), "no reset-tab box");
     CHECK(!strcmp(cd_config_get_string(g.store[FILE_CD], "display", "post_shader", ""), "off"),
           "reset tab did not drop custom post_shader entries");
+
+    /* Russian must go through the real visible enum widget, not a hand-written
+     * config fixture: select it, let draw_ui() hot-sync the catalog, save the
+     * same store the running compositor polls, and render the translated tab. */
+    int lang_row = -1;
+    for (int i = 0; i < N_CD_DEFS; i++)
+        if (!strcmp(CD_DEFS[i].key, "language")) lang_row = i;
+    CHECK(lang_row >= 0, "language enum row missing");
+    if (lang_row >= 0) {
+        const Def *ld = &CD_DEFS[lang_row];
+        int ru_choice = -1;
+        for (int i = 0; i < ld->enum_count; i++)
+            if (!strcmp(ld->enums[i], "ru")) ru_choice = i;
+        CHECK(ru_choice > 0, "installed Russian catalog not offered by Settings");
+        if (ru_choice > 0) {
+            for (int i = 0; i < ru_choice; i++) {
+                char before[32];
+                snprintf(before, sizeof before, "%s",
+                         cd_config_get_string(g.store[FILE_CD], "ui", "language", "auto"));
+                CHECK(click_row_scrolled(&g, H_ENUM_INC, FILE_CD, lang_row),
+                      "cannot click language enum step %d", i);
+                const char *after = cd_config_get_string(g.store[FILE_CD], "ui", "language", "auto");
+                CHECK(strcmp(before, after) != 0, "language enum click did not change the value");
+            }
+            CHECK(!strcmp(cd_config_get_string(g.store[FILE_CD], "ui", "language", ""), "ru"),
+                  "Russian enum selection did not reach the config store");
+            img = render_tab_image(&g, TAB_CD);
+            CHECK(!strcmp(i18n_language(), "ru"), "Russian selection did not hot-sync the catalog");
+            long lit = 0; uint8_t *px = cairo_image_surface_get_data(img);
+            for (int i = 0; i < 1000 * 625; i++)
+                if (px[i * 4] + px[i * 4 + 1] + px[i * 4 + 2] > 200) lit++;
+            CHECK(lit > 20000, "Russian compositor tab rendered blank (lit=%ld)", lit);
+            cairo_surface_destroy(img);
+            flush_saves(&g, true);
+            CdConfig *lang_disk = cd_config_load(g.path[FILE_CD]);
+            CHECK(lang_disk && !strcmp(cd_config_get_string(lang_disk, "ui", "language", ""), "ru"),
+                  "Russian selection was not atomically saved to disk");
+            cd_config_free(lang_disk);
+        }
+    }
     gui_free(&g);
+
+    /* A fresh Settings instance now exercises the actual restart/read/render
+     * path from the saved Russian value, rather than reusing global i18n state. */
+    {
+        Gui rg;
+        if (!gui_init(&rg, dir)) {
+            CHECK(false, "Russian reload gui_init failed");
+        } else {
+            CHECK(!strcmp(cd_config_get_string(rg.store[FILE_CD], "ui", "language", ""), "ru"),
+                  "Russian reload lost the saved enum value");
+            cairo_surface_t *rimg = render_tab_image(&rg, TAB_CD);
+            CHECK(!strcmp(i18n_language(), "ru"), "Russian reload did not load the saved catalog");
+            CHECK(cairo_surface_status(rimg) == CAIRO_STATUS_SUCCESS,
+                  "Russian reload render failed: %s", cairo_status_to_string(cairo_surface_status(rimg)));
+            long lit = 0; uint8_t *px = cairo_image_surface_get_data(rimg);
+            for (int i = 0; i < 1000 * 625; i++)
+                if (px[i * 4] + px[i * 4 + 1] + px[i * 4 + 2] > 200) lit++;
+            CHECK(lit > 20000, "Russian reloaded tab rendered blank (lit=%ld)", lit);
+            cairo_surface_destroy(rimg);
+            gui_free(&rg);
+        }
+    }
 
     /* Installed-app catalog fixture: user-over-system masking, recursive
      * discovery, Flatpak fallback, Terminal/TryExec handling, and an
@@ -3016,7 +3078,7 @@ static int selftest(const char *config_dir_arg) {
         }
     }
     if (fails) { fprintf(stderr, "selftest: %d failure(s)\n", fails); return 1; }
-    printf("PASS: chromedrive-config selftest (app editor widgets, schema edits, file round-trip, offscreen renders)\n");
+    printf("PASS: chromedrive-config selftest (widgets, file round-trip, Russian select/save/reload/render, offscreen renders)\n");
     return 0;
 #undef CHECK
 }

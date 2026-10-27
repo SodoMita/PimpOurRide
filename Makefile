@@ -7,11 +7,11 @@ LDLIBS = $(shell pkg-config --libs $(PKGS)) -lm -pthread
 PROTO_DIR := $(shell pkg-config --variable=pkgdatadir wayland-protocols)
 GEN = .generated
 BIN = bin
-SOURCES = src/main.c src/wayland.c src/scene.c src/city_scene.c src/vehicle.c src/city.c src/city_stream.c src/vehicle_scene.c src/vehicle_seat.c src/keymap.c src/wheel_input.c src/ui.c src/math3d.c src/telemetry.c src/dmabuf.c src/cdconfig.c src/i18n.c src/fontprobe.c src/textfit.c src/textfit_cairo.c src/frame_pacing.c src/input_wait.c src/backend_sdl.c src/backend_headless.c src/backend_egl.c src/backend_vnc.c src/backend_fbdev.c src/backend_drm.c src/backend_vt.c src/backend_evdev.c src/evdev_queue.c src/evdev_util.c src/fbdev_pixfmt.c
+SOURCES = src/main.c src/wayland.c src/scene.c src/city_scene.c src/vehicle.c src/city.c src/city_stream.c src/vehicle_scene.c src/vehicle_seat.c src/keymap.c src/wheel_input.c src/ui.c src/math3d.c src/telemetry.c src/dmabuf.c src/cdconfig.c src/i18n.c src/textfit.c src/textfit_cairo.c src/frame_pacing.c src/input_wait.c src/backend_sdl.c src/backend_headless.c src/backend_egl.c src/backend_vnc.c src/backend_fbdev.c src/backend_drm.c src/backend_vt.c src/backend_evdev.c src/evdev_queue.c src/evdev_util.c src/fbdev_pixfmt.c
 PROTOCOLS = $(GEN)/xdg-shell-protocol.c $(GEN)/xdg-decoration-protocol.c $(GEN)/linux-dmabuf-protocol.c
 HEADERS = $(GEN)/xdg-shell-server.h $(GEN)/xdg-decoration-server.h $(GEN)/linux-dmabuf-server.h
 .PHONY: all clean test check-text sanitize garage3d garage3d-test garage3d-clean
-all: $(BIN)/chromedrive $(BIN)/chromedrive-demo $(BIN)/chromedrive-config
+all: $(BIN)/chromedrive $(BIN)/chromedrive-demo $(BIN)/chromedrive-config $(BIN)/chromedrive-fontprobe
 $(GEN) $(BIN):
 	mkdir -p $@
 $(GEN)/xdg-shell-server.h: | $(GEN)
@@ -43,6 +43,10 @@ $(BIN)/chromedrive-demo: clients/demo.c src/i18n.c src/wheel_input.c $(FITTEXT) 
 # part of `all`.
 $(BIN)/chromedrive-config: clients/config.c src/cdconfig.c src/i18n.c $(FITTEXT) include/cdconfig.h include/i18n.h $(GEN)/xdg-shell-client.h $(GEN)/xdg-shell-protocol.c | $(BIN)
 	$(CC) -Iinclude -I$(GEN) $(CFLAGS) $(shell pkg-config --cflags wayland-client cairo xkbcommon libwebp) clients/config.c src/cdconfig.c src/i18n.c src/textfit.c src/textfit_cairo.c src/fontprobe.c $(GEN)/xdg-shell-protocol.c -o $@ $(shell pkg-config --libs wayland-client cairo xkbcommon libwebp) -lm
+# Deliberately separate from the compositor: a fontconfig/Cairo hang is confined
+# to this disposable child, whose exit status the main loop only polls.
+$(BIN)/chromedrive-fontprobe: clients/fontprobe.c src/fontprobe.c src/i18n.c include/fontprobe.h include/i18n.h | $(BIN)
+	$(CC) -Iinclude $(CFLAGS) $(shell pkg-config --cflags cairo) clients/fontprobe.c src/fontprobe.c src/i18n.c -o $@ $(shell pkg-config --libs cairo)
 $(BIN)/test-math: tests/test_math.c src/math3d.c include/math3d.h | $(BIN)
 	$(CC) -Iinclude $(CFLAGS) tests/test_math.c src/math3d.c -o $@ -lm
 $(BIN)/test-cursor: tests/test_cursor.c src/scene.c src/wayland.c src/vehicle.c src/math3d.c include/chrome.h include/math3d.h | $(BIN)
@@ -96,7 +100,9 @@ $(BIN)/test-fontprobe: tests/test_fontprobe.c src/fontprobe.c src/i18n.c include
 	$(CC) -Iinclude $(CFLAGS) $(shell pkg-config --cflags cairo) tests/test_fontprobe.c src/fontprobe.c src/i18n.c -o $@ $(shell pkg-config --libs cairo)
 $(BIN)/test-vt: tests/test_vt.c src/backend_vt.c include/chrome.h | $(BIN)
 	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_vt.c src/backend_vt.c -o $@ -Wl,--wrap=open,--wrap=ioctl,--wrap=close,--wrap=clock_gettime
-test: all $(BIN)/test-math $(BIN)/test-cursor $(BIN)/test-config $(BIN)/test-vehicle $(BIN)/test-city $(BIN)/test-telemetry $(BIN)/test-keymap $(BIN)/test-wheel-input $(BIN)/test-wheel-no-privilege $(BIN)/test-fbdev $(BIN)/test-i18n $(BIN)/test-textfit $(BIN)/test-fontprobe $(BIN)/test-drm $(BIN)/test-evdev $(BIN)/test-frame-pacing $(BIN)/test-input-wait $(BIN)/test-client-input-lock $(BIN)/test-vt $(BIN)/chromedrive-config
+$(BIN)/test-fontprobe-async: tests/test_fontprobe_async.c src/main.c src/i18n.c include/chrome.h include/cdconfig.h include/i18n.h include/fbdev_pixfmt.h include/input_wait.h | $(BIN) $(GEN)/xdg-shell-server.h
+	$(CC) $(CPPFLAGS) $(CFLAGS) -ffunction-sections -fdata-sections tests/test_fontprobe_async.c src/i18n.c -o $@ -Wl,--gc-sections $(shell pkg-config --libs sdl2 cairo) -lm
+test: all $(BIN)/test-math $(BIN)/test-cursor $(BIN)/test-config $(BIN)/test-vehicle $(BIN)/test-city $(BIN)/test-telemetry $(BIN)/test-keymap $(BIN)/test-wheel-input $(BIN)/test-wheel-no-privilege $(BIN)/test-fbdev $(BIN)/test-i18n $(BIN)/test-textfit $(BIN)/test-fontprobe $(BIN)/test-fontprobe-async $(BIN)/test-drm $(BIN)/test-evdev $(BIN)/test-frame-pacing $(BIN)/test-input-wait $(BIN)/test-client-input-lock $(BIN)/test-vt $(BIN)/chromedrive-config
 	./$(BIN)/test-math
 	./$(BIN)/test-cursor
 	./$(BIN)/test-config
@@ -110,6 +116,8 @@ test: all $(BIN)/test-math $(BIN)/test-cursor $(BIN)/test-config $(BIN)/test-veh
 	./$(BIN)/test-i18n
 	./$(BIN)/test-textfit
 	./$(BIN)/test-fontprobe
+	./$(BIN)/test-fontprobe-async .
+	./$(BIN)/chromedrive-fontprobe . ru
 	./$(BIN)/test-drm
 	./$(BIN)/test-evdev
 	./$(BIN)/test-frame-pacing

@@ -129,12 +129,18 @@ The rule is the same shape as the PNG ban: there is exactly one right way.
   language switch takes effect without a restart. Never hardcode a family name
   in a new drawing path - go through `cd_font()` / `ui_font_family()` or the
   new path will paint tofu in CJK.
-- **A catalog that cannot draw its own text must be refused, not rendered.**
-  The startup probe in `src/fontprobe.c` compares ink against an unassigned
-  code point and falls back to English with a loud log line. Any new drawing
-  program must call it after loading the catalog and *before* baking textures.
-  Its sample comes from the catalog's values (`i18n_sample_glyphs()`), so do
-  not add a second hardcoded sample table.
+- **A catalog that cannot draw its own text must be refused, not left rendered.**
+  The probe in `src/fontprobe.c` compares ink against an unassigned code point
+  and falls back to English with a loud log line. Standalone Cairo drawing
+  programs call it after loading the catalog and *before* baking textures.
+  The compositor is the deliberate exception because an in-process
+  fontconfig/Cairo stall would also stop input and managed VT servicing: it
+  may bake the selected language while `bin/chromedrive-fontprobe` is pending,
+  but a verified missing-glyph verdict must immediately re-bake English when
+  that catalog is still live, and stale verdicts must be ignored. Never move
+  the probe back into the compositor process or wait for a hung helper. Its
+  sample comes from the catalog's values (`i18n_sample_glyphs()`), so do not
+  add a second hardcoded sample table.
 - **Arabic, Hebrew, Indic and Thai are not shippable on this text path.**
   No shaping, no bidi: the result is disconnected letterforms in the wrong
   order. That needs Pango, not a catalog.

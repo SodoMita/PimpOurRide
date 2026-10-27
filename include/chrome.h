@@ -245,6 +245,10 @@ SdlTouchFinger sdl_touch[CD_MAX_TOUCH_POINTS];int sdl_touch_chrome_id;
   * focuses the running app; app_autostart[s] joins the --demo set. */
  char app_ids[6][128];bool app_autostart[6];
  pid_t children[128];int child_count;
+ /* Font coverage is probed out of process. The compositor only starts this
+  * child and polls it with WNOHANG, so a stuck fontconfig/Cairo call can never
+  * hold startup, input dispatch, or a managed VT release. */
+ pid_t font_probe_pid;char font_probe_lang[32],font_probe_pending[32];
  GLuint garage_tex,carbon_tex,console_tex,hub_tex,hud_tex,windshield_tex,help_tex,plate_tex,handles_tex;
  GLuint scene_list;bool rebuild_scene;
  /* Cached real city geometry and destination signs. Dynamic traffic/rain are

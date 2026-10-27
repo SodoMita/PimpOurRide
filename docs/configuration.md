@@ -619,15 +619,26 @@ Two mechanisms turn that measurement into a working CJK catalog. Both exist:
    return `NULL` when a catalog asks for nothing, and the built-in DejaVu names
    are kept. One family per catalog is enough; Noto Sans CJK also carries Latin
    and digits, so mixed chrome still renders.
-2. **A startup probe refuses a catalog it cannot draw.** `src/fontprobe.c`
+2. **A coverage probe refuses a catalog it cannot draw.** `src/fontprobe.c`
    renders each sampled code point into a 64×64 A8 surface and compares the
    bytes with the same rendering of an unassigned private-use code point
    (U+F8FF). Identical pixels means both became the same .notdef box — the
-   family has no glyph — so the catalog is refused, the offender is reported as
-   `U+XXXX` plus UTF-8 bytes, and the UI falls back to English before anything
-   is baked. The whole block is skipped for English, and a failure is not
-   retried on every config reload (it is retried when the requested language
-   changes, so picking the language again after installing the font works).
+   family has no glyph — so the offender is reported as `U+XXXX` plus UTF-8
+   bytes and the UI falls back to English. The whole block is skipped for
+   English, and a failure is not retried on every config reload (it is retried
+   when the requested language changes, so picking the language again after
+   installing the font works).
+
+   The compositor runs this probe as `bin/chromedrive-fontprobe`, never in its
+   own process. Selecting a language loads and draws it immediately; the main
+   loop starts the helper only after the backend/UI are open and reaps it with
+   `waitpid(..., WNOHANG)`. A missing-glyph verdict re-bakes English only if
+   that language is still selected, while a late verdict for an old language
+   is ignored. A stuck helper therefore cannot hold startup, Wayland input,
+   config reload, or managed VT servicing, and shutdown never waits for it.
+   The standalone Cairo Settings/demo clients still probe before their own
+   first text bake; they do not perform font probing on behalf of the
+   compositor.
 
 The samples come from the loaded catalog's **values**, in first-appearance
 order (`i18n_sample_glyphs()`), so the probe tests the strings that will
@@ -650,7 +661,10 @@ $ # same catalog with @font = No Such Family 12345
 reported uncovered, one with it is covered, the catalog's directive — not the
 caller's default — decides, and English never probes). Its CJK assertions are
 **skipped and counted**, not silently passed, when Noto Sans CJK is not
-installed on the machine.
+installed on the machine. `tests/test_fontprobe_async.c` adds a deliberately
+hanging helper, nonblocking polling, generic-reaper verdict routing, English
+re-bake, and stale-result checks; the Settings `--selftest` selects Russian through the real enum widget,
+saves it, creates a fresh GUI to reload it, and renders the Russian tab.
 
 A catalog also has to be **complete**, and that is a test, not a convention.
 The language menu lists every `.lang` under `assets/locale`, so a catalog with

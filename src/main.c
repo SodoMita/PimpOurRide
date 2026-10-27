@@ -1,7 +1,6 @@
 #include "chrome.h"
 #include "cdconfig.h"
 #include "fbdev_pixfmt.h"
-#include "fontprobe.h"
 #include "i18n.h"
 #include "input_wait.h"
 #include <errno.h>
@@ -134,41 +133,87 @@ static const char *language_want(void){
  const char *env=getenv("CHROMEDRIVE_LANG");
  return (env&&*env)?env:language_request;
 }
-/* Language whose catalog failed the glyph probe, so the UI is running on
- * English instead. apply_language() runs from more than one place at startup,
- * and without this every call re-loaded the broken catalog, re-probed it and
- * printed the warning block again (observed: three copies in one launch). The
- * request is retried only when it changes, which is also what makes "fix the
- * font, then pick the language again" work. */
+/* Language whose catalog failed the asynchronous glyph probe, so the UI is
+ * running on English instead. The request is retried only when it changes. */
 static char language_failed[32]="";
+
+/* Start at most one probe, and only from the running main loop. In particular,
+ * apply_language(..., true) merely queues work: no Cairo/fontconfig call or
+ * subprocess launch happens before the display backend and VT handling open. */
+static void font_probe_start(Server *s){
+ if(s->font_probe_pid>=0||!s->font_probe_pending[0])return;
+ char lang[32];snprintf(lang,sizeof(lang),"%s",s->font_probe_pending);
+ s->font_probe_pending[0]=0;
+ char path[sizeof s->root+32];
+ if(snprintf(path,sizeof(path),"%s/bin/chromedrive-fontprobe",s->root)>=(int)sizeof(path)){
+  fprintf(stderr,"[font] helper path too long; keeping language %s without a coverage verdict\n",lang);return;
+ }
+ posix_spawnattr_t attr;int err=posix_spawnattr_init(&attr);
+ if(err){fprintf(stderr,"[font] cannot prepare helper: %s\n",strerror(err));return;}
+ short flags=0;sigset_t child_mask;
+ /* Like app clients, the helper must not inherit the compositor's private
+  * SIGUSR1/SIGUSR2 VT mask. No shell is involved. */
+ if(backend_vt_child_mask(&child_mask)){
+  posix_spawnattr_setsigmask(&attr,&child_mask);flags|=POSIX_SPAWN_SETSIGMASK;
+ }
+ posix_spawnattr_setflags(&attr,flags);
+ char *args[]={(char*)"chromedrive-fontprobe",s->root,lang,NULL};
+ pid_t pid=-1;err=posix_spawn(&pid,path,NULL,&attr,args,environ);posix_spawnattr_destroy(&attr);
+ if(err){fprintf(stderr,"[font] cannot start helper %s: %s; keeping language %s\n",path,strerror(err),lang);return;}
+ s->font_probe_pid=pid;snprintf(s->font_probe_lang,sizeof(s->font_probe_lang),"%s",lang);
+}
+static void font_probe_schedule(Server *s,const char *lang){
+ if(!lang||!strcmp(lang,"en")){s->font_probe_pending[0]=0;return;}
+ snprintf(s->font_probe_pending,sizeof(s->font_probe_pending),"%s",lang);
+}
+static void font_probe_reaped(Server *s,pid_t pid,int status){
+ if(pid!=s->font_probe_pid)return;
+ char finished[32];snprintf(finished,sizeof(finished),"%s",s->font_probe_lang);
+ s->font_probe_pid=-1;s->font_probe_lang[0]=0;
+ /* A newer selection may have queued the same tag while the old helper was
+  * running; its result answers that request too, so do not spawn a duplicate. */
+ if(!strcmp(s->font_probe_pending,finished))s->font_probe_pending[0]=0;
+ if(WIFEXITED(status)&&WEXITSTATUS(status)==3&&!strcmp(language_live,finished)){
+  /* Exit 3 is the helper's verified missing-glyph verdict. Only a result for
+   * the still-live catalog may rebake English; stale results are harmless. */
+  /* Remember the request (possibly "auto"), not just the resolved tag, so
+   * the same failing request is not re-probed on every config poll. */
+  snprintf(language_failed,sizeof(language_failed),"%s",language_want());
+  const char *now=i18n_set_language(s->root,"en");
+  snprintf(language_live,sizeof(language_live),"%s",now);
+  fprintf(stderr,"[i18n] language en, catalog built-in English (asynchronous font fallback)\n");
+  if(s->buttons[0].texture)ui_refresh_text(s);
+ }
+}
+static void font_probe_poll(Server *s){
+ if(s->font_probe_pid>=0){
+  int status=0;pid_t done=waitpid(s->font_probe_pid,&status,WNOHANG);
+  if(done==s->font_probe_pid)font_probe_reaped(s,done,status);
+  else if(done<0&&errno==ECHILD){
+   /* The main-loop reaper routes this child through font_probe_reaped too;
+    * reaching ECHILD therefore means an unexpected external reaper. */
+   s->font_probe_pid=-1;s->font_probe_lang[0]=0;
+  }
+ }
+ font_probe_start(s);
+}
+static void font_probe_finish(Server *s){
+ /* Never wait for fontconfig during shutdown. The helper is not in children[],
+  * so terminate it explicitly; init will reap it if the compositor exits. */
+ if(s->font_probe_pid>=0)kill(s->font_probe_pid,SIGTERM);
+ s->font_probe_pid=-1;s->font_probe_lang[0]=s->font_probe_pending[0]=0;
+}
 static void apply_language(Server *s,bool startup){
  const char *want=language_want();
  if(language_failed[0]&&!strcmp(want,language_failed))return;
  const char *now=i18n_set_language(s->root,want);
  if(!strcmp(now,language_live))return;
- /* Probe immediately after the catalog swap and before anything is baked.
-  * On startup this runs from main() before ui_init(); on a hot switch it runs
-  * here before ui_refresh_text() below, so a catalog that cannot draw its own
-  * text never leaves a tofu texture behind. English does no probe work. */
- if(strcmp(now,"en")!=0){
-  const char *family=i18n_font();if(!family)family="DejaVu Sans";
-  char first_bad[8]="";
-  int missing=cd_font_probe_catalog("DejaVu Sans",first_bad,sizeof(first_bad));
-  if(missing>0){
-   cd_font_report_missing(now,family,missing,first_bad);
-   snprintf(language_failed,sizeof(language_failed),"%s",now);
-   now=i18n_set_language(s->root,"en");
-  }else{
-   char samples[12][8];int n=i18n_sample_glyphs(samples,12);
-   fprintf(stderr,"[font] %s: %d sample glyphs covered by '%s'\n",now,n,family);
-  }
- }
  snprintf(language_live,sizeof(language_live),"%s",now);
  fprintf(stderr,"[i18n] language %s, catalog %s\n",now,*i18n_catalog_path()?i18n_catalog_path():"built-in English");
- /* At startup ui_init() has not run yet, so there is nothing baked to redo.
-  * After a fallback this deliberately re-bakes in English, not in the catalog
-  * that just failed. */
+ /* Bake the requested language immediately. Coverage arrives asynchronously;
+  * a missing font rebakes English later rather than holding startup or input. */
  if(!startup&&s->buttons[0].texture)ui_refresh_text(s);
+ font_probe_schedule(s,now);
 }
 static void apply_config(Server *s,const CdConfig *cfg,bool startup,const char **socket_out){
   snprintf(language_request,sizeof(language_request),"%s",cd_config_get_string(cfg,"ui","language","auto"));
@@ -909,9 +954,20 @@ static void backend_shutdown(Server *s){
  }
 }
 static void usage(const char *name){printf("ChromeDrive " CD_VERSION " \xe2\x80\x94 native, first-person Wayland cockpit\n\nUsage: %s [options]\n  --demo                Start the configured autostart Wayland clients\n  --socket NAME         Wayland socket (default: automatic)\n  --exec COMMAND        Launch an extra Wayland client (repeatable)\n  --size WIDTHxHEIGHT   Framebuffer/host window size (default 1600x1000)\n  --fps N               Frame cap, 1..120 (default 60)\n  --backend MODE        headless (default) | windowed | fbdev | drm\n  --headless            Alias for --backend headless: surfaceless EGL + built-in VNC\n  --windowed            Alias for --backend windowed: SDL2/GLX dev window on X\n  --fbdev [DEVICE]      Direct Linux framebuffer output (default /dev/fb0)\n  --fbdev-device PATH   Framebuffer device for --backend fbdev\n  --drm [DEVICE]        Direct DRM/KMS + GBM/EGL output (default /dev/dri/card0)\n  --drm-device PATH     KMS card device for --backend drm\n  --drm-mode WxH        Require an exact KMS mode; default current or preferred\n  --evdev / --no-evdev  Enable/disable local input for fbdev and DRM\n  --grab-input / --no-grab-input  Enable/disable EVIOCGRAB for DRM and fbdev\n  --drm-grab-input / --no-drm-grab-input  Override DRM grabbing (default: on)\n  --input-device PATH   Restrict local input (repeatable, max 32)\n  --input-wakeup / --no-input-wakeup\n                        Eventfd dispatch during idle frame time (default: on)\n  --fbdev-modeset       Select fbdev backend and request modeset to configured render size\n  --fbdev-mode WxH[@BPP] Select fbdev backend, imply modeset, set size/BPP (BPP in 16,24,32)\n  --no-fbdev-vsync      Do not wait for FBIO_WAITFORVSYNC\n  --no-fbdev-pan        Do not use FBIOPAN_DISPLAY double buffering\n  --fbdev-vnc-mirror    Loopback-only RFB input/output companion for fbdev\n  --vnc-mirror          Alias for --fbdev-vnc-mirror\n  --fbdev-evdev         Enable local evdev input for direct backends (default: on)\n  --no-fbdev-evdev      Disable local evdev input for direct backends\n  --fbdev-grab-input / --no-fbdev-grab-input  fbdev-only grab override (default: off)\n  --fbdev-input-device PATH Restrict evdev to explicit device (repeatable, max 32)\n  --vnc-port N          VNC port for headless or the fbdev mirror (default 5900)\n  --vnc-loopback        Bind RFB to 127.0.0.1 only (default; no VNC password exists)\n  --vnc-listen-all      Bind RFB to 0.0.0.0 - anyone who can reach the port\n                        controls the session (use only on a trusted network)\n  --fullscreen          --windowed only: start fullscreen, F11 to leave\n  --exit-after SECONDS   Useful for automated checks\n  --screenshot PATH     Capture a WebP after 3 seconds\n  --config PATH         Config file (default: ~/.config/chromedrive/chromedrive.conf)\n  --no-config           Ignore the config file entirely\n  --help                Show this help\n\nfbdev adopts the current kernel framebuffer mode by default (no modesetting);\nwith --fbdev-modeset or --fbdev-mode it requests a modeset via FBIOPUT_VSCREENINFO.\nThe original mode is restored on exit. Local evdev input (keyboard/mouse/touchscreen)\nis enabled by default for fbdev and DRM; use --no-evdev to disable. Explicit devices\nvia --input-device replace auto-enumeration and also enable the headless virtual-input\ntest path. Startup-only enumeration; no hotplug.\nDRM/KMS uses direct GBM/EGL scanout with page-flip events (no readback blit).\nIt retains the current mode or chooses the preferred one; --drm-mode requires an exact mode.\nOn a controlling Linux VT, physical Ctrl+Alt+F1..F12 releases input/DRM master and resumes on return.\nDRM grabs startup evdev devices by default on a managed VT and fails closed on grab errors.\nWithout a managed VT, DRM downgrades grabbing; fbdev grabbing stays opt-in and VT switching unmanaged.\nLocal evdev is shared by fbdev and DRM, with monotonic kernel timestamps and a bounded async queue.\n\nF1 help | F2 selected seat | F3 focus/next | F4 neon | F6 arrange | Meta+H HUD | Meta+O doors\nF7 client/drive input | F8 driver/exterior/systems | F9 switch seat | F10 recover car\nMeta+ScrollLock grab/release focused window input; all other ordinary shortcuts pass through\nMeta+Shift+Q quit | red dash EXIT button: press twice\nF5 is unbound for browser/client restart or reload\nDrive: WASD/arrows + Space + drag wheel\nMiddle-drag/VNC-drag to look | Drag a titlebar to move | HANDLES shows the Arrange gizmo\nArrange: Tab next window, Esc/F6 exit | Ctrl+Alt+Enter new terminal\n",name);}
+static void reap_children(Server *s){
+ int status;pid_t pid;
+ while((pid=waitpid(-1,&status,WNOHANG))>0){
+  /* The helper may exit between font_probe_poll() and this generic reaper.
+   * Route its status to the same verdict handler instead of losing the exit-3
+   * fallback or misreporting an internal helper as a Wayland client. */
+  if(pid==s->font_probe_pid){font_probe_reaped(s,pid,status);continue;}
+  for(int i=0;i<s->child_count;i++)if(s->children[i]==pid){s->children[i]=s->children[--s->child_count];break;}
+  if(WIFEXITED(status)&&WEXITSTATUS(status)!=0){fprintf(stderr,"[launch] pid %d exited %d\n",(int)pid,WEXITSTATUS(status));app_notice(s,tr("Client exited with status %d — see launch log"),WEXITSTATUS(status));}
+ }
+}
 int main(int argc,char **argv){
  bool vnc_listen_all=false; /* --vnc-listen-all: opt back in to an all-interface bind */
- Server s={.width=1600,.height=1000,.fps_limit=60,.running=true,.hud_visible=true,.hover_button=-1,.hover_close=-1,.keymap_fd=-1,.arrange_slot=-1,.frame_drag_slot=-1,.fov=65,.target_fov=65,.base_fov=65,.backend=CD_BACKEND_HEADLESS,.fbdev_vsync=true,.fbdev_pan=true,.fbdev_evdev=true,.fbdev_grab_input=false,.drm_grab_input=true,.vnc_port=5900,.vnc_loopback=true,.telemetry_fd=-1,.wheel_joy={.uinput_fd=-1},.fbdev_modeset=false,.fbdev_mode_width=0,.fbdev_mode_height=0,.fbdev_mode_bpp=0,.fbdev_input_device_count=0,.input_wakeup=true,.render_to_texture=true,.render_scale=1,.render_mag_filter=GL_LINEAR,.render_min_filter=GL_LINEAR_MIPMAP_LINEAR,.client_filter=GL_NEAREST};
+ Server s={.width=1600,.height=1000,.fps_limit=60,.running=true,.hud_visible=true,.hover_button=-1,.hover_close=-1,.keymap_fd=-1,.arrange_slot=-1,.frame_drag_slot=-1,.fov=65,.target_fov=65,.base_fov=65,.backend=CD_BACKEND_HEADLESS,.fbdev_vsync=true,.fbdev_pan=true,.fbdev_evdev=true,.fbdev_grab_input=false,.drm_grab_input=true,.vnc_port=5900,.vnc_loopback=true,.telemetry_fd=-1,.wheel_joy={.uinput_fd=-1},.font_probe_pid=-1,.fbdev_modeset=false,.fbdev_mode_width=0,.fbdev_mode_height=0,.fbdev_mode_bpp=0,.fbdev_input_device_count=0,.input_wakeup=true,.render_to_texture=true,.render_scale=1,.render_mag_filter=GL_LINEAR,.render_min_filter=GL_LINEAR_MIPMAP_LINEAR,.client_filter=GL_NEAREST};
  vehicle_init(&s.vehicle);
  const char *socket_name=NULL;double exit_after=0;bool auto_screenshot=false;
  /* Config pre-scan: --config/--no-config must be known before the file is
@@ -1056,8 +1112,9 @@ int main(int argc,char **argv){
    backend_vt_wait(&s,50);continue;
   }
   config_poll(&s);
+  font_probe_poll(&s); /* WNOHANG only: input and VT service stay responsive */
   server_dispatch(&s);
-  int status;pid_t pid;while((pid=waitpid(-1,&status,WNOHANG))>0){for(int i=0;i<s.child_count;i++)if(s.children[i]==pid){s.children[i]=s.children[--s.child_count];break;}if(WIFEXITED(status)&&WEXITSTATUS(status)!=0){fprintf(stderr,"[launch] pid %d exited %d\n",(int)pid,WEXITSTATUS(status));app_notice(&s,tr("Client exited with status %d — see launch log"),WEXITSTATUS(status));}}
+  reap_children(&s);
   if(s.demo&&!initial_focus&&s.time>2.0&&s.monitors[0].surface){server_focus(&s,s.monitors[0].surface);initial_focus=true;}
   /* Physics consumes a snapshot of the current input mode, then advances in
    * 120 Hz fixed ticks. CLIENT mode applies a parking brake: manipulating a
@@ -1112,6 +1169,7 @@ int main(int argc,char **argv){
   * balance keys/touches before server_finish; backend_*_shutdown is idempotent
   * here and later tears down presentation after GL objects are gone. */
  if(s.evdev_state)backend_evdev_shutdown(&s);
+ font_probe_finish(&s);
  wheel_joystick_finish(&s.wheel_joy);
  telemetry_finish(&s);server_finish(&s);scene_finish(&s);
  backend_shutdown(&s);
