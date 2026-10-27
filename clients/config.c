@@ -156,6 +156,7 @@ static Def CD_DEFS[] = {
     { "Display", "display", "render_scale", "3D render scale (HUD stays native)", K_FLOAT_INPUT, 0.001, 100, 0, "%.6g", "1", {0}, 0, false, false },
     { "Display", "display", "render_upscale", "Render upscale sampling", K_ENUM, 0, 1, 1, NULL, "linear", { "nearest", "linear" }, 2, true, false },
     { "Display", "display", "render_downscale", "Render downscale sampling", K_ENUM, 0, 5, 1, NULL, "linear_mipmap_linear", { "nearest", "linear", "nearest_mipmap_nearest", "linear_mipmap_nearest", "nearest_mipmap_linear", "linear_mipmap_linear" }, 6, true, false },
+    { "Display", "display", "client_sampling", "Client surface sampling", K_ENUM, 0, 1, 1, NULL, "nearest", { "nearest", "linear" }, 2, true, false },
     /* All post-FX rows share display.post_shader; fmt holds the discovered
      * path (NULL while inactive) and toggles write the whole ';'-chain in
      * slot order. */

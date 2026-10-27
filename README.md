@@ -245,13 +245,17 @@ from the system's desktop-entry databases. You can still hand-tune the command
 instance instead of relaunching, toggle entries on/off, and choose the
 `--demo` autostart set. The other tabs cover every Garage3D tunable (neon
 colours, fog, rain, physics…) and every compositor setting (size/FPS/FOV,
-render scale, upscale/downscale sampling, post-effect chain toggles, underglow,
+render scale, upscale/downscale/client sampling, post-effect chain toggles, underglow,
 3D-vs-texture backdrop, and the VNC port as an exact typed number—not a
 slider). `render_scale` is a
 typed number (`0.001`–`100`, `1` = 100%) rather than a slider, and the two
-sampling keys take `nearest`/`linear` (upscale) or those plus the four
+render sampling keys take `nearest`/`linear` (upscale) or those plus the four
 `*_mipmap_*` combinations (downscale). The default downscale filter is
 `linear_mipmap_linear` (trilinear); mipmaps are generated each frame.
+`client_sampling` (`nearest`/`linear`) applies only to Wayland client windows
+and screens, not to the HUD or cockpit chrome. It defaults to `nearest` for
+pixel-exact client text; `linear` restores the previous, smoother look when a
+surface is scaled or viewed at an angle.
 SSIM is not a sampling token: an SSIM-guided downscaler ships as the post
 effect `shaders/ssim-downscale.frag`. Use `render_scale = 2` (or greater) and
 `post_shader = shaders/ssim-downscale.frag`; it is an experimental

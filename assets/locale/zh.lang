@@ -113,6 +113,7 @@ CLIENT / wheel acts as joystick steering wheel = 客户端 / 滚轮充当游戏�
 Client exited with status %d — see launch log = 客户端已退出，状态 %d — 请查看启动日志
 CLIENT INPUT / PARKED = 客户端输入 / 停车
 CLIENT INPUT / JOYSTICK WHEEL = 客户端输入 / 摇杆方向盘
+Client surface sampling = 客户端表面采样
 COCKPIT = COCKPIT
 Cockpit = 座舱
 COLOR = 颜色

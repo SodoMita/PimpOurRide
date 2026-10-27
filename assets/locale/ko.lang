@@ -114,6 +114,7 @@ CLIENT / wheel acts as joystick steering wheel = 클라이언트 / 휠이 게임
 Client exited with status %d — see launch log = 클라이언트가 상태 %d로 종료됨 — 시작 로그 확인
 CLIENT INPUT / PARKED = 클라이언트 입력 / 정차
 CLIENT INPUT / JOYSTICK WHEEL = 클라이언트 입력 / 조이스틱 핸들
+Client surface sampling = 클라이언트 표면 샘플링
 COCKPIT = COCKPIT
 Cockpit = 콕핏
 COLOR = 색상

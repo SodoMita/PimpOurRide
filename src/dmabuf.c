@@ -84,7 +84,7 @@ static DmabufBuffer *import_dmabuf(Server *s,Params *p,int32_t width,int32_t hei
  attribs[n++]=EGL_NONE;
  EGLImageKHR image=create_image(s->egl_display,EGL_NO_CONTEXT,EGL_LINUX_DMA_BUF_EXT,(EGLClientBuffer)NULL,attribs);
  if(image==EGL_NO_IMAGE_KHR){fprintf(stderr,"[dmabuf] eglCreateImageKHR failed: 0x%x (expected in this sandbox — no real dma-buf backing is possible here)\n",eglGetError());close(pl->fd);pl->fd=-1;return NULL;}
- GLuint tex;glGenTextures(1,&tex);glBindTexture(GL_TEXTURE_2D,tex);glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MIN_FILTER,GL_LINEAR);glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MAG_FILTER,GL_LINEAR);glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_WRAP_S,GL_CLAMP_TO_EDGE);glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_WRAP_T,GL_CLAMP_TO_EDGE);
+ GLuint tex;glGenTextures(1,&tex);client_texture_params(tex,s->client_filter);
  target_texture(GL_TEXTURE_2D,image);
  close(pl->fd);pl->fd=-1;
  DmabufBuffer *db=calloc(1,sizeof(*db));if(!db){destroy_image(s->egl_display,image);glDeleteTextures(1,&tex);return NULL;}

@@ -114,6 +114,7 @@ CLIENT / wheel acts as joystick steering wheel = クライアント / ホイー�
 Client exited with status %d — see launch log = クライアントが状態 %d で終了しました — 起動ログを確認
 CLIENT INPUT / PARKED = クライアント入力 / 停車中
 CLIENT INPUT / JOYSTICK WHEEL = クライアント入力 / ジョイスティックハンドル
+Client surface sampling = クライアント面サンプリング
 COCKPIT = COCKPIT
 Cockpit = コックピット
 COLOR = カラー

@@ -112,6 +112,7 @@ CLIENT / wheel acts as joystick steering wheel = КЛИЕНТ / руль раб�
 Client exited with status %d — see launch log = Клиент завершился с кодом %d — см. журнал запуска
 CLIENT INPUT / PARKED = ВВОД КЛИЕНТА / СТОЯНКА
 CLIENT INPUT / JOYSTICK WHEEL = ВВОД КЛИЕНТА / РУЛЬ-ДЖОЙСТИК
+Client surface sampling = Фильтрация поверхностей клиентов
 COCKPIT = КОКПИТ
 Cockpit = Кокпит
 COLOR = ЦВЕТ

@@ -168,13 +168,15 @@ static void surface_apply(Surface *p){
    if(p->texture&&p->texture_owned)glDeleteTextures(1,&p->texture);
    if(p->dmabuf&&p->dmabuf!=p->pending_dmabuf)wl_buffer_send_release(p->dmabuf->resource);
    p->dmabuf=p->pending_dmabuf;p->pending_dmabuf=NULL;p->texture=p->dmabuf->texture;p->texture_owned=false;
+   /* Re-apply on attach so a live client_sampling edit reaches buffers that
+    * were imported earlier, not just ones imported after the config reload. */
+   client_texture_params(p->texture,s->client_filter);
    p->bw=p->dmabuf->width;p->bh=p->dmabuf->height;p->format=p->dmabuf->has_alpha?WL_SHM_FORMAT_ARGB8888:WL_SHM_FORMAT_XRGB8888;
   }else if(p->pending_pixels){
    if(p->pending_w%p->scale||p->pending_h%p->scale){wl_resource_post_error(p->resource,WL_SURFACE_ERROR_INVALID_SIZE,"buffer dimensions must be divisible by scale");return;}
    if(p->dmabuf){wl_buffer_send_release(p->dmabuf->resource);p->dmabuf=NULL;}
    if(!p->texture_owned)p->texture=0;
-   if(!p->texture)glGenTextures(1,&p->texture);glBindTexture(GL_TEXTURE_2D,p->texture);p->texture_owned=true;
-   glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MIN_FILTER,GL_LINEAR);glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MAG_FILTER,GL_LINEAR);glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_WRAP_S,GL_CLAMP_TO_EDGE);glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_WRAP_T,GL_CLAMP_TO_EDGE);
+   if(!p->texture)glGenTextures(1,&p->texture);client_texture_params(p->texture,s->client_filter);p->texture_owned=true;
    glPixelStorei(GL_UNPACK_ALIGNMENT,4);glTexImage2D(GL_TEXTURE_2D,0,GL_RGBA,p->pending_w,p->pending_h,0,GL_BGRA,GL_UNSIGNED_BYTE,p->pending_pixels);
    p->bw=p->pending_w;p->bh=p->pending_h;p->format=p->pending_format;
   }

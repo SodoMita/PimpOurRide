@@ -188,7 +188,7 @@ and a later config edit hot-reloads `[cockpit] hud` back over the runtime choice
 
 - **Compositor, live:** `display.fps`, `display.fov`, `display.render_to_texture`,
   `display.render_scale`, `display.render_upscale`, `display.render_downscale`,
-  `display.post_shader`, `cockpit.*`
+  `display.client_sampling`, `display.post_shader`, `cockpit.*`
   (neon/hud/background), all `[app.*]` menu keys.
   **Restart:** `display.width/height/fullscreen`, and every `session.*` key,
   including `backend`, `headless` (legacy), `drm_device`, `drm_mode`,
@@ -241,6 +241,21 @@ out-of-range values (and unknown filter names) are warned about and ignored,
 keeping the previous/default setting. Pointer picking still uses output
 window coordinates, and F12/`--screenshot` capture the final output at the
 configured output size after the blit.
+
+### Client surface sampling
+
+`display.client_sampling` selects the GL min/mag filter for **Wayland client
+surface textures only** — the shm uploads and dma-buf imports that back app
+windows and the instrument cluster. It never changes the compositor's own HUD,
+help, pointer or cockpit textures. Values are `nearest` or `linear`; unknown
+tokens are warned about and ignored, keeping the previous setting. The default
+is `nearest`, which keeps client text pixel-exact; this changed the previous
+hardwired `GL_LINEAR` behaviour. `linear` restores that smoother look, which
+helps when a client surface is scaled or viewed at an angle. Wrapping stays
+`CLAMP_TO_EDGE` and no mipmaps are generated. The setting is live: shm
+surfaces pick it up on their next upload, and dma-buf surfaces on their next
+attach (a client that never reattaches a static buffer keeps the old filter
+until it does).
 
 ### Post shader chain
 
@@ -365,6 +380,7 @@ render_to_texture = true # gate for the scaled 3D pass; HUD stays native (live)
 render_scale = 1      # 0.001..100, 1 = 100%; typed field in GUI (live)
 render_upscale = linear   # nearest | linear (live)
 render_downscale = linear_mipmap_linear # nearest | linear | *_mipmap_nearest | *_mipmap_linear (live)
+client_sampling = nearest # nearest | linear; Wayland client windows only (live)
 post_shader =         # ';'-separated GLSL 1.20 chain for the 3D world, max 8; off/empty = none (live)
 fullscreen = false    # --windowed only      (restart)
 

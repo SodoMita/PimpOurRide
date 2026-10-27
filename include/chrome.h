@@ -172,6 +172,11 @@ SdlTouchFinger sdl_touch[CD_MAX_TOUCH_POINTS];int sdl_touch_chrome_id;
  bool render_to_texture;
  double render_scale;
  GLuint render_mag_filter,render_min_filter;
+ /* display.client_sampling: sampling for Wayland client surface textures
+  * only (shm uploads and dma-buf imports), never the HUD/cockpit textures.
+  * GL_NEAREST is the deliberate default so client text stays pixel-exact;
+  * this changed the previous hardwired GL_LINEAR behaviour. */
+ GLuint client_filter;
  GLuint rtt_fbo,rtt_color_tex,rtt_depth_rb;
  int rtt_width,rtt_height;
  GLuint rtt_mag_filter,rtt_min_filter;
@@ -247,6 +252,16 @@ SdlTouchFinger sdl_touch[CD_MAX_TOUCH_POINTS];int sdl_touch_chrome_id;
  GLuint city_list,city_signs[10]; /* route + Home campus + shared district-garage signs */
  bool screenshot_requested;char screenshot_path[4096];
 };
+/* Bind a Wayland client surface texture and apply the shared sampling state.
+ * Used by shm uploads and dma-buf import/attach so every path agrees; wraps
+ * stay clamped because client buffers never tile, and there are no mipmaps. */
+static inline void client_texture_params(GLuint tex,GLuint filter){
+ glBindTexture(GL_TEXTURE_2D,tex);
+ glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MIN_FILTER,(GLint)filter);
+ glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MAG_FILTER,(GLint)filter);
+ glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_WRAP_S,GL_CLAMP_TO_EDGE);
+ glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_WRAP_T,GL_CLAMP_TO_EDGE);
+}
 bool server_init(Server *s,const char *socket_name);
 void server_dispatch(Server *s);
 void server_finish(Server *s);

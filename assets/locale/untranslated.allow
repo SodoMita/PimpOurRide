@@ -10,3 +10,9 @@
 linear_mipmap_linear
 # cairo's own version banner, which the settings About row prints verbatim.
 ImageMagick
+# Discovered post-effect filenames are identifiers, not prose; the settings
+# GUI shows the shader basename after "Post FX: ".
+Post FX: hermite-downscale
+Post FX: hermite-downscale-mipmap
+Post FX: khronos-pbr-neutral
+Post FX: ssim-downscale
