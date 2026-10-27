@@ -112,6 +112,11 @@ static void setup_abs_axis(int fd,uint16_t code,int32_t min_v,int32_t max_v){
  ioctl(fd,UI_ABS_SETUP,&abs);
 }
 
+static void sleep_ms(int ms){
+ struct timespec ts={.tv_sec=ms/1000,.tv_nsec=(long)(ms%1000)*1000000L};
+ nanosleep(&ts,NULL);
+}
+
 static void ensure_event_node_and_udev(WheelJoystick *joy){
  if(!joy->sysname[0])return;
  char sysdir[160];
@@ -143,6 +148,18 @@ static void ensure_event_node_and_udev(WheelJoystick *joy){
  }
  if(!joy->dev_node[0])return;
 
+ /* udevd applies GROUP/MODE asynchronously: devtmpfs exposes a fresh input
+  * node as 0600 root:root first, and only after its rules land (measured
+  * ~25 ms on this host) can an unprivileged compositor read it. Poll for that
+  * window instead of disabling the joystick - direct syscalls only, never a
+  * privilege helper (AGENTS.md section 5). */
+ bool udev_ready=false;
+ if(access(joy->dev_node,R_OK)!=0){
+  for(int i=0;i<100&&access(joy->dev_node,R_OK)!=0;i++)
+   sleep_ms(5);
+  udev_ready=access(joy->dev_node,R_OK)==0;
+ }
+
  /* Why we best-effort prepare /dev/input/eventN and
   * /run/udev/data/c<maj>:<min>: desktop udevd normally creates both after
   * UI_DEV_CREATE. A minimal boot without udevd may expose only sysfs. Direct
@@ -164,6 +181,12 @@ static void ensure_event_node_and_udev(WheelJoystick *joy){
  }
 
  snprintf(joy->udev_file,sizeof(joy->udev_file),"/run/udev/data/c%d:%d",joy->major_num,joy->minor_num);
+ /* Same race for udev's database entry: wait for it only when udevd is the
+  * reason the node became readable at all (a bare mknod host has no udevd and
+  * must not pay the delay). */
+ int tag_wait=udev_ready?40:0;
+ for(int i=0;i<tag_wait&&access(joy->udev_file,R_OK)!=0;i++)
+  sleep_ms(5);
  if(access(joy->udev_file,R_OK)!=0){
   struct stat st;
   if(lstat(joy->udev_file,&st)!=0&&errno==ENOENT){

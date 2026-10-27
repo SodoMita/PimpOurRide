@@ -96,39 +96,53 @@ static void test_uinput_and_sdl_joystick(void){
  }
 
  if(SDL_Init(SDL_INIT_JOYSTICK|SDL_INIT_GAMECONTROLLER)==0){
-  CHECK(SDL_NumJoysticks()>=1,"SDL2 detects the virtual steering-wheel joystick");
-  int idx=0;
-  CHECK(SDL_IsGameController(idx)==SDL_TRUE,"SDL2 recognizes the wheel as an SDL_GameController");
-  SDL_GameController *gc=SDL_GameControllerOpen(idx);
-  SDL_Joystick *js=SDL_JoystickOpen(idx);
-  CHECK(gc!=NULL && js!=NULL,"opened SDL_GameController and SDL_Joystick");
-  if(gc && js){
-   wheel_joystick_update_angle(&joy,-135.0f);
-   SDL_PumpEvents();
-   SDL_GameControllerUpdate();
-   CHECK(SDL_GameControllerGetAxis(gc,SDL_CONTROLLER_AXIS_LEFTX)>=32766,
-         "SDL_GameController LEFTX reaches +32767 on full right turn");
-   CHECK(SDL_JoystickGetAxis(js,0)>=32766,
-         "SDL_Joystick axis 0 reaches +32767 on full right turn");
-
-   wheel_joystick_update_angle(&joy,135.0f);
-   SDL_PumpEvents();
-   SDL_GameControllerUpdate();
-   CHECK(SDL_GameControllerGetAxis(gc,SDL_CONTROLLER_AXIS_LEFTX)<=-32766,
-         "SDL_GameController LEFTX reaches -32767 on full left turn");
-   CHECK(SDL_JoystickGetAxis(js,0)<=-32766,
-         "SDL_Joystick axis 0 reaches -32767 on full left turn");
-
-   wheel_joystick_update_angle(&joy,0.0f);
-   SDL_PumpEvents();
-   SDL_GameControllerUpdate();
-   CHECK(SDL_GameControllerGetAxis(gc,SDL_CONTROLLER_AXIS_LEFTX)==0,
-         "SDL_GameController LEFTX returns to 0 on center");
-   CHECK(SDL_JoystickGetAxis(js,0)==0,
-         "SDL_Joystick axis 0 returns to 0 on center");
+  /* Several pads can exist on a real host (another ChromeDrive instance, a
+   * physical Xbox pad): identify ours by its evdev node, never by index. */
+  int idx=-1;
+  int n=SDL_NumJoysticks();
+  for(int i=0;i<n;i++){
+#if SDL_VERSION_ATLEAST(2,0,22)
+   const char *path=SDL_JoystickPathForIndex(i);
+   if(path&&strcmp(path,joy.dev_node)==0){idx=i;break;}
+#else
+   idx=0; /* SDL < 2.0.22 has no device path to match on */
+   break;
+#endif
   }
-  if(gc)SDL_GameControllerClose(gc);
-  if(js)SDL_JoystickClose(js);
+  CHECK(idx>=0,"SDL2 detects the virtual steering-wheel joystick");
+  if(idx>=0){
+   CHECK(SDL_IsGameController(idx)==SDL_TRUE,"SDL2 recognizes the wheel as an SDL_GameController");
+   SDL_GameController *gc=SDL_GameControllerOpen(idx);
+   SDL_Joystick *js=SDL_JoystickOpen(idx);
+   CHECK(gc!=NULL && js!=NULL,"opened SDL_GameController and SDL_Joystick");
+   if(gc && js){
+    wheel_joystick_update_angle(&joy,-135.0f);
+    SDL_PumpEvents();
+    SDL_GameControllerUpdate();
+    CHECK(SDL_GameControllerGetAxis(gc,SDL_CONTROLLER_AXIS_LEFTX)>=32766,
+          "SDL_GameController LEFTX reaches +32767 on full right turn");
+    CHECK(SDL_JoystickGetAxis(js,0)>=32766,
+          "SDL_Joystick axis 0 reaches +32767 on full right turn");
+
+    wheel_joystick_update_angle(&joy,135.0f);
+    SDL_PumpEvents();
+    SDL_GameControllerUpdate();
+    CHECK(SDL_GameControllerGetAxis(gc,SDL_CONTROLLER_AXIS_LEFTX)<=-32766,
+          "SDL_GameController LEFTX reaches -32767 on full left turn");
+    CHECK(SDL_JoystickGetAxis(js,0)<=-32766,
+          "SDL_Joystick axis 0 reaches -32767 on full left turn");
+
+    wheel_joystick_update_angle(&joy,0.0f);
+    SDL_PumpEvents();
+    SDL_GameControllerUpdate();
+    CHECK(SDL_GameControllerGetAxis(gc,SDL_CONTROLLER_AXIS_LEFTX)==0,
+          "SDL_GameController LEFTX returns to 0 on center");
+    CHECK(SDL_JoystickGetAxis(js,0)==0,
+          "SDL_Joystick axis 0 returns to 0 on center");
+   }
+   if(gc)SDL_GameControllerClose(gc);
+   if(js)SDL_JoystickClose(js);
+  }
   SDL_Quit();
  }
 

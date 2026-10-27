@@ -352,12 +352,22 @@ unavailable.
 One host-setup option on a systemd/udev Linux installation is a dedicated
 `uinput` group (`sudo groupadd --system uinput`, then
 `sudo usermod --append --groups uinput "$USER"`) and a rule such as
-`/etc/udev/rules.d/60-chromedrive-uinput.rules`:
+`/etc/udev/rules.d/99-chromedrive-uinput.rules` (rules with a higher sort order
+win, so a pre-existing `99-uinput.rules` would still override `GROUP=`; the
+setup script below reports that and `--rule-name` picks a later name):
 
 ```udev
 KERNEL=="uinput", SUBSYSTEM=="misc", GROUP="uinput", MODE="0660"
 ACTION=="add", SUBSYSTEM=="input", ATTRS{name}=="ChromeDrive Virtual Steering Wheel", GROUP="uinput", MODE="0660"
 ```
+
+Both halves ship as host-setup helpers that the compositor itself never calls:
+`./tools/check-uinput.sh` diagnoses access read-only (prints what the compositor
+would find, exits 1 when the joystick would be disabled, and shows the exact
+remediation), and `sudo ./tools/grant-uinput.sh` performs the group plus udev
+rule setup idempotently (`--dry-run`, `--user NAME`, `--remove`). Neither one is
+a privilege helper on the compositor's path: you run them yourself, before
+launch.
 
 Adapt this to the distribution's seat/ACL policy, reload udev or reboot, and
 start ChromeDrive from a session where the new group membership is active.
@@ -592,6 +602,8 @@ tests/protocol_probe.c        end-to-end Wayland protocol conformance test (incl
 tests/input_latency_client.c  timestamp-recording Wayland receiver for virtual-input tests
 tools/virtual-input-test.py   real uinput grab-conformance + frame-pacing comparison
 tools/virtual-input-stress.py multi-device 16 kHz delivery/overflow/frame-liveness stress
+tools/check-uinput.sh         read-only /dev/uinput diagnosis (exit 1 = joystick disabled)
+tools/grant-uinput.sh         host setup: uinput group + udev rule (sudo, never at runtime)
 tools/run-web.sh              one-command native backend + browser bridge
 tools/viewer/                 static noVNC remote desktop + safe hold-to-drive controls
 ```
