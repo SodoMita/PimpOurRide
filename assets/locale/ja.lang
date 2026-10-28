@@ -350,3 +350,14 @@ Your garage. = あなたのガレージ。
 YOUR LOCAL WORKSPACE = ローカルワークスペース
 Zoom sensitivity = ズーム感度
 ↑  Up = ↑  上へ
+
+Keyboard = キーボード
+Rules = ルール
+Model = モデル
+Layouts = レイアウト
+Variants = バリアント
+Options = オプション
+Empty: environment/system default = 空: 環境変数/システムのデフォルト
+Comma-separated, e.g. us,ru; empty: system default = カンマ区切り（例: us,ru）、空: システムのデフォルト
+Comma-separated positions; leading comma means empty first variant = カンマ区切りの位置指定、先頭のカンマは空の最初のバリアント
+e.g. grp:alt_shift_toggle,compose:menu; empty: none = 例: grp:alt_shift_toggle,compose:menu、空: なし

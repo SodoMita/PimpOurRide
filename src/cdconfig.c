@@ -74,6 +74,19 @@ void cd_config_set_string(CdConfig *cfg, const char *section, const char *key,
     cfg->count++;
 }
 
+void cd_config_unset(CdConfig *cfg, const char *section, const char *key) {
+    if (!cfg || !section || !key) return;
+    for (size_t i = 0; i < cfg->count; i++) {
+        Entry *e = &cfg->entries[i];
+        if (strcmp(e->section, section) || strcmp(e->key, key)) continue;
+        free(e->section); free(e->key); free(e->value);
+        if (i + 1 < cfg->count)
+            memmove(e, e + 1, (cfg->count - i - 1) * sizeof(*e));
+        cfg->count--;
+        return;
+    }
+}
+
 CdConfig *cd_config_load(const char *path) {
     CdConfig *cfg = calloc(1, sizeof(*cfg));
     if (!cfg) return NULL;

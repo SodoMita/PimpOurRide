@@ -350,3 +350,14 @@ Your garage. = 당신의 차고.
 YOUR LOCAL WORKSPACE = 로컬 작업 공간
 Zoom sensitivity = 줌 감도
 ↑  Up = ↑  위로
+
+Keyboard = 키보드
+Rules = 규칙
+Model = 모델
+Layouts = 레이아웃
+Variants = 변형
+Options = 옵션
+Empty: environment/system default = 비우면 환경/시스템 기본값
+Comma-separated, e.g. us,ru; empty: system default = 쉼표로 구분(예: us,ru), 비우면 시스템 기본값
+Comma-separated positions; leading comma means empty first variant = 쉼표로 위치 구분, 첫 쉼표는 빈 첫 변형
+e.g. grp:alt_shift_toggle,compose:menu; empty: none = 예: grp:alt_shift_toggle,compose:menu, 비우면 없음

@@ -354,9 +354,9 @@ static const struct wl_keyboard_interface keyboard_impl={.release=resource_destr
 static const struct wl_touch_interface touch_impl={.release=resource_destroy_request};
 static void pointer_frame(struct wl_resource *r){if(wl_resource_get_version(r)>=5)wl_pointer_send_frame(r);}
 static void send_key_enter(Server *s,struct wl_resource *r,Surface *p){struct wl_array keys;wl_array_init(&keys);for(uint32_t i=0;i<256;i++)if(s->keys[i]){uint32_t *k=wl_array_add(&keys,4);if(k)*k=i;}wl_keyboard_send_enter(r,wl_display_next_serial(s->display),p->resource,&keys);wl_array_release(&keys);}
-static void send_modifiers(Server *s,struct wl_resource *r){wl_keyboard_send_modifiers(r,wl_display_next_serial(s->display),xkb_state_serialize_mods(s->xkb_state,XKB_STATE_MODS_DEPRESSED),xkb_state_serialize_mods(s->xkb_state,XKB_STATE_MODS_LATCHED),xkb_state_serialize_mods(s->xkb_state,XKB_STATE_MODS_LOCKED),xkb_state_serialize_layout(s->xkb_state,XKB_STATE_LAYOUT_EFFECTIVE));}
+static void send_modifiers(Server *s,struct wl_resource *r){wl_keyboard_send_modifiers(r,wl_display_next_serial(s->display),xkb_state_serialize_mods(s->xkb.state,XKB_STATE_MODS_DEPRESSED),xkb_state_serialize_mods(s->xkb.state,XKB_STATE_MODS_LATCHED),xkb_state_serialize_mods(s->xkb.state,XKB_STATE_MODS_LOCKED),xkb_state_serialize_layout(s->xkb.state,XKB_STATE_LAYOUT_EFFECTIVE));}
 static void seat_pointer(struct wl_client *c,struct wl_resource *r,uint32_t id){Server *s=wl_resource_get_user_data(r);Resource *p=resource_new(c,&wl_pointer_interface,wl_resource_get_version(r),id,&s->pointers);if(!p)return;wl_resource_set_implementation(p->resource,&pointer_impl,p,free_resource);if(s->pointer_focus&&wl_resource_get_client(s->pointer_focus->resource)==c){wl_pointer_send_enter(p->resource,wl_display_next_serial(s->display),s->pointer_focus->resource,wl_fixed_from_double(s->pointer_sx),wl_fixed_from_double(s->pointer_sy));pointer_frame(p->resource);}}
-static void seat_keyboard(struct wl_client *c,struct wl_resource *r,uint32_t id){Server *s=wl_resource_get_user_data(r);Resource *p=resource_new(c,&wl_keyboard_interface,wl_resource_get_version(r),id,&s->keyboards);if(!p)return;wl_resource_set_implementation(p->resource,&keyboard_impl,p,free_resource);wl_keyboard_send_keymap(p->resource,WL_KEYBOARD_KEYMAP_FORMAT_XKB_V1,s->keymap_fd,s->keymap_size);if(wl_resource_get_version(p->resource)>=4)wl_keyboard_send_repeat_info(p->resource,30,500);if(s->keyboard_focus&&wl_resource_get_client(s->keyboard_focus->resource)==c){send_key_enter(s,p->resource,s->keyboard_focus);send_modifiers(s,p->resource);}}
+static void seat_keyboard(struct wl_client *c,struct wl_resource *r,uint32_t id){Server *s=wl_resource_get_user_data(r);Resource *p=resource_new(c,&wl_keyboard_interface,wl_resource_get_version(r),id,&s->keyboards);if(!p)return;wl_resource_set_implementation(p->resource,&keyboard_impl,p,free_resource);wl_keyboard_send_keymap(p->resource,WL_KEYBOARD_KEYMAP_FORMAT_XKB_V1,s->xkb.fd,s->xkb.size);if(wl_resource_get_version(p->resource)>=4)wl_keyboard_send_repeat_info(p->resource,30,500);if(s->keyboard_focus&&wl_resource_get_client(s->keyboard_focus->resource)==c){send_key_enter(s,p->resource,s->keyboard_focus);send_modifiers(s,p->resource);}}
 static void seat_touch(struct wl_client *c,struct wl_resource *r,uint32_t id){Server *s=wl_resource_get_user_data(r);Resource *p=resource_new(c,&wl_touch_interface,wl_resource_get_version(r),id,&s->touch_resources);if(!p)return;wl_resource_set_implementation(p->resource,&touch_impl,p,free_resource);}
 static const struct wl_seat_interface seat_impl={.get_pointer=seat_pointer,.get_keyboard=seat_keyboard,.get_touch=seat_touch,.release=resource_destroy_request};
 static void bind_seat(struct wl_client *c,void *data,uint32_t v,uint32_t id){Server *s=data;struct wl_resource *r=wl_resource_create(c,&wl_seat_interface,v<7?v:7,id);wl_resource_set_implementation(r,&seat_impl,data,NULL);uint32_t caps=WL_SEAT_CAPABILITY_POINTER|WL_SEAT_CAPABILITY_KEYBOARD|(s->touch_available?WL_SEAT_CAPABILITY_TOUCH:0);wl_seat_send_capabilities(r,caps);if(wl_resource_get_version(r)>=2)wl_seat_send_name(r,"chromedrive-driver");}
@@ -514,11 +514,48 @@ bool server_touch_up(Server *s,int32_t id,uint32_t time){
  point->active=false;point->surface=NULL;
  return true;
 }
+static void update_physical_key(Server *s,uint32_t key,bool down){
+ s->xkb_pressed[key]=down;
+ xkb_state_update_key(s->xkb.state,key+8,down?XKB_KEY_DOWN:XKB_KEY_UP);
+}
+static void send_focused_modifiers(Server *s){
+ if(!s->keyboard_focus)return;
+ Resource *r;wl_list_for_each(r,&s->keyboards,link)if(wl_resource_get_client(r->resource)==wl_resource_get_client(s->keyboard_focus->resource))send_modifiers(s,r->resource);
+}
+void server_key_consumed(Server *s,uint32_t key,bool down){
+ if(key>=256)return;update_physical_key(s,key,down);
+ /* A local DRIVE/Arrange/hotkey must not leak a key to the client, but an XKB
+  * grp option on that same physical chord still changes client-visible state. */
+ send_focused_modifiers(s);
+}
 void server_key(Server *s,uint32_t key,bool down,uint32_t time){
- if(key>=256)return;s->keys[key]=down;xkb_state_update_key(s->xkb_state,key+8,down?XKB_KEY_DOWN:XKB_KEY_UP);if(!s->keyboard_focus)return;
+ if(key>=256)return;s->keys[key]=down;update_physical_key(s,key,down);if(!s->keyboard_focus)return;
  Resource *r;uint32_t serial=wl_display_next_serial(s->display);wl_list_for_each(r,&s->keyboards,link)if(wl_resource_get_client(r->resource)==wl_resource_get_client(s->keyboard_focus->resource)){wl_keyboard_send_key(r->resource,serial,time,key,down?WL_KEYBOARD_KEY_STATE_PRESSED:WL_KEYBOARD_KEY_STATE_RELEASED);send_modifiers(s,r->resource);}
 }
-void server_release_keys(Server *s,uint32_t time){for(uint32_t i=0;i<256;i++)if(s->keys[i])server_key(s,i,false,time);}
+bool server_keyboard_reconfigure(Server *s,const CdXkbConfig *config,bool *changed,
+                                 char *error,size_t error_size){
+ bool applied=false;
+ if(!cd_xkb_keyboard_reconfigure(&s->xkb,config,s->xkb_pressed,&applied,error,error_size))return false;
+ if(changed)*changed=applied;
+ if(!applied)return true;
+ /* Every existing wl_keyboard resource receives the new sealed fd, including
+  * clients without focus. Only the focused client receives the corresponding
+  * modifier/group event; other clients get it with their next keyboard enter.
+  * Do not synthesize leave/enter or unmatched key releases here: evdev key
+  * numbers remain stable and cd_xkb_keyboard_reconfigure replayed held keys. */
+ Resource *r;wl_list_for_each(r,&s->keyboards,link){
+  wl_keyboard_send_keymap(r->resource,WL_KEYBOARD_KEYMAP_FORMAT_XKB_V1,s->xkb.fd,s->xkb.size);
+  if(s->keyboard_focus&&wl_resource_get_client(r->resource)==wl_resource_get_client(s->keyboard_focus->resource))send_modifiers(s,r->resource);
+ }
+ fprintf(stderr,"[keyboard] live keymap applied: %u layout(s)\n",(unsigned)xkb_keymap_num_layouts(s->xkb.keymap));
+ return true;
+}
+void server_release_keys(Server *s,uint32_t time){
+ for(uint32_t i=0;i<256;i++){
+  if(s->keys[i])server_key(s,i,false,time);
+  else if(s->xkb_pressed[i])server_key_consumed(s,i,false);
+ }
+}
 void server_close_surface(Surface *p){p=surface_root(p);if(p&&p->toplevel)xdg_toplevel_send_close(p->toplevel);}
 
 /* In-compositor clipboard. No host clipboard access. Drag-and-drop not supported. */
@@ -586,14 +623,24 @@ bool server_init(Server *s,const char *socket_name){
   MonitorMount mount=monitor_mount(i);bool sliding=mount==MOUNT_DASH_SLIDE||mount==MOUNT_DOOR_SLIDE||mount==MOUNT_ROOF_FLIP;
   s->monitors[i].plane=monitor_plane(i);s->monitors[i].reveal=s->monitors[i].target_reveal=sliding?0:1;
  }
- s->xkb_context=xkb_context_new(XKB_CONTEXT_NO_FLAGS);struct xkb_rule_names names={.layout=getenv("XKB_DEFAULT_LAYOUT"),.variant=getenv("XKB_DEFAULT_VARIANT"),.options=getenv("XKB_DEFAULT_OPTIONS")};
- s->keymap=xkb_keymap_new_from_names(s->xkb_context,&names,XKB_KEYMAP_COMPILE_NO_FLAGS);if(!s->keymap)return false;s->xkb_state=xkb_state_new(s->keymap);
- char *keymap=xkb_keymap_get_as_string(s->keymap,XKB_KEYMAP_FORMAT_TEXT_V1);if(!keymap)return false;s->keymap_size=strlen(keymap)+1;s->keymap_fd=memfd_create("chromedrive-keymap",MFD_CLOEXEC);if(s->keymap_fd<0||write(s->keymap_fd,keymap,s->keymap_size)!=(ssize_t)s->keymap_size){free(keymap);return false;}free(keymap);
+ char keyboard_error[256];
+ if(!cd_xkb_keyboard_init(&s->xkb,&s->keyboard_config,keyboard_error,sizeof(keyboard_error))){
+  /* A hand-edited startup layout must not strand the user without a working
+   * compositor. Explicit bad RMLVO falls back to the ordinary environment /
+   * system defaults; reloads later are transactional and never use fallback. */
+  fprintf(stderr,"[keyboard] configured startup keymap failed: %s\n",keyboard_error);
+  if(cd_xkb_config_is_absent(&s->keyboard_config))return false;
+  CdXkbConfig fallback={0};
+  fprintf(stderr,"[keyboard] trying XKB_DEFAULT_* / system defaults instead\n");
+  if(!cd_xkb_keyboard_init(&s->xkb,&fallback,keyboard_error,sizeof(keyboard_error))){fprintf(stderr,"[keyboard] default keymap failed too: %s\n",keyboard_error);return false;}
+ }
+ cd_xkb_config_clear(&s->keyboard_config);
+ fprintf(stderr,"[keyboard] XKB ready: %u layout(s), sealed read-only keymap\n",(unsigned)xkb_keymap_num_layouts(s->xkb.keymap));
  if(socket_name){if(wl_display_add_socket(s->display,socket_name)<0)return false;snprintf(s->socket,sizeof(s->socket),"%s",socket_name);}else{const char *name=wl_display_add_socket_auto(s->display);if(!name)return false;snprintf(s->socket,sizeof(s->socket),"%s",name);}
  setenv("WAYLAND_DISPLAY",s->socket,1);fprintf(stderr,"\nChromeDrive %s / native Wayland socket: %s\nXDG_RUNTIME_DIR=%s WAYLAND_DISPLAY=%s\n\n",CD_VERSION,s->socket,getenv("XDG_RUNTIME_DIR"),s->socket);return true;
 }
 void server_dispatch(Server *s){wl_event_loop_dispatch(s->loop,0);wl_display_flush_clients(s->display);}
-void server_finish(Server *s){if(s->display){wl_display_destroy_clients(s->display);wl_display_destroy(s->display);}if(s->xkb_state)xkb_state_unref(s->xkb_state);if(s->keymap)xkb_keymap_unref(s->keymap);if(s->xkb_context)xkb_context_unref(s->xkb_context);if(s->keymap_fd>=0)close(s->keymap_fd);}
+void server_finish(Server *s){if(s->display){wl_display_destroy_clients(s->display);wl_display_destroy(s->display);}cd_xkb_keyboard_finish(&s->xkb);cd_xkb_config_clear(&s->keyboard_config);}
 uint32_t sdl_to_evdev(SDL_Scancode code){
  static const uint16_t map[SDL_NUM_SCANCODES]={
  [SDL_SCANCODE_A]=KEY_A,[SDL_SCANCODE_B]=KEY_B,[SDL_SCANCODE_C]=KEY_C,[SDL_SCANCODE_D]=KEY_D,[SDL_SCANCODE_E]=KEY_E,[SDL_SCANCODE_F]=KEY_F,[SDL_SCANCODE_G]=KEY_G,[SDL_SCANCODE_H]=KEY_H,[SDL_SCANCODE_I]=KEY_I,[SDL_SCANCODE_J]=KEY_J,[SDL_SCANCODE_K]=KEY_K,[SDL_SCANCODE_L]=KEY_L,[SDL_SCANCODE_M]=KEY_M,[SDL_SCANCODE_N]=KEY_N,[SDL_SCANCODE_O]=KEY_O,[SDL_SCANCODE_P]=KEY_P,[SDL_SCANCODE_Q]=KEY_Q,[SDL_SCANCODE_R]=KEY_R,[SDL_SCANCODE_S]=KEY_S,[SDL_SCANCODE_T]=KEY_T,[SDL_SCANCODE_U]=KEY_U,[SDL_SCANCODE_V]=KEY_V,[SDL_SCANCODE_W]=KEY_W,[SDL_SCANCODE_X]=KEY_X,[SDL_SCANCODE_Y]=KEY_Y,[SDL_SCANCODE_Z]=KEY_Z,

@@ -348,3 +348,14 @@ Your garage. = Ваш гараж.
 YOUR LOCAL WORKSPACE = ВАШЕ ЛОКАЛЬНОЕ ПРОСТРАНСТВО
 Zoom sensitivity = Чувствительность приближения
 ↑  Up = ↑  Вверх
+
+Keyboard = Клавиатура
+Rules = Правила
+Model = Модель
+Layouts = Раскладки
+Variants = Варианты
+Options = Параметры
+Empty: environment/system default = Пусто: значение окружения/системы
+Comma-separated, e.g. us,ru; empty: system default = Через запятую, например us,ru; пусто: системная
+Comma-separated positions; leading comma means empty first variant = Позиции через запятую; начальная запятая означает пустой первый вариант
+e.g. grp:alt_shift_toggle,compose:menu; empty: none = Например grp:alt_shift_toggle,compose:menu; пусто: нет

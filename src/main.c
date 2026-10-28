@@ -215,7 +215,24 @@ static void apply_language(Server *s,bool startup){
  if(!startup&&s->buttons[0].texture)ui_refresh_text(s);
  font_probe_schedule(s,now);
 }
+static void apply_keyboard_config(Server *s,const CdConfig *cfg,bool startup){
+ CdXkbConfig next={0};char error[256];
+ if(!cd_xkb_config_from_store(&next,cfg,error,sizeof(error))){fprintf(stderr,"[keyboard] cannot read RMLVO configuration: %s; keeping previous keymap\n",error);return;}
+ if(startup){
+  cd_xkb_config_clear(&s->keyboard_config);s->keyboard_config=next;memset(&next,0,sizeof(next));
+ }else{
+  bool changed=false;
+  if(!server_keyboard_reconfigure(s,&next,&changed,error,sizeof(error))){
+   const char *rules=next.rules?next.rules:"<default>",*model=next.model?next.model:"<default>";
+   const char *layouts=next.layouts?next.layouts:"<default>",*variants=next.variants?next.variants:"<default>",*options=next.options?next.options:"<default>";
+   fprintf(stderr,"[keyboard] reload rejected: %s; keeping the previous working keymap\n",error);
+   fprintf(stderr,"[keyboard] rejected RMLVO: rules='%s' model='%s' layouts='%s' variants='%s' options='%s'\n",rules,model,layouts,variants,options);
+  }
+ }
+ cd_xkb_config_clear(&next);
+}
 static void apply_config(Server *s,const CdConfig *cfg,bool startup,const char **socket_out){
+  apply_keyboard_config(s,cfg,startup);
   snprintf(language_request,sizeof(language_request),"%s",cd_config_get_string(cfg,"ui","language","auto"));
   if(!startup)apply_language(s,false); /* on reload s.root is already known */
   if(startup){
@@ -764,7 +781,7 @@ static bool drive_key(Server *s,uint32_t key,bool down){
  *held=down;
  return true; /* consumed locally: never leak motor controls into a Wayland app */
 }
-bool app_global_key(Server *s,uint32_t evdev,bool down){
+static bool app_global_key_local(Server *s,uint32_t evdev,bool down){
  bool ctrl=s->keys[KEY_LEFTCTRL]||s->keys[KEY_RIGHTCTRL];
  bool alt=s->keys[KEY_LEFTALT]||s->keys[KEY_RIGHTALT];
  bool meta=s->keys[KEY_LEFTMETA]||s->keys[KEY_RIGHTMETA];
@@ -912,6 +929,14 @@ bool app_global_key(Server *s,uint32_t evdev,bool down){
  }
  return true;
 }
+bool app_global_key(Server *s,uint32_t evdev,bool down){
+ bool consumed=app_global_key_local(s,evdev,down);
+ /* Consumption controls Wayland delivery, not physical XKB tracking. This is
+  * what lets grp:win_space_toggle coexist with DRIVE's Space brake and lets
+  * grp:caps_toggle continue to work while Arrange owns ordinary key events. */
+ if(consumed)server_key_consumed(s,evdev,down);
+ return consumed;
+}
 static const char *backend_label(Backend backend){
  switch(backend){
  case CD_BACKEND_HEADLESS:return "headless/EGL/VNC";
@@ -967,7 +992,7 @@ static void reap_children(Server *s){
 }
 int main(int argc,char **argv){
  bool vnc_listen_all=false; /* --vnc-listen-all: opt back in to an all-interface bind */
- Server s={.width=1600,.height=1000,.fps_limit=60,.running=true,.hud_visible=true,.hover_button=-1,.hover_close=-1,.keymap_fd=-1,.arrange_slot=-1,.frame_drag_slot=-1,.fov=65,.target_fov=65,.base_fov=65,.backend=CD_BACKEND_HEADLESS,.fbdev_vsync=true,.fbdev_pan=true,.fbdev_evdev=true,.fbdev_grab_input=false,.drm_grab_input=true,.vnc_port=5900,.vnc_loopback=true,.telemetry_fd=-1,.wheel_joy={.uinput_fd=-1},.font_probe_pid=-1,.fbdev_modeset=false,.fbdev_mode_width=0,.fbdev_mode_height=0,.fbdev_mode_bpp=0,.fbdev_input_device_count=0,.input_wakeup=true,.render_to_texture=true,.render_scale=1,.render_mag_filter=GL_LINEAR,.render_min_filter=GL_LINEAR_MIPMAP_LINEAR,.client_filter=GL_NEAREST};
+ Server s={.width=1600,.height=1000,.fps_limit=60,.running=true,.hud_visible=true,.hover_button=-1,.hover_close=-1,.xkb={.fd=-1},.arrange_slot=-1,.frame_drag_slot=-1,.fov=65,.target_fov=65,.base_fov=65,.backend=CD_BACKEND_HEADLESS,.fbdev_vsync=true,.fbdev_pan=true,.fbdev_evdev=true,.fbdev_grab_input=false,.drm_grab_input=true,.vnc_port=5900,.vnc_loopback=true,.telemetry_fd=-1,.wheel_joy={.uinput_fd=-1},.font_probe_pid=-1,.fbdev_modeset=false,.fbdev_mode_width=0,.fbdev_mode_height=0,.fbdev_mode_bpp=0,.fbdev_input_device_count=0,.input_wakeup=true,.render_to_texture=true,.render_scale=1,.render_mag_filter=GL_LINEAR,.render_min_filter=GL_LINEAR_MIPMAP_LINEAR,.client_filter=GL_NEAREST};
  vehicle_init(&s.vehicle);
  const char *socket_name=NULL;double exit_after=0;bool auto_screenshot=false;
  /* Config pre-scan: --config/--no-config must be known before the file is

@@ -7,7 +7,7 @@ LDLIBS = $(shell pkg-config --libs $(PKGS)) -lm -pthread
 PROTO_DIR := $(shell pkg-config --variable=pkgdatadir wayland-protocols)
 GEN = .generated
 BIN = bin
-SOURCES = src/main.c src/wayland.c src/scene.c src/city_scene.c src/vehicle.c src/city.c src/city_stream.c src/vehicle_scene.c src/vehicle_seat.c src/keymap.c src/wheel_input.c src/ui.c src/math3d.c src/telemetry.c src/dmabuf.c src/cdconfig.c src/i18n.c src/textfit.c src/textfit_cairo.c src/frame_pacing.c src/input_wait.c src/backend_sdl.c src/backend_headless.c src/backend_egl.c src/backend_vnc.c src/backend_fbdev.c src/backend_drm.c src/backend_vt.c src/backend_evdev.c src/evdev_queue.c src/evdev_util.c src/fbdev_pixfmt.c
+SOURCES = src/main.c src/wayland.c src/scene.c src/city_scene.c src/vehicle.c src/city.c src/city_stream.c src/vehicle_scene.c src/vehicle_seat.c src/keymap.c src/xkb_keyboard.c src/wheel_input.c src/ui.c src/math3d.c src/telemetry.c src/dmabuf.c src/cdconfig.c src/i18n.c src/textfit.c src/textfit_cairo.c src/frame_pacing.c src/input_wait.c src/backend_sdl.c src/backend_headless.c src/backend_egl.c src/backend_vnc.c src/backend_fbdev.c src/backend_drm.c src/backend_vt.c src/backend_evdev.c src/evdev_queue.c src/evdev_util.c src/fbdev_pixfmt.c
 PROTOCOLS = $(GEN)/xdg-shell-protocol.c $(GEN)/xdg-decoration-protocol.c $(GEN)/linux-dmabuf-protocol.c
 HEADERS = $(GEN)/xdg-shell-server.h $(GEN)/xdg-decoration-server.h $(GEN)/linux-dmabuf-server.h
 .PHONY: all clean test check-text sanitize garage3d garage3d-test garage3d-clean
@@ -49,10 +49,15 @@ $(BIN)/chromedrive-fontprobe: clients/fontprobe.c src/fontprobe.c src/i18n.c inc
 	$(CC) -Iinclude $(CFLAGS) $(shell pkg-config --cflags cairo) clients/fontprobe.c src/fontprobe.c src/i18n.c -o $@ $(shell pkg-config --libs cairo)
 $(BIN)/test-math: tests/test_math.c src/math3d.c include/math3d.h | $(BIN)
 	$(CC) -Iinclude $(CFLAGS) tests/test_math.c src/math3d.c -o $@ -lm
-$(BIN)/test-cursor: tests/test_cursor.c src/scene.c src/wayland.c src/vehicle.c src/math3d.c include/chrome.h include/math3d.h | $(BIN)
-	$(CC) $(CPPFLAGS) $(CFLAGS) -ffunction-sections -fdata-sections tests/test_cursor.c src/wayland.c src/vehicle.c src/math3d.c -o $@ -Wl,--gc-sections $(shell pkg-config --libs wayland-server cairo) -lm
+$(BIN)/test-cursor: tests/test_cursor.c src/scene.c src/wayland.c src/xkb_keyboard.c src/cdconfig.c src/vehicle.c src/math3d.c include/chrome.h include/math3d.h include/xkb_keyboard.h | $(BIN)
+	$(CC) $(CPPFLAGS) $(CFLAGS) -ffunction-sections -fdata-sections tests/test_cursor.c src/wayland.c src/xkb_keyboard.c src/cdconfig.c src/vehicle.c src/math3d.c -o $@ -Wl,--gc-sections $(shell pkg-config --libs wayland-server cairo xkbcommon) -lm
 $(BIN)/input-latency-client: tests/input_latency_client.c $(GEN)/xdg-shell-client.h $(GEN)/xdg-shell-protocol.c | $(BIN)
 	$(CC) -I$(GEN) $(CFLAGS) $(shell pkg-config --cflags wayland-client) tests/input_latency_client.c $(GEN)/xdg-shell-protocol.c -o $@ $(shell pkg-config --libs wayland-client)
+# Live keyboard protocol regression: the test includes production main.c with
+# a renamed entry point and links every other production source. Real libwayland
+# clients connect over socketpair; no GL/DRM is initialized.
+$(BIN)/test-keyboard-live: tests/test_keyboard_live.c $(SOURCES) include/chrome.h include/xkb_keyboard.h $(HEADERS) $(PROTOCOLS) | $(BIN)
+	$(CC) $(CPPFLAGS) $(CFLAGS) -ffunction-sections -fdata-sections tests/test_keyboard_live.c $(filter-out src/main.c,$(SOURCES)) $(PROTOCOLS) -o $@ -Wl,--gc-sections $(LDLIBS) $(shell pkg-config --libs wayland-client)
 $(BIN)/protocol-probe: tests/protocol_probe.c $(GEN)/xdg-shell-client.h $(GEN)/xdg-shell-protocol.c $(GEN)/linux-dmabuf-protocol.c $(GEN)/linux-dmabuf-client.h | $(BIN)
 	$(CC) -I$(GEN) $(CFLAGS) $(shell pkg-config --cflags wayland-client) tests/protocol_probe.c $(GEN)/xdg-shell-protocol.c $(GEN)/linux-dmabuf-protocol.c -o $@ $(shell pkg-config --libs wayland-client)
 # garage3d (clients/garage3d) is a standalone native Wayland/GLES client with
@@ -74,6 +79,8 @@ $(BIN)/test-telemetry: tests/test_telemetry.c src/telemetry.c src/vehicle.c src/
 	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_telemetry.c src/telemetry.c src/vehicle.c src/city.c src/city_stream.c src/math3d.c -o $@ -lm
 $(BIN)/test-keymap: tests/test_keymap.c src/keymap.c include/keymap.h | $(BIN)
 	$(CC) -Iinclude $(CFLAGS) tests/test_keymap.c src/keymap.c -o $@
+$(BIN)/test-xkb-keyboard: tests/test_xkb_keyboard.c src/xkb_keyboard.c src/cdconfig.c include/xkb_keyboard.h include/cdconfig.h | $(BIN)
+	$(CC) -Iinclude $(CFLAGS) $(shell pkg-config --cflags xkbcommon) tests/test_xkb_keyboard.c src/xkb_keyboard.c src/cdconfig.c -o $@ $(shell pkg-config --libs xkbcommon) -lm
 $(BIN)/test-wheel-input: tests/test_wheel_input.c src/wheel_input.c include/wheel_input.h | $(BIN)
 	$(CC) -Iinclude $(CFLAGS) $(shell pkg-config --cflags sdl2) tests/test_wheel_input.c src/wheel_input.c -o $@ $(shell pkg-config --libs sdl2) -lm
 $(BIN)/test-wheel-no-privilege: tests/test_wheel_no_privilege.c src/wheel_input.c include/wheel_input.h | $(BIN)
@@ -102,7 +109,7 @@ $(BIN)/test-vt: tests/test_vt.c src/backend_vt.c include/chrome.h | $(BIN)
 	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_vt.c src/backend_vt.c -o $@ -Wl,--wrap=open,--wrap=ioctl,--wrap=close,--wrap=clock_gettime
 $(BIN)/test-fontprobe-async: tests/test_fontprobe_async.c src/main.c src/i18n.c include/chrome.h include/cdconfig.h include/i18n.h include/fbdev_pixfmt.h include/input_wait.h | $(BIN) $(GEN)/xdg-shell-server.h
 	$(CC) $(CPPFLAGS) $(CFLAGS) -ffunction-sections -fdata-sections tests/test_fontprobe_async.c src/i18n.c -o $@ -Wl,--gc-sections $(shell pkg-config --libs sdl2 cairo) -lm
-test: all $(BIN)/test-math $(BIN)/test-cursor $(BIN)/test-config $(BIN)/test-vehicle $(BIN)/test-city $(BIN)/test-telemetry $(BIN)/test-keymap $(BIN)/test-wheel-input $(BIN)/test-wheel-no-privilege $(BIN)/test-fbdev $(BIN)/test-i18n $(BIN)/test-textfit $(BIN)/test-fontprobe $(BIN)/test-fontprobe-async $(BIN)/test-drm $(BIN)/test-evdev $(BIN)/test-frame-pacing $(BIN)/test-input-wait $(BIN)/test-client-input-lock $(BIN)/test-vt $(BIN)/chromedrive-config
+test: all $(BIN)/test-math $(BIN)/test-cursor $(BIN)/test-config $(BIN)/test-vehicle $(BIN)/test-city $(BIN)/test-telemetry $(BIN)/test-keymap $(BIN)/test-xkb-keyboard $(BIN)/test-keyboard-live $(BIN)/test-wheel-input $(BIN)/test-wheel-no-privilege $(BIN)/test-fbdev $(BIN)/test-i18n $(BIN)/test-textfit $(BIN)/test-fontprobe $(BIN)/test-fontprobe-async $(BIN)/test-drm $(BIN)/test-evdev $(BIN)/test-frame-pacing $(BIN)/test-input-wait $(BIN)/test-client-input-lock $(BIN)/test-vt $(BIN)/chromedrive-config
 	./$(BIN)/test-math
 	./$(BIN)/test-cursor
 	./$(BIN)/test-config
@@ -110,6 +117,8 @@ test: all $(BIN)/test-math $(BIN)/test-cursor $(BIN)/test-config $(BIN)/test-veh
 	./$(BIN)/test-city
 	./$(BIN)/test-telemetry
 	./$(BIN)/test-keymap
+	./$(BIN)/test-xkb-keyboard
+	./$(BIN)/test-keyboard-live
 	./$(BIN)/test-wheel-input
 	./$(BIN)/test-wheel-no-privilege
 	./$(BIN)/test-fbdev

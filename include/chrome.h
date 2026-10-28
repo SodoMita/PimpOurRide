@@ -16,6 +16,7 @@
 #include <GL/glext.h>
 #include <cairo/cairo.h>
 #include <xkbcommon/xkbcommon.h>
+#include "xkb_keyboard.h"
 #include "math3d.h"
 #include "vehicle.h"
 #include "telemetry.h"
@@ -133,8 +134,14 @@ struct Server {
  struct wl_list surfaces,pointers,keyboards,touch_resources,outputs,data_devices;
  struct wl_global *output_globals[CD_MAX_MONITORS];
  struct { Server *server;int index; } output_info[CD_MAX_MONITORS];
- struct xkb_context *xkb_context;struct xkb_keymap *keymap;struct xkb_state *xkb_state;
- int keymap_fd;uint32_t keymap_size;bool keys[256];
+ CdXkbKeyboard xkb;
+ /* Startup-only desired RMLVO configuration. After initialization the active
+  * copy lives in xkb.active_config; rejected reloads never replace it. */
+ CdXkbConfig keyboard_config;
+ /* keys[] is the client-visible held set used by focus enter. xkb_pressed[]
+  * additionally includes compositor-consumed keys (DRIVE/Arrange/hotkeys), so
+  * every physical event reaches XKB and live replays cannot lose a grp chord. */
+ bool keys[256],xkb_pressed[256];
  Surface *keyboard_focus,*pointer_focus,*pointer_grab;int held_buttons;uint32_t held_button_mask;
  /* Meta+ScrollLock owns every ordinary input route for one mapped root
   * surface. This is persistent and distinct from pointer_grab's held-button
@@ -282,6 +289,13 @@ bool server_touch_motion(Server *s,int32_t id,float x,float y,uint32_t time);
 bool server_touch_up(Server *s,int32_t id,uint32_t time);
 void server_touch_cancel(Server *s);
 void server_key(Server *s,uint32_t key,bool down,uint32_t time);
+/* Update physical XKB state for a compositor-consumed key. Never emit a key
+ * event or add it to focus-enter keys; focused clients still need mod/group. */
+void server_key_consumed(Server *s,uint32_t key,bool down);
+/* Transactionally replace and broadcast the seat keymap. The active map and
+ * all client-visible state remain unchanged when compilation/allocation fails. */
+bool server_keyboard_reconfigure(Server *s,const CdXkbConfig *config,bool *changed,
+                                 char *error,size_t error_size);
 void server_release_keys(Server *s,uint32_t time);
 void server_focus(Server *s,Surface *surface);
 void server_close_surface(Surface *surface);

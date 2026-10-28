@@ -228,7 +228,16 @@ static void pointer_source(void *data,struct wl_pointer *p,uint32_t source){((Ap
 static void pointer_stop(void *data,struct wl_pointer *p,uint32_t time,uint32_t axis){}
 static void pointer_discrete(void *data,struct wl_pointer *p,uint32_t axis,int32_t discrete){}
 static const struct wl_pointer_listener pointer_listener={.enter=pointer_enter,.leave=pointer_leave,.motion=pointer_motion,.button=pointer_button,.axis=pointer_axis,.frame=pointer_frame,.axis_source=pointer_source,.axis_stop=pointer_stop,.axis_discrete=pointer_discrete};
-static void keyboard_map(void *data,struct wl_keyboard *k,uint32_t format,int32_t fd,uint32_t size){App *a=data;if(format!=WL_KEYBOARD_KEYMAP_FORMAT_XKB_V1){close(fd);return;}char *map=mmap(NULL,size,PROT_READ,MAP_PRIVATE,fd,0);if(map!=MAP_FAILED){if(a->keymap)xkb_keymap_unref(a->keymap);if(a->xkb_state)xkb_state_unref(a->xkb_state);a->keymap=xkb_keymap_new_from_string(a->xkb_context,map,XKB_KEYMAP_FORMAT_TEXT_V1,0);if(a->keymap)a->xkb_state=xkb_state_new(a->keymap);munmap(map,size);}close(fd);}
+static void keyboard_map(void *data,struct wl_keyboard *k,uint32_t format,int32_t fd,uint32_t size){
+ App *a=data;if(format!=WL_KEYBOARD_KEYMAP_FORMAT_XKB_V1||!size){close(fd);return;}
+ char *map=mmap(NULL,size,PROT_READ,MAP_PRIVATE,fd,0);close(fd);if(map==MAP_FAILED)return;
+ /* Live compositor reloads replace wl_keyboard.keymap. Compile the complete
+  * successor before dropping the working map so a malformed/truncated update
+  * cannot disable text input. */
+ struct xkb_keymap *next=xkb_keymap_new_from_buffer(a->xkb_context,map,size-(map[size-1]=='\0'),XKB_KEYMAP_FORMAT_TEXT_V1,0);munmap(map,size);if(!next)return;
+ struct xkb_state *state=xkb_state_new(next);if(!state){xkb_keymap_unref(next);return;}
+ if(a->xkb_state)xkb_state_unref(a->xkb_state);if(a->keymap)xkb_keymap_unref(a->keymap);a->keymap=next;a->xkb_state=state;
+}
 static void keyboard_enter(void *data,struct wl_keyboard *k,uint32_t serial,struct wl_surface *s,struct wl_array *keys){}
 static void keyboard_leave(void *data,struct wl_keyboard *k,uint32_t serial,struct wl_surface *s){}
 static void keyboard_key(void *data,struct wl_keyboard *k,uint32_t serial,uint32_t time,uint32_t key,uint32_t state){App *a=data;if(state!=WL_KEYBOARD_KEY_STATE_PRESSED||!a->xkb_state)return;xkb_keysym_t sym=xkb_state_key_get_one_sym(a->xkb_state,key+8);if(a->mode==0&&(sym==XKB_KEY_Escape||sym==XKB_KEY_BackSpace))go_up(a);if(a->mode==1&&sym==XKB_KEY_space){a->playing=!a->playing;a->dirty=true;}}

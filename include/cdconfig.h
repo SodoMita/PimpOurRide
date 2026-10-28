@@ -72,6 +72,9 @@ bool cd_config_get_color(const CdConfig *cfg, const char *section,
  * file order is stable across edits. */
 void cd_config_set_string(CdConfig *cfg, const char *section, const char *key,
                           const char *value);
+/* Remove a key entirely, restoring absent/default semantics rather than
+ * storing an explicitly empty value. Missing keys are a no-op. */
+void cd_config_unset(CdConfig *cfg, const char *section, const char *key);
 void cd_config_set_int(CdConfig *cfg, const char *section, const char *key, long value);
 void cd_config_set_double(CdConfig *cfg, const char *section, const char *key, double value);
 void cd_config_set_bool(CdConfig *cfg, const char *section, const char *key, bool value);

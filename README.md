@@ -35,7 +35,10 @@ plus SDL touchscreen `wl_touch` in `--windowed` mode),
 `wl_data_device_manager` (in-session clipboard), `zxdg_decoration_manager_v1`,
 `zwp_linux_dmabuf_v1` (GPU zero-copy buffer import), and one `wl_output`
 global per virtual monitor. Any well-behaved Wayland client can connect to it
-and will appear on its own screen.
+and will appear on its own screen. The keyboard seat supports arbitrary XKB
+RMLVO configuration, multiple layouts and standard `grp:*` switching, with
+live sealed-keymap broadcasts on reload; see
+[`docs/configuration.md#keyboard-layouts-and-switching`](docs/configuration.md#keyboard-layouts-and-switching).
 
 It runs four ways (`--backend headless|windowed|fbdev|drm`; the old flags remain
 as aliases):

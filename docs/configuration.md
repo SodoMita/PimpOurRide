@@ -189,7 +189,8 @@ and a later config edit hot-reloads `[cockpit] hud` back over the runtime choice
 - **Compositor, live:** `display.fps`, `display.fov`, `display.render_to_texture`,
   `display.render_scale`, `display.render_upscale`, `display.render_downscale`,
   `display.client_sampling`, `display.post_shader`, `cockpit.*`
-  (neon/hud/background), all `[app.*]` menu keys.
+  (neon/hud/background), all `keyboard.*` XKB RMLVO keys, and all `[app.*]`
+  menu keys.
   **Restart:** `display.width/height/fullscreen`, and every `session.*` key,
   including `backend`, `headless` (legacy), `drm_device`, `drm_mode`,
   `fbdev_device`, `fbdev_vsync`, `fbdev_pan`, and `fbdev_vnc_mirror`.
@@ -392,6 +393,13 @@ neon = 0              # 0 Ultraviolet, 1 Ice Blue, 2 Acid Lime
 hud = true            # HUD overlay visible (Meta+H / dash HUD button at runtime)
 background = 3d       # 3d | texture (flat poster) | none
 
+[keyboard]            # native XKB RMLVO; every key is optional and live
+rules = evdev         # XKB rules; absent = XKB_DEFAULT_RULES/system default
+model = pc105         # XKB model; absent = XKB_DEFAULT_MODEL/system default
+layouts = us,ru       # arbitrary comma-separated layouts, not a fixed preset
+variants = ,          # one comma-separated variant position per layout
+options = grp:alt_shift_toggle # standard XKB options; may contain several comma-separated options
+
 [session]
 backend = headless    # headless | windowed | fbdev | drm; wins over legacy headless (restart; GUI enum)
 headless = true       # legacy alias, used only when backend is absent (restart)
@@ -422,6 +430,62 @@ icon = 0
 enabled = true
 autostart = true
 ```
+
+### Keyboard layouts and switching
+
+`[keyboard]` maps directly to XKB's five RMLVO inputs: `rules`, `model`,
+`layouts`, `variants`, and `options` (the last three correspond to libxkbcommon's
+`layout`, `variant`, and `options` fields). Layouts and variants are
+comma-separated; variants can contain empty positions such as `intl,,neo`.
+Options are also comma-separated and accept ordinary system XKB names, including
+`grp:*` switching policies and Compose/NumLock options. There is deliberately no
+US/Russian-only preset and no new ChromeDrive global shortcut reserved for
+layout switching.
+
+For example, `layouts = us,ru`, `variants = ,`, and
+`options = grp:alt_shift_toggle` make Alt+Shift toggle between two groups.
+`grp:win_space_toggle`, `grp:ctrl_alt_toggle`, `grp:caps_toggle`, or any other
+option supported by the installed XKB rules can be used instead. Available names
+come from the system's XKB database (normally under `/usr/share/X11/xkb`), not
+from a list hardcoded into ChromeDrive. The compositor applies one map to its
+single seat; per-physical-device maps, input-method protocols, and Sway-style
+layout IPC are outside this initial scope.
+
+An **absent** key preserves normal libxkbcommon behavior: the corresponding
+`XKB_DEFAULT_RULES`, `XKB_DEFAULT_MODEL`, `XKB_DEFAULT_LAYOUT`,
+`XKB_DEFAULT_VARIANT`, or `XKB_DEFAULT_OPTIONS` environment value is used, then
+the system default. Removing a previously configured key on reload returns to
+that behavior. An explicitly empty `options =` is different: it disables all
+inherited options. Empty rules/model/layout/variant fields retain libxkbcommon's
+normal environment/system defaulting. Blank **positions inside a variants
+list**, such as `,`, `intl,`, or `intl,,neo`, remain empty positions.
+
+All five values are editable as text in the Settings GUI and hot-reload with the
+rest of the file. Clearing and committing a field writes an explicit empty
+value; Reset tab instead removes keyboard keys and restores the absent /
+environment-default behavior. A valid replacement is compiled, serialized to a sealed
+read-only memfd, and broadcast to **existing and future** `wl_keyboard`
+resources. Physically held keys are replayed into the new XKB state; modifier
+and effective-group events follow the new keymap, so no artificial key release
+or focus change is needed. Locked state starts from the replacement map, as in
+wlroots' normal keymap replacement. If compilation, state creation,
+serialization, or fd allocation fails, the diagnostic is printed and the
+previous working map remains active. An invalid explicit startup map falls back
+to environment/system defaults; an invalid live reload never does.
+
+Compositor shortcuts and vehicle controls remain based on physical evdev codes:
+WASD/arrows, Meta+O, F8, and the other global actions do not move when the
+active XKB group changes. Every physical key event updates XKB, even when a
+local DRIVE/Arrange/hotkey action consumes its Wayland key event; focused
+clients still receive the resulting modifier/group event, and consumed keys
+are not inserted into a later focus-enter key array. Thus options such as
+`grp:win_space_toggle` can coexist with the DRIVE Space brake. Wayland clients
+receive normal evdev key numbers plus the XKB map/modifiers, so their text entry
+and keysym shortcuts do follow the selected layout. `make test` includes both
+pure XKB tests and a real libwayland client/server test for live broadcasts,
+group switching with and without focus, consumed group chords, physical
+shortcuts, held-key release, rollback, late binding, and invalid-startup
+fallback.
 
 `backend = drm` opens `drm_device` (default `/dev/dri/card0`) with DRM-master
 access, selects a connected connector/compatible CRTC, and creates a GBM

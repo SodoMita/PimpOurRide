@@ -86,14 +86,14 @@ static bool file_exists(const char *p) { struct stat st; return p && stat(p, &st
 /* ------------------------------------------------- schema for slider tabs */
 
 enum { FILE_G3 = 0, FILE_CD = 1 };
-typedef enum { K_FLOAT, K_INT, K_BOOL, K_COLOR, K_ENUM, K_INT_INPUT, K_FLOAT_INPUT } Kind;
+typedef enum { K_FLOAT, K_INT, K_BOOL, K_COLOR, K_ENUM, K_INT_INPUT, K_FLOAT_INPUT, K_TEXT } Kind;
 
 typedef struct {
     const char *group;          /* heading drawn when it changes */
     const char *sec, *key, *label;
     Kind kind;
     double min, max, step;
-    const char *fmt;            /* value formatting ("%.2f", "%d") */
+    const char *fmt;            /* numeric format, post-FX path, or K_TEXT hint */
     const char *def;            /* default, string form (reset + fallback) */
     /* K_ENUM labels. 8 rather than the historical 6 so the language row can
      * offer "auto" plus up to seven installed catalogs; see gui_load_languages. */
@@ -184,6 +184,11 @@ static Def CD_DEFS[] = {
     { "Session", "session", "headless", "Legacy headless (if backend unset)", K_BOOL, 0, 0, 0, NULL, "true", {0}, 0, false, true },
     { "Session", "session", "vnc_port", "VNC port (headless/mirror)", K_INT_INPUT, 1024, 65535, 1, "%.0f", "5900", {0}, 0, false, true },
     { "Session", "session", "demo", "Launch autostart apps at start", K_BOOL, 0, 0, 0, NULL, "false", {0}, 0, false, true },
+    { "Keyboard", "keyboard", "rules", "Rules", K_TEXT, 0, 0, 0, "Empty: environment/system default", "", {0}, 0, false, false },
+    { "Keyboard", "keyboard", "model", "Model", K_TEXT, 0, 0, 0, "Empty: environment/system default", "", {0}, 0, false, false },
+    { "Keyboard", "keyboard", "layouts", "Layouts", K_TEXT, 0, 0, 0, "Comma-separated, e.g. us,ru; empty: system default", "", {0}, 0, false, false },
+    { "Keyboard", "keyboard", "variants", "Variants", K_TEXT, 0, 0, 0, "Comma-separated positions; leading comma means empty first variant", "", {0}, 0, false, false },
+    { "Keyboard", "keyboard", "options", "Options", K_TEXT, 0, 0, 0, "e.g. grp:alt_shift_toggle,compose:menu; empty: none", "", {0}, 0, false, false },
 };
 #define N_CD_DEFS ((int)(sizeof(CD_DEFS) / sizeof(CD_DEFS[0])))
 
@@ -304,7 +309,7 @@ typedef struct {
     int focus;                  /* FLD_* or -1 */
     int field_app;              /* app index the fields currently show */
     bool field_dirty;
-    TextField num_field;        /* schema numeric text input (the VNC port) */
+    TextField num_field;        /* schema numeric/text input (the VNC port) */
     int num_file, num_idx;      /* def being edited, num_idx < 0 = inactive */
     bool num_dirty;
     AppChoice *choices;         /* installed-app catalog for the picker */
@@ -669,16 +674,20 @@ static void def_set_enum(Gui *g, int file, const Def *d, int idx) {
     touch_file(g, file);
 }
 
-/* Numeric text inputs. The VNC port stays whole-number-only; render_scale
- * is a typed float accepting digits, one decimal point and a simple
- * exponent. Enter/blur commits, Escape reverts; invalid or out-of-range text
- * is never written. */
+/* Schema text inputs share focus/commit handling. VNC stays whole-number-only;
+ * render_scale accepts a typed float; K_TEXT stores arbitrary UTF-8 XKB names.
+ * Enter/blur commits and Escape reverts. Invalid numeric text is never written;
+ * explicitly cleared K_TEXT is saved as an empty value (not treated as absent). */
 static const Def *num_def(Gui *g) {
     if (g->num_idx < 0) return NULL;
     const Def *d = g->num_file == FILE_G3 ? &G3_DEFS[g->num_idx] : &CD_DEFS[g->num_idx];
     return post_slot_inactive(d) ? NULL : d;
 }
 static bool num_parse(const Def *d, const char *s, double *out) {
+    if (!d || d->kind == K_TEXT) {
+        if (out) *out = 0;
+        return s != NULL;
+    }
     if (!s || !*s) return false;
     errno = 0;
     char *end = NULL;
@@ -695,12 +704,19 @@ static bool num_parse(const Def *d, const char *s, double *out) {
 }
 static bool num_value_valid(Gui *g, double *out) {
     const Def *d = num_def(g);
+    if (!d) return false;
+    if (d->kind == K_TEXT) {
+        if (out) *out = 0;
+        return true;
+    }
     double v;
-    if (!d || !num_parse(d, g->num_field.buf, &v)) return false;
+    if (!num_parse(d, g->num_field.buf, &v)) return false;
     if (d->kind == K_FLOAT_INPUT) {
         if (v < d->min || v > d->max) return false;
-    } else if (v < (double)ceil(d->min) || v > (double)floor(d->max)) {
-        return false;
+    } else if (d->kind == K_INT_INPUT) {
+        if (v < (double)ceil(d->min) || v > (double)floor(d->max)) {
+            return false;
+        }
     }
     if (out) *out = v;
     return true;
@@ -709,7 +725,11 @@ static void num_begin(Gui *g, int file, int idx) {
     const Def *d = file == FILE_G3 ? &G3_DEFS[idx] : &CD_DEFS[idx];
     g->num_file = file;
     g->num_idx = idx;
-    if (d->kind == K_FLOAT_INPUT)
+    if (d->kind == K_TEXT) {
+        const char *cur = cd_config_get_string(store_of(g, file), d->sec, d->key, d->def ? d->def : "");
+        snprintf(g->num_field.buf, sizeof(g->num_field.buf), "%s", cur ? cur : "");
+        g->num_field.caret = (int)strlen(g->num_field.buf);
+    } else if (d->kind == K_FLOAT_INPUT)
         snprintf(g->num_field.buf, sizeof(g->num_field.buf), "%.6g",
                  def_get_num(g, file, d));
     else
@@ -724,6 +744,15 @@ static bool num_commit(Gui *g) {
     const Def *d = num_def(g);
     if (!d) return true;
     if (!g->num_dirty) { g->num_idx = -1; g->draw_dirty = true; return true; }
+    int file = g->num_file;
+    if (d->kind == K_TEXT) {
+        g->num_idx = -1;
+        g->num_dirty = false;
+        cd_config_set_string(store_of(g, file), d->sec, d->key, g->num_field.buf);
+        touch_file(g, file);
+        flush_saves(g, true);
+        return true;
+    }
     double v;
     if (!num_value_valid(g, &v)) {
         if (d->kind == K_FLOAT_INPUT)
@@ -735,7 +764,6 @@ static bool num_commit(Gui *g) {
         g->draw_dirty = true;
         return false;
     }
-    int file = g->num_file;
     g->num_idx = -1;
     g->num_dirty = false;
     def_set_num(g, file, d, v);
@@ -1488,6 +1516,26 @@ static void draw_slider(Gui *g, cairo_t *c, int kind, int a, int b, int cc,
     add_box(g, kind, a, b, cc, x - 6, y - 12, w + 12, 24);
 }
 
+/* Return a codepoint boundary and caret offset for a horizontally scrolled
+ * text field. Temporarily terminating at the caret lets cairo measure only
+ * the visible prefix; the caller's text is restored before returning. */
+static int text_caret_window(cairo_t *c, char *text, int caret, double available,
+                             double *caret_offset) {
+    int len = (int)strlen(text);
+    if (caret < 0) caret = 0;
+    if (caret > len) caret = len;
+    int start = 0;
+    char save = text[caret];
+    text[caret] = 0;
+    while (start < caret && txt_w(c, text + start) > available) {
+        start++;
+        while (start < caret && ((unsigned char)text[start] & 0xc0) == 0x80) start++;
+    }
+    if (caret_offset) *caret_offset = txt_w(c, text + start);
+    text[caret] = save;
+    return start;
+}
+
 static void draw_schema_tab(Gui *g, cairo_t *c, int file, const Def *defs, int n,
                             double top, double bottom) {
     double y = top - g->scroll[g->tab];
@@ -1542,12 +1590,57 @@ static void draw_schema_tab(Gui *g, cairo_t *c, int file, const Def *defs, int n
                 add_box(g, H_TOGGLE, file, i, 0, vx - 4, ry, 90, 28);
                 break;
             }
+            case K_TEXT: {
+                bool active = g->num_file == file && g->num_idx == i;
+                const char *shown = active ? g->num_field.buf : cd_config_get_string(store_of(g, file), d->sec, d->key, d->def ? d->def : "");
+                if (!shown) shown = "";
+                fga(c, .07, .10, .17, 1); rr(c, vx, ry + 1, 420, 28, 6); cairo_fill(c);
+                cairo_set_line_width(c, active ? 2 : 1.2);
+                if (active) fg(c, .30, .85, .95);
+                else fg(c, .28, .38, .55);
+                rr(c, vx, ry + 1, 420, 28, 6); cairo_stroke(c);
+                font(c, 14, false, true); fg(c, .88, .94, 1.0);
+                /* Keep the active caret visible without maintaining a second,
+                 * easily-stale scroll state. The window starts at the first
+                 * UTF-8 codepoint whose suffix through the caret fits. */
+                int start = 0;
+                double caret_x = vx + 11;
+                if (active) {
+                    int caret = g->num_field.caret;
+                    int len = (int)strlen(g->num_field.buf);
+                    if (caret < 0) caret = 0;
+                    if (caret > len) caret = len;
+                    char save = g->num_field.buf[caret];
+                    g->num_field.buf[caret] = 0;
+                    while (start < caret && txt_w(c, shown + start) > 398) {
+                        start++;
+                        while (start < caret &&
+                               ((unsigned char)shown[start] & 0xc0) == 0x80) start++;
+                    }
+                    caret_x += txt_w(c, shown + start) + 1;
+                    g->num_field.buf[caret] = save;
+                }
+                cairo_save(c);
+                cairo_rectangle(c, vx + 2, ry + 2, 416, 26);
+                cairo_clip(c);
+                txt(c, vx + 11, ry + 20, shown + start);
+                cairo_restore(c);
+                font(c, 14, false, true);
+                if (active && (int)(now_s() * 1.9) % 2 == 0) {
+                    fg(c, .85, .95, 1.0); cairo_set_line_width(c, 1.5);
+                    cairo_move_to(c, caret_x, ry + 7); cairo_line_to(c, caret_x, ry + 24); cairo_stroke(c);
+                }
+                font(c, 11, false, false); fg(c, .50, .62, .80);
+                txt_fit(c, vx + 434, ry + 19, 518, tr(d->fmt ? d->fmt : ""));
+                add_box(g, H_NUM_FIELD, file, i, 0, vx, ry, 420, 30);
+                break;
+            }
             case K_FLOAT: case K_INT: case K_INT_INPUT: case K_FLOAT_INPUT: {
                 double v = def_get_num(g, file, d);
                 if (d->kind == K_INT_INPUT || d->kind == K_FLOAT_INPUT) {
                     bool active = g->num_file == file && g->num_idx == i;
                     bool invalid = active && g->num_dirty && !num_value_valid(g, NULL);
-                    snprintf(val, sizeof(val), d->fmt, v);
+                    snprintf(val, sizeof(val), d->fmt ? d->fmt : "%.0f", v);
                     const char *shown = active ? g->num_field.buf : val;
                     fga(c, .07, .10, .17, 1); rr(c, vx, ry + 1, 180, 28, 6); cairo_fill(c);
                     cairo_set_line_width(c, active ? 2 : 1.2);
@@ -1556,8 +1649,6 @@ static void draw_schema_tab(Gui *g, cairo_t *c, int file, const Def *defs, int n
                     else fg(c, .28, .38, .55);
                     rr(c, vx, ry + 1, 180, 28, 6); cairo_stroke(c);
                     font(c, 14, false, true); fg(c, .88, .94, 1.0);
-                    /* A typed value that outgrows the 180 px box scrolls
-                     * with the caret rather than spilling into the hint. */
                     cairo_save(c);
                     cairo_rectangle(c, vx + 2, ry + 2, 176, 26);
                     cairo_clip(c);
@@ -1587,7 +1678,7 @@ static void draw_schema_tab(Gui *g, cairo_t *c, int file, const Def *defs, int n
                 } else {
                     double frac = (v - d->min) / (d->max - d->min);
                     draw_slider(g, c, H_SLIDER, file, i, 0, vx, ry + 14, vw, frac);
-                    snprintf(val, sizeof(val), d->fmt, v);
+                    snprintf(val, sizeof(val), d->fmt ? d->fmt : "%.0f", v);
                     font(c, 13.5, false, true); fg(c, .80, .92, 1.0);
                     txt_fit(c, vx + vw + 22, ry + 19, 952 - (vx + vw + 22), val);
                 }
@@ -2019,11 +2110,19 @@ static int num_caret_at(Gui *g, double x) {
     cairo_t *c = g->measure;
     font(c, 14, false, true);
     TextField *f = &g->num_field;
+    const Def *d = num_def(g);
+    int start = 0;
+    if (d && d->kind == K_TEXT)
+        start = text_caret_window(c, f->buf, f->caret, 398, NULL);
     double target = x - (b->x + 11);
     int len = (int)strlen(f->buf);
-    for (int i = 0; i <= len; i++) {
+    for (int i = start; i <= len; i++) {
+        /* Mouse carets, like arrow/backspace carets, must never land in a
+         * UTF-8 continuation byte. Numeric fields are ASCII by construction. */
+        if (d && d->kind == K_TEXT && i > start &&
+            ((unsigned char)f->buf[i] & 0xc0) == 0x80) continue;
         char t = f->buf[i]; f->buf[i] = 0;
-        double wdt = txt_w(c, f->buf);
+        double wdt = txt_w(c, f->buf + start);
         f->buf[i] = t;
         if (wdt >= target) return i;
     }
@@ -2053,7 +2152,12 @@ static void gui_press(Gui *g, double x, double y) {
     }
     if (g->num_idx >= 0 && (!hit || hit->kind != H_NUM_FIELD ||
                              hit->a != g->num_file || hit->b != g->num_idx)) {
-        if (!num_commit(g)) num_cancel(g); /* invalid text reverts on blur */
+        const Def *d = num_def(g);
+        if (d && d->kind == K_TEXT) {
+            num_commit(g);
+        } else if (!num_commit(g)) {
+            num_cancel(g); /* invalid text reverts on blur */
+        }
     }
     if (g->focus >= 0 && (!hit || hit->kind != H_FIELD || hit->a != g->focus)) {
         app_commit_fields(g);
@@ -2148,7 +2252,13 @@ static void gui_press(Gui *g, double x, double y) {
                 post_reset = true;
                 continue;
             }
-            cd_config_set_string(store_of(g, file), dd[i].sec, dd[i].key, dd[i].def);
+            /* Text defaults are absent, not explicit empty strings: in
+             * particular, resetting keyboard.options must restore inherited
+             * XKB_DEFAULT_OPTIONS rather than disabling them. */
+            if (dd[i].kind == K_TEXT)
+                cd_config_unset(store_of(g, file), dd[i].sec, dd[i].key);
+            else
+                cd_config_set_string(store_of(g, file), dd[i].sec, dd[i].key, dd[i].def);
         }
         touch_file(g, file); flush_saves(g, true);
         break;
@@ -2270,28 +2380,63 @@ static void gui_key(Gui *g, xkb_keysym_t sym, const char *utf8, int utf8_len) {
         int len = (int)strlen(f->buf);
         if (f->caret > len) f->caret = len;
         bool edited = false;
+        const Def *dcur = num_def(g);
         switch (sym) {
-        case XKB_KEY_Escape: num_cancel(g); return;
-        case XKB_KEY_Return: case XKB_KEY_KP_Enter: num_commit(g); return;
-        case XKB_KEY_Tab: num_commit(g); return;
+        case XKB_KEY_Escape:
+            num_cancel(g); return;
+        case XKB_KEY_Return: case XKB_KEY_KP_Enter:
+            num_commit(g); return;
+        case XKB_KEY_Tab:
+            num_commit(g); return;
         case XKB_KEY_BackSpace:
+            if (dcur && dcur->kind == K_TEXT) {
+                if (f->caret > 0) {
+                    int p = utf8_prev(f->buf, f->caret);
+                    memmove(f->buf + p, f->buf + f->caret, (size_t)(len - f->caret + 1));
+                    f->caret = p;
+                    edited = true;
+                }
+                break;
+            }
             if (f->caret > 0) {
                 memmove(f->buf + f->caret - 1, f->buf + f->caret, (size_t)(len - f->caret + 1));
                 f->caret--; edited = true;
             }
             break;
         case XKB_KEY_Delete:
+            if (dcur && dcur->kind == K_TEXT) {
+                if (f->caret < len) {
+                    int n = utf8_next(f->buf, f->caret);
+                    memmove(f->buf + f->caret, f->buf + n, (size_t)(len - n + 1));
+                    edited = true;
+                }
+                break;
+            }
             if (f->caret < len) {
                 memmove(f->buf + f->caret, f->buf + f->caret + 1, (size_t)(len - f->caret));
                 edited = true;
             }
             break;
-        case XKB_KEY_Left: if (f->caret > 0) f->caret--; break;
-        case XKB_KEY_Right: if (f->caret < len) f->caret++; break;
+        case XKB_KEY_Left:
+            if (dcur && dcur->kind == K_TEXT) { f->caret = utf8_prev(f->buf, f->caret); break; }
+            if (f->caret > 0) f->caret--; break;
+        case XKB_KEY_Right:
+            if (dcur && dcur->kind == K_TEXT) { f->caret = utf8_next(f->buf, f->caret); break; }
+            if (f->caret < len) f->caret++; break;
         case XKB_KEY_Home: f->caret = 0; break;
         case XKB_KEY_End: f->caret = len; break;
         default: {
             const Def *d = num_def(g);
+            if (d && d->kind == K_TEXT) {
+                if (utf8 && utf8_len > 0 && (unsigned char)utf8[0] >= 0x20 &&
+                    len + utf8_len < (int)sizeof(f->buf)) {
+                    memmove(f->buf + f->caret + utf8_len, f->buf + f->caret, (size_t)(len - f->caret + 1));
+                    memcpy(f->buf + f->caret, utf8, utf8_len);
+                    f->caret += utf8_len;
+                    edited = true;
+                }
+                break;
+            }
             bool is_float = d && d->kind == K_FLOAT_INPUT;
             if (utf8 && utf8_len == 1 && len < (is_float ? 24 : 12)) {
                 char ch = utf8[0];
@@ -2852,6 +2997,106 @@ static int selftest(const char *config_dir_arg) {
           "out-of-range render_scale overwrote the saved value");
     gui_key(&g, XKB_KEY_Escape, NULL, 0);
     CHECK(g.num_idx < 0, "Escape did not cancel render_scale edit");
+
+    /* XKB settings are real text rows, not fixed presets. Drive every row
+     * through its hitbox, then verify UTF-8 editing, Escape, explicit empty,
+     * and the untouched-blank/absent distinction. */
+    static const char *kb_keys[] = { "rules", "model", "layouts", "variants", "options" };
+    static const char *kb_values[] = {
+        "evdev", "pc105", "us,ru,de", ",phonetic,nodeadkeys",
+        "grp:alt_shift_toggle,compose:menu,terminate:ctrl_alt_bksp"
+    };
+    int kb_rows[5] = { -1, -1, -1, -1, -1 };
+    for (int k = 0; k < 5; k++) {
+        for (int i = 0; i < N_CD_DEFS; i++)
+            if (!strcmp(CD_DEFS[i].sec, "keyboard") && !strcmp(CD_DEFS[i].key, kb_keys[k]))
+                kb_rows[k] = i;
+        CHECK(kb_rows[k] >= 0 && CD_DEFS[kb_rows[k]].kind == K_TEXT,
+              "keyboard %s is not a text input", kb_keys[k]);
+        if (kb_rows[k] < 0) continue;
+        CHECK(scroll_to_box(&g, H_NUM_FIELD, FILE_CD, kb_rows[k]),
+              "no keyboard %s input hitbox", kb_keys[k]);
+        CHECK(click_box(&g, H_NUM_FIELD, FILE_CD, kb_rows[k]),
+              "cannot focus keyboard %s", kb_keys[k]);
+        if (k == 0) {
+            gui_key(&g, XKB_KEY_Return, NULL, 0);
+            CHECK(!strcmp(cd_config_get_string(g.store[FILE_CD], "keyboard", "rules", "<absent>"), "<absent>"),
+                  "untouched blank keyboard field became an explicit value");
+            CHECK(scroll_to_box(&g, H_NUM_FIELD, FILE_CD, kb_rows[k]) &&
+                  click_box(&g, H_NUM_FIELD, FILE_CD, kb_rows[k]),
+                  "cannot refocus blank keyboard rules");
+        }
+        clear_field(&g); type_text(&g, kb_values[k]);
+        gui_key(&g, XKB_KEY_Return, NULL, 0);
+        CHECK(g.num_idx < 0 &&
+              !strcmp(cd_config_get_string(g.store[FILE_CD], "keyboard", kb_keys[k], "<absent>"), kb_values[k]),
+              "keyboard %s did not commit", kb_keys[k]);
+    }
+    if (kb_rows[1] >= 0) {
+        CHECK(scroll_to_box(&g, H_NUM_FIELD, FILE_CD, kb_rows[1]) &&
+              click_box(&g, H_NUM_FIELD, FILE_CD, kb_rows[1]), "cannot refocus keyboard model");
+        clear_field(&g); type_text(&g, "pc");
+        gui_key(&g, XKB_KEY_Cyrillic_ya, "\xd1\x8f", 2); type_text(&g, "105");
+        CHECK(!strcmp(g.num_field.buf, "pc\xd1\x8f" "105"), "UTF-8 keyboard text insertion failed");
+        gui_key(&g, XKB_KEY_Home, NULL, 0);
+        gui_key(&g, XKB_KEY_Right, NULL, 0); gui_key(&g, XKB_KEY_Right, NULL, 0);
+        gui_key(&g, XKB_KEY_Delete, NULL, 0);
+        CHECK(!strcmp(g.num_field.buf, "pc105"), "UTF-8 Delete did not remove one codepoint");
+        gui_key(&g, XKB_KEY_Cyrillic_ya, "\xd1\x8f", 2);
+        gui_key(&g, XKB_KEY_BackSpace, NULL, 0);
+        CHECK(!strcmp(g.num_field.buf, "pc105"), "UTF-8 BackSpace did not remove one codepoint");
+        gui_key(&g, XKB_KEY_Return, NULL, 0);
+        CHECK(scroll_to_box(&g, H_NUM_FIELD, FILE_CD, kb_rows[1]) &&
+              click_box(&g, H_NUM_FIELD, FILE_CD, kb_rows[1]), "cannot reopen keyboard model");
+        type_text(&g, "X"); gui_key(&g, XKB_KEY_Escape, NULL, 0);
+        CHECK(g.num_idx < 0 &&
+              !strcmp(cd_config_get_string(g.store[FILE_CD], "keyboard", "model", ""), "pc105"),
+              "Escape changed the saved keyboard model");
+    }
+    if (kb_rows[4] >= 0) {
+        CHECK(scroll_to_box(&g, H_NUM_FIELD, FILE_CD, kb_rows[4]) &&
+              click_box(&g, H_NUM_FIELD, FILE_CD, kb_rows[4]), "cannot clear keyboard options");
+        clear_field(&g); gui_key(&g, XKB_KEY_Return, NULL, 0);
+        CHECK(!strcmp(cd_config_get_string(g.store[FILE_CD], "keyboard", "options", "<absent>"), ""),
+              "cleared keyboard options did not remain explicitly empty");
+    }
+    /* Exercise the same caret-window routine used by the renderer with a
+     * value longer than the control and Cyrillic codepoints at the boundary. */
+    char long_text[512] = { 0 };
+    for (int i = 0; i < 40; i++) strcat(long_text, "us,\xd1\x8f,");
+    char long_before[512]; snprintf(long_before, sizeof long_before, "%s", long_text);
+    cairo_surface_t *measure = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, 1000, 40);
+    cairo_t *mc = cairo_create(measure); font(mc, 14, false, true);
+    double caret_offset = -1;
+    int start = text_caret_window(mc, long_text, (int)strlen(long_text), 398, &caret_offset);
+    CHECK(start > 0 && caret_offset >= 0 && caret_offset <= 398 &&
+          ((unsigned char)long_text[start] & 0xc0) != 0x80,
+          "long keyboard text caret is clipped or splits UTF-8");
+    CHECK(!strcmp(long_text, long_before), "caret measurement modified keyboard text");
+    start = text_caret_window(mc, long_text, 0, 398, &caret_offset);
+    CHECK(start == 0 && caret_offset == 0, "Home did not restore the text window");
+    cairo_destroy(mc); cairo_surface_destroy(measure);
+    if (kb_rows[2] >= 0) {
+        CHECK(scroll_to_box(&g, H_NUM_FIELD, FILE_CD, kb_rows[2]) &&
+              click_box(&g, H_NUM_FIELD, FILE_CD, kb_rows[2]),
+              "cannot focus long keyboard layouts value");
+        snprintf(g.num_field.buf, sizeof(g.num_field.buf), "%s", long_text);
+        g.num_field.caret = (int)strlen(g.num_field.buf);
+        g.num_dirty = true;
+        img = render_tab_image(&g, TAB_CD);
+        int visible_start = text_caret_window(g.measure, g.num_field.buf,
+                                              g.num_field.caret, 398, NULL);
+        HitBox *box = find_box(&g, H_NUM_FIELD, FILE_CD, kb_rows[2]);
+        CHECK(box != NULL, "long keyboard text lost its hitbox");
+        if (box) {
+            gui_press(&g, box->x + 111, box->y + 10); gui_release(&g);
+            CHECK(g.num_field.caret >= visible_start &&
+                  ((unsigned char)g.num_field.buf[g.num_field.caret] & 0xc0) != 0x80,
+                  "click in scrolled keyboard text ignored the visible window");
+        }
+        cairo_surface_destroy(img);
+        gui_key(&g, XKB_KEY_Escape, NULL, 0);
+    }
     g.scroll[TAB_CD] = 0;
     flush_saves(&g, true);
 
@@ -2874,6 +3119,11 @@ static int selftest(const char *config_dir_arg) {
     CHECK(v && !strcmp(cd_config_get_string(v, "cockpit", "background", ""), "texture"), "background not saved");
     CHECK(v && cd_config_get_int(v, "session", "vnc_port", -1) == 5917, "VNC port not saved");
     CHECK(v && fabs(cd_config_get_double(v, "display", "render_scale", -1) - 2.5) < 1e-9, "render_scale not saved");
+    CHECK(v && !strcmp(cd_config_get_string(v, "keyboard", "rules", ""), "evdev"), "keyboard rules not saved");
+    CHECK(v && !strcmp(cd_config_get_string(v, "keyboard", "model", ""), "pc105"), "keyboard model not saved");
+    CHECK(v && !strcmp(cd_config_get_string(v, "keyboard", "layouts", ""), "us,ru,de"), "keyboard layouts not saved");
+    CHECK(v && !strcmp(cd_config_get_string(v, "keyboard", "variants", ""), ",phonetic,nodeadkeys"), "keyboard variants not saved");
+    CHECK(v && !strcmp(cd_config_get_string(v, "keyboard", "options", "<absent>"), ""), "explicitly empty keyboard options not saved");
     CHECK(v && !strcmp(cd_config_get_string(v, "display", "post_shader", ""), "off"), "post_shader not saved");
     CHECK(v && !strcmp(cd_config_get_string(v, "app.cockpit", "action", ""), "app") &&
           !strcmp(cd_config_get_string(v, "app.cockpit", "name", ""), "Garage3D") &&
@@ -2895,6 +3145,14 @@ static int selftest(const char *config_dir_arg) {
     CHECK(click_box(&g, H_RESET_TAB, 0, 0), "no reset-tab box");
     CHECK(!strcmp(cd_config_get_string(g.store[FILE_CD], "display", "post_shader", ""), "off"),
           "reset tab did not drop custom post_shader entries");
+    CHECK(!cd_config_has(g.store[FILE_CD], "keyboard", "rules") &&
+          !cd_config_has(g.store[FILE_CD], "keyboard", "options"),
+          "reset tab did not restore absent keyboard defaults");
+    CdConfig *reset_disk = cd_config_load(g.path[FILE_CD]);
+    CHECK(reset_disk && !cd_config_has(reset_disk, "keyboard", "rules") &&
+          !cd_config_has(reset_disk, "keyboard", "options"),
+          "absent keyboard defaults were not saved to disk");
+    cd_config_free(reset_disk);
 
     /* Russian must go through the real visible enum widget, not a hand-written
      * config fixture: select it, let draw_ui() hot-sync the catalog, save the
@@ -3233,16 +3491,23 @@ static const struct wl_pointer_listener pointer_listener = {
 };
 static void k_keymap(void *data, struct wl_keyboard *k, uint32_t format, int32_t fd, uint32_t size) {
     (void)k; App *a = data;
-    if (format != WL_KEYBOARD_KEYMAP_FORMAT_XKB_V1) { close(fd); return; }
+    if (format != WL_KEYBOARD_KEYMAP_FORMAT_XKB_V1 || !size) { close(fd); return; }
     char *map = mmap(NULL, size, PROT_READ, MAP_PRIVATE, fd, 0);
-    if (map != MAP_FAILED) {
-        if (a->keymap) xkb_keymap_unref(a->keymap);
-        if (a->xkb_state) xkb_state_unref(a->xkb_state);
-        a->keymap = xkb_keymap_new_from_string(a->xkb_ctx, map, XKB_KEYMAP_FORMAT_TEXT_V1, 0);
-        a->xkb_state = a->keymap ? xkb_state_new(a->keymap) : NULL;
-        munmap(map, size);
-    }
     close(fd);
+    if (map == MAP_FAILED) return;
+    /* Settings itself receives live keymap replacements while the user edits
+     * these fields. Keep the working map/state until both successors exist. */
+    struct xkb_keymap *next = xkb_keymap_new_from_buffer(
+        a->xkb_ctx, map, size - (map[size - 1] == '\0'),
+        XKB_KEYMAP_FORMAT_TEXT_V1, XKB_KEYMAP_COMPILE_NO_FLAGS);
+    munmap(map, size);
+    if (!next) return;
+    struct xkb_state *state = xkb_state_new(next);
+    if (!state) { xkb_keymap_unref(next); return; }
+    if (a->xkb_state) xkb_state_unref(a->xkb_state);
+    if (a->keymap) xkb_keymap_unref(a->keymap);
+    a->keymap = next;
+    a->xkb_state = state;
 }
 static void k_enter(void *d, struct wl_keyboard *k, uint32_t s, struct wl_surface *sf, struct wl_array *keys) { (void)d; (void)k; (void)s; (void)sf; (void)keys; }
 static void k_leave(void *d, struct wl_keyboard *k, uint32_t s, struct wl_surface *sf) { (void)d; (void)k; (void)s; (void)sf; }
