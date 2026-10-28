@@ -57,6 +57,87 @@ static void evdev_main_wake(EvdevAsync *a){
     if(a&&a->main_wake_fd>=0){uint64_t one=1;ssize_t ignored=write(a->main_wake_fd,&one,sizeof(one));(void)ignored;}
 }
 
+static const uint16_t evdev_led_codes[CD_XKB_LED_COUNT] = {
+    LED_NUML, LED_CAPSL, LED_SCROLLL, LED_COMPOSE, LED_KANA,
+};
+_Static_assert(CD_XKB_LED_NUM_LOCK == (1u << LED_NUML) &&
+               CD_XKB_LED_CAPS_LOCK == (1u << LED_CAPSL) &&
+               CD_XKB_LED_SCROLL_LOCK == (1u << LED_SCROLLL) &&
+               CD_XKB_LED_COMPOSE == (1u << LED_COMPOSE) &&
+               CD_XKB_LED_KANA == (1u << LED_KANA),
+               "XKB and evdev LED capability bits must use the same positions");
+
+static void evdev_write_led_mask(EvdevDevice *d, uint32_t mask) {
+    /* There is no EVIOCSLED ioctl. Linux evdev accepts output events on a
+     * writable device fd; uinput returns these exact EV_LED packets to the
+     * device creator, which also makes the production path testable. */
+    struct input_event events[CD_XKB_LED_COUNT + 1] = {0};
+    size_t count = 0;
+    for (size_t i = 0; i < CD_XKB_LED_COUNT; i++) {
+        if (!(d->led_caps & (1u << i))) continue;
+        events[count].type = EV_LED;
+        events[count].code = evdev_led_codes[i];
+        events[count].value = !!(mask & (1u << i));
+        count++;
+    }
+    events[count].type = EV_SYN;
+    events[count].code = SYN_REPORT;
+    count++;
+
+    /* O_NONBLOCK is retained. A short write is resumed, while EAGAIN leaves
+     * the cache untouched so the next main-loop poll retries. Repeating an
+     * already-written LED value after a rare partial packet is idempotent. */
+    size_t done = 0;
+    while (done < count) {
+        ssize_t n = write(d->fd, &events[done], (count - done) * sizeof(events[0]));
+        if (n > 0) {
+            size_t bytes = (size_t)n;
+            if (bytes % sizeof(events[0])) {
+                /* evdev must never split input_event records; do not advance
+                 * by a misaligned byte count if a non-evdev test double does. */
+                errno = EIO;
+                n = -1;
+            } else {
+                done += bytes / sizeof(events[0]);
+                continue;
+            }
+        }
+        if (n < 0 && errno == EINTR) continue;
+        if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) return;
+        d->led_write_failed = true;
+        if (!d->led_access_warned) {
+            fprintf(stderr, "[evdev] cannot update XKB keyboard LEDs on %s: %s; input continues without indicators\n",
+                    d->path, n < 0 ? strerror(errno) : "short write");
+            d->led_access_warned = true;
+        }
+        return;
+    }
+    d->led_sent = mask;
+    d->led_sent_valid = true;
+}
+
+static void evdev_sync_led_mask(Server *s, uint32_t mask, bool force) {
+    EvdevState *st = evdev_state(s);
+    if (!st) return;
+    /* XKB and all device cache fields are main-thread-owned. The worker only
+     * reads input and never calls this path, so LED writes cannot race a
+     * disconnect close or Wayland/xkb state mutation. */
+    for (int i = 0; i < st->device_count; i++) {
+        EvdevDevice *d = &st->devices[i];
+        if (d->fd < 0 || !d->led_caps || !d->led_writable) continue;
+        uint32_t wanted = mask & d->led_caps;
+        if (!force && d->led_sent_valid && d->led_sent == wanted) continue;
+        if (d->led_write_failed && !force) continue;
+        if (force) d->led_write_failed = false;
+        evdev_write_led_mask(d, wanted);
+    }
+}
+
+static void evdev_sync_keyboard_leds(Server *s) {
+    if (!s || !s->xkb.state) return; /* evdev opens before server_init's XKB */
+    evdev_sync_led_mask(s, cd_xkb_keyboard_led_mask(&s->xkb), false);
+}
+
 static void evdev_device_close(EvdevDevice *d) {
     if (d->fd >= 0) {
         if (d->grabbed) {
@@ -150,7 +231,14 @@ static void evdev_reset_all_devices(Server *s,uint32_t time){
 }
 
 static bool evdev_open_device(EvdevState *st, EvdevDevice *d, const char *path) {
-    d->fd = open(path, O_RDONLY | O_NONBLOCK | O_CLOEXEC);
+    /* EV_LED is output as well as input: a read-only evdev fd cannot carry
+     * XKB lock/group indicators back to the keyboard. Prefer one full-duplex
+     * descriptor (no path-reopen identity race), but retain the old read-only
+     * input behavior when write permission is denied. */
+    d->fd = open(path, O_RDWR | O_NONBLOCK | O_CLOEXEC);
+    d->led_writable = d->fd >= 0;
+    if (d->fd < 0)
+        d->fd = open(path, O_RDONLY | O_NONBLOCK | O_CLOEXEC);
     if (d->fd < 0) return false;
     snprintf(d->path, sizeof(d->path), "%s", path);
     /* Wayland and the compositor frame clock are monotonic. Ask the kernel to
@@ -161,6 +249,7 @@ static bool evdev_open_device(EvdevState *st, EvdevDevice *d, const char *path) 
 
     uint8_t evbit[EV_MAX / 8 + 1] = {0};
     uint8_t keybit[KEY_MAX / 8 + 1] = {0};
+    uint8_t ledbit[LED_MAX / 8 + 1] = {0};
     uint8_t relbit[REL_MAX / 8 + 1] = {0};
     uint8_t absbit[ABS_MAX / 8 + 1] = {0};
     uint8_t propbit[INPUT_PROP_MAX / 8 + 1] = {0};
@@ -172,6 +261,18 @@ static bool evdev_open_device(EvdevState *st, EvdevDevice *d, const char *path) 
     if (ioctl(d->fd, EVIOCGBIT(EV_KEY, sizeof(keybit)), keybit) < 0) {
         evdev_device_close(d);
         return false;
+    }
+    if (evbit[EV_LED / 8] & (1 << (EV_LED % 8))) {
+        if (ioctl(d->fd, EVIOCGBIT(EV_LED, sizeof(ledbit)), ledbit) >= 0) {
+            for (int led = 0; led < CD_XKB_LED_COUNT && led <= LED_MAX; led++)
+                if (ledbit[led / 8] & (1 << (led % 8)))
+                    d->led_caps |= 1u << led;
+        } else {
+            /* Indicator output is optional; never retire an otherwise usable
+             * keyboard merely because its LED capability query failed. */
+            fprintf(stderr, "[evdev] EVIOCGBIT(EV_LED) failed on %s: %s; keyboard input remains enabled\n",
+                    path, strerror(errno));
+        }
     }
     if (ioctl(d->fd, EVIOCGBIT(EV_REL, sizeof(relbit)), relbit) < 0) {
         evdev_device_close(d);
@@ -262,6 +363,11 @@ static bool evdev_open_device(EvdevState *st, EvdevDevice *d, const char *path) 
 
     if (d->type != EVDEV_DEV_KEYBOARD && (d->has_rel_x || d->has_abs_x) && has_keys) {
         d->has_keys = true;
+    }
+    if (d->led_caps && !d->led_writable) {
+        fprintf(stderr, "[evdev] %s: XKB/grp_led indicators disabled (event node opened read-only); keys remain active. Grant the compositor user write access to this event node to enable keyboard LEDs.\n",
+                d->path);
+        d->led_access_warned = true;
     }
 
     if (st->grab_input) {
@@ -1073,6 +1179,10 @@ void backend_evdev_poll(Server *s) {
         cd_evdev_queue_acknowledge(&a->queue);
         evdev_wake(a); /* only after the release barrier, never before it */
     }
+    /* Poll after dispatch so consumed hotkeys and ordinary keys alike update
+     * indicators. A config reload later in this frame is picked up on the
+     * next poll; unchanged per-device masks emit no packets. */
+    evdev_sync_keyboard_leds(s);
 }
 
 static void evdev_discard_pending(EvdevDevice *d) {
@@ -1114,6 +1224,9 @@ void backend_evdev_suspend(Server *s) {
     st->suspended = true;
     evdev_async_destroy(st);
     evdev_reset_all_devices(s, evdev_monotonic_ms());
+    /* The other VT owns its own lock/group state. Do not leave our XKB LEDs
+     * frozen on a released keyboard; resume force-restores the seat state. */
+    evdev_sync_led_mask(s, 0, true);
     evdev_ungrab_all(st);
     s->evdev_chrome_touch_id = -1;
     fprintf(stderr, "[evdev] suspended for VT switch; devices ungrabbed and fds retained\n");
@@ -1161,6 +1274,8 @@ bool backend_evdev_resume(Server *s) {
         return false;
     }
     st->suspended = false;
+    if (s->xkb.state)
+        evdev_sync_led_mask(s, cd_xkb_keyboard_led_mask(&s->xkb), true);
     fprintf(stderr, "[evdev] resumed after VT switch (%d device slot(s))\n", st->device_count);
     return true;
 }
@@ -1172,6 +1287,7 @@ void backend_evdev_shutdown(Server *s) {
      * server_finish(), so release events still have a live Wayland display. */
     evdev_async_destroy(st);
     evdev_reset_all_devices(s,evdev_monotonic_ms());
+    evdev_sync_led_mask(s,0,true);
     evdev_ungrab_all(st);
     for(int i=0;i<st->device_count;i++)evdev_device_close(&st->devices[i]);
     free(st);s->evdev_state=NULL;s->evdev_chrome_touch_id=-1;

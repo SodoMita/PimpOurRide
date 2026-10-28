@@ -37,7 +37,9 @@ plus SDL touchscreen `wl_touch` in `--windowed` mode),
 global per virtual monitor. Any well-behaved Wayland client can connect to it
 and will appear on its own screen. The keyboard seat supports arbitrary XKB
 RMLVO configuration, multiple layouts and standard `grp:*` switching, with
-live sealed-keymap broadcasts on reload; see
+live sealed-keymap broadcasts on reload. Writable evdev keyboards also track
+XKB Num/Caps/Scroll/Compose/Kana LEDs and `grp_led:*` layout indicators;
+read-only devices retain keyboard input without indicators. See
 [`docs/configuration.md#keyboard-layouts-and-switching`](docs/configuration.md#keyboard-layouts-and-switching).
 
 It runs four ways (`--backend headless|windowed|fbdev|drm`; the old flags remain

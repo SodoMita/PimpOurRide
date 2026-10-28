@@ -10,6 +10,7 @@
 #include <string.h>
 #include <sys/mman.h>
 #include <unistd.h>
+#include <xkbcommon/xkbcommon-names.h>
 
 static void set_error(char *error, size_t size, const char *fmt, ...)
 {
@@ -18,6 +19,36 @@ static void set_error(char *error, size_t size, const char *fmt, ...)
     va_start(args, fmt);
     vsnprintf(error, size, fmt, args);
     va_end(args);
+}
+
+static const char *const led_names[CD_XKB_LED_COUNT] = {
+    XKB_LED_NAME_NUM,
+    XKB_LED_NAME_CAPS,
+    XKB_LED_NAME_SCROLL,
+    /* Older xkbcommon-names.h releases omit constants for these two, while
+     * the XKB protocol names and wlroots/Weston behavior are stable. */
+    "Compose",
+    "Kana",
+};
+
+static void update_led_indices(CdXkbKeyboard *keyboard)
+{
+    for (size_t i = 0; i < CD_XKB_LED_COUNT; i++)
+        keyboard->led_indices[i] = xkb_keymap_led_get_index(
+            keyboard->keymap, led_names[i]);
+}
+
+uint32_t cd_xkb_keyboard_led_mask(const CdXkbKeyboard *keyboard)
+{
+    if (!keyboard || !keyboard->state) return 0;
+    uint32_t mask = 0;
+    for (size_t i = 0; i < CD_XKB_LED_COUNT; i++) {
+        if (keyboard->led_indices[i] != XKB_LED_INVALID &&
+            xkb_state_led_index_is_active(keyboard->state,
+                                          keyboard->led_indices[i]) > 0)
+            mask |= 1u << i;
+    }
+    return mask;
 }
 
 static char *duplicate_optional(const char *value)
@@ -311,6 +342,9 @@ bool cd_xkb_keyboard_reconfigure(CdXkbKeyboard *keyboard,
     keyboard->state = state;
     keyboard->fd = fd;
     keyboard->size = size;
+    /* LED indices belong to this exact map, never to the rejected or previous
+     * configuration.  Resolve only after the transactional commit begins. */
+    update_led_indices(keyboard);
     cd_xkb_config_clear(&keyboard->active_config);
     keyboard->active_config = next_config;
     if (old_state) xkb_state_unref(old_state);

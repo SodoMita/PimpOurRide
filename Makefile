@@ -93,8 +93,8 @@ $(BIN)/test-textfit: tests/test_textfit.c src/textfit.c include/textfit.h | $(BI
 	$(CC) -Iinclude $(CFLAGS) tests/test_textfit.c src/textfit.c -o $@
 $(BIN)/test-drm: tests/test_drm.c src/backend_drm.c include/chrome.h | $(BIN)
 	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_drm.c src/backend_drm.c -o $@
-$(BIN)/test-evdev: tests/test_evdev.c src/backend_evdev.c src/evdev_queue.c src/evdev_util.c src/math3d.c src/input_wait.c include/chrome.h include/input_wait.h | $(BIN)
-	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_evdev.c src/backend_evdev.c src/evdev_queue.c src/evdev_util.c src/math3d.c src/input_wait.c -o $@ -Wl,--wrap=open,--wrap=ioctl,--wrap=close,--wrap=opendir,--wrap=readdir,--wrap=closedir -lm -pthread
+$(BIN)/test-evdev: tests/test_evdev.c src/backend_evdev.c src/evdev_queue.c src/evdev_util.c src/math3d.c src/input_wait.c src/xkb_keyboard.c src/cdconfig.c include/chrome.h include/input_wait.h include/xkb_keyboard.h | $(BIN)
+	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_evdev.c src/backend_evdev.c src/evdev_queue.c src/evdev_util.c src/math3d.c src/input_wait.c src/xkb_keyboard.c src/cdconfig.c -o $@ -Wl,--wrap=open,--wrap=ioctl,--wrap=close,--wrap=opendir,--wrap=readdir,--wrap=closedir $(shell pkg-config --libs xkbcommon) -lm -pthread
 $(BIN)/test-frame-pacing: tests/test_frame_pacing.c src/frame_pacing.c include/chrome.h | $(BIN)
 	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_frame_pacing.c src/frame_pacing.c -o $@
 $(BIN)/test-input-wait: tests/test_input_wait.c src/input_wait.c include/input_wait.h | $(BIN)

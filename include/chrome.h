@@ -467,6 +467,11 @@ typedef struct {
     bool has_rel_x, has_rel_y;
     bool has_abs_x, has_abs_y;
     bool has_keys;
+    /* Main-thread XKB indicator synchronization. led_caps uses Linux LED_*
+     * bit positions; led_sent contains only supported bits. A read-only
+     * fallback keeps keys flowing but cannot emit EV_LED output events. */
+    uint32_t led_caps,led_sent;
+    bool led_writable,led_sent_valid,led_write_failed,led_access_warned;
     struct input_absinfo abs_x, abs_y;
     struct input_absinfo abs_mt_x, abs_mt_y;
     bool is_direct;

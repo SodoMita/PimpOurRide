@@ -19,6 +19,15 @@ typedef struct {
     char *options;
 } CdXkbConfig;
 
+enum {
+    CD_XKB_LED_NUM_LOCK = 1u << 0,
+    CD_XKB_LED_CAPS_LOCK = 1u << 1,
+    CD_XKB_LED_SCROLL_LOCK = 1u << 2,
+    CD_XKB_LED_COMPOSE = 1u << 3,
+    CD_XKB_LED_KANA = 1u << 4,
+};
+#define CD_XKB_LED_COUNT 5
+
 /* The fd is a sealed, read-only memfd containing the NUL-terminated XKB V1
  * keymap.  active_config is the successfully compiled configuration, never a
  * rejected reload.  The structure must be zero-initialized with fd == -1. */
@@ -29,6 +38,9 @@ typedef struct {
     int fd;
     uint32_t size;
     CdXkbConfig active_config;
+    /* Resolved again for every replacement keymap.  XKB_LED_INVALID entries
+     * are normal for maps without Compose/Kana or optional lock LEDs. */
+    xkb_led_index_t led_indices[CD_XKB_LED_COUNT];
 } CdXkbKeyboard;
 
 void cd_xkb_config_clear(CdXkbConfig *config);
@@ -55,5 +67,10 @@ bool cd_xkb_keyboard_reconfigure(CdXkbKeyboard *keyboard,
                                  bool *changed,
                                  char *error, size_t error_size);
 void cd_xkb_keyboard_finish(CdXkbKeyboard *keyboard);
+/* Seat-wide XKB indicator state, using the CD_XKB_LED_* bit assignments.
+ * Group indicators (grp_led:*) are already reflected by xkbcommon; no layout
+ * policy is duplicated here.  Missing LEDs and an uninitialized state return
+ * no active bits rather than treating xkbcommon's -1 error as true. */
+uint32_t cd_xkb_keyboard_led_mask(const CdXkbKeyboard *keyboard);
 
 #endif /* CHROMEDRIVE_XKB_KEYBOARD_H */

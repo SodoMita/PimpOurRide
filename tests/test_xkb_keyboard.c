@@ -39,6 +39,94 @@ static xkb_layout_index_t toggle_group(CdXkbKeyboard *keyboard)
     return group;
 }
 
+static void lock_key(CdXkbKeyboard *keyboard, uint32_t key)
+{
+    xkb_state_update_key(keyboard->state, key + 8, XKB_KEY_DOWN);
+    xkb_state_update_key(keyboard->state, key + 8, XKB_KEY_UP);
+}
+
+static void test_led_mask(void)
+{
+    /* Explicit RMLVO keeps this independent of the environment-default tests
+     * in main. grp_led:caps must come from XKB's effective group, not from a
+     * second compositor-side layout counter. */
+    CdXkbConfig config = {0};
+    set_config(&config, "evdev", "pc105", "us,ru", ",",
+               "grp:alt_shift_toggle,grp_led:caps,scrolllock:mod3");
+    CdXkbKeyboard keyboard = {.fd = -1};
+    char error[512] = "";
+    CHECK(cd_xkb_keyboard_init(&keyboard, &config, error, sizeof(error)), error);
+    if (!keyboard.state) {
+        cd_xkb_config_clear(&config);
+        return;
+    }
+    CHECK(cd_xkb_keyboard_led_mask(&keyboard) == 0,
+          "new XKB state starts with all supported LEDs off");
+    CHECK(cd_xkb_keyboard_led_mask(NULL) == 0,
+          "uninitialized LED query is safely off");
+
+    /* grp_led:caps deliberately owns the Caps indicator, so ordinary Caps
+     * Lock semantics are tested on a separate map below. Num is independent. */
+    lock_key(&keyboard, KEY_NUMLOCK);
+    CHECK(cd_xkb_keyboard_led_mask(&keyboard) == CD_XKB_LED_NUM_LOCK,
+          "Num Lock activates only the XKB Num LED");
+    lock_key(&keyboard, KEY_NUMLOCK);
+    lock_key(&keyboard, KEY_SCROLLLOCK);
+    CHECK(cd_xkb_keyboard_led_mask(&keyboard) == CD_XKB_LED_SCROLL_LOCK,
+          "scrolllock:mod3 binds the physical key to its XKB LED");
+    lock_key(&keyboard, KEY_SCROLLLOCK);
+
+    CHECK(toggle_group(&keyboard) == 1, "grp_led test selects second group");
+    CHECK(cd_xkb_keyboard_led_mask(&keyboard) == CD_XKB_LED_CAPS_LOCK,
+          "grp_led:caps follows effective layout without Caps Lock");
+    CHECK(toggle_group(&keyboard) == 0, "grp_led test returns to first group");
+    CHECK(cd_xkb_keyboard_led_mask(&keyboard) == 0,
+          "group LED turns off with alternative layout");
+
+    CdXkbConfig next = {0};
+    set_config(&next, "evdev", "pc105", "us,ru", ",",
+               "grp:alt_shift_toggle,grp_led:num");
+    bool changed = false;
+    CHECK(cd_xkb_keyboard_reconfigure(&keyboard, &next, NULL, &changed,
+                                      error, sizeof(error)), error);
+    CHECK(changed && cd_xkb_keyboard_led_mask(&keyboard) == 0,
+          "replacement map resolves a fresh LED index set");
+    CHECK(toggle_group(&keyboard) == 1 &&
+          cd_xkb_keyboard_led_mask(&keyboard) == CD_XKB_LED_NUM_LOCK,
+          "live reload moves grp_led from Caps to Num");
+
+    xkb_led_index_t old_indices[CD_XKB_LED_COUNT];
+    memcpy(old_indices, keyboard.led_indices, sizeof(old_indices));
+    CdXkbConfig bad = {0};
+    set_config(&bad, "evdev", "pc105", "chromedrive_no_such_led_layout", ",",
+               "grp_led:scroll");
+    CHECK(!cd_xkb_keyboard_reconfigure(&keyboard, &bad, NULL, &changed,
+                                       error, sizeof(error)),
+          "invalid LED reload is rejected");
+    CHECK(!changed && cd_xkb_keyboard_led_mask(&keyboard) == CD_XKB_LED_NUM_LOCK &&
+          memcmp(old_indices, keyboard.led_indices, sizeof(old_indices)) == 0,
+          "invalid reload retains active LED state and indices");
+
+    CdXkbConfig lock_config = {0};
+    set_config(&lock_config, "evdev", "pc105", "us", NULL, "");
+    CdXkbKeyboard locks = {.fd = -1};
+    CHECK(cd_xkb_keyboard_init(&locks, &lock_config, error, sizeof(error)), error);
+    if (locks.state) {
+        lock_key(&locks, KEY_CAPSLOCK);
+        CHECK(cd_xkb_keyboard_led_mask(&locks) == CD_XKB_LED_CAPS_LOCK,
+              "without grp_led, Caps Lock activates only the Caps LED");
+        lock_key(&locks, KEY_CAPSLOCK);
+        CHECK(cd_xkb_keyboard_led_mask(&locks) == 0,
+              "second Caps Lock deactivates the ordinary Caps LED");
+    }
+    cd_xkb_keyboard_finish(&locks);
+    cd_xkb_config_clear(&lock_config);
+    cd_xkb_keyboard_finish(&keyboard);
+    cd_xkb_config_clear(&bad);
+    cd_xkb_config_clear(&next);
+    cd_xkb_config_clear(&config);
+}
+
 static void clear_default_env(void)
 {
     unsetenv("XKB_DEFAULT_RULES");
@@ -50,6 +138,7 @@ static void clear_default_env(void)
 
 int main(void)
 {
+    test_led_mask();
     clear_default_env();
     setenv("XKB_DEFAULT_LAYOUT", "us,ru", 1);
     setenv("XKB_DEFAULT_OPTIONS", "grp:alt_shift_toggle", 1);
@@ -218,6 +307,6 @@ int main(void)
     cd_xkb_config_clear(&bad);
     cd_xkb_config_clear(&next);
     if (failures) return 1;
-    puts("PASS: XKB RMLVO/env defaults, multiple groups, grp switching, held-key chord replay, sealed fd and invalid-reload rollback");
+    puts("PASS: XKB RMLVO/env defaults, multiple groups, grp switching/LEDs, lock LEDs, held-key replay, sealed fd and invalid-reload rollback");
     return 0;
 }

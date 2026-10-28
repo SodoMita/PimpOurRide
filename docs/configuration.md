@@ -451,6 +451,16 @@ from a list hardcoded into ChromeDrive. The compositor applies one map to its
 single seat; per-physical-device maps, input-method protocols, and Sway-style
 layout IPC are outside this initial scope.
 
+Standard `grp_led:num`, `grp_led:caps`, and `grp_led:scroll` options can show
+the alternative group on a physical keyboard. ChromeDrive derives all five
+usual indicators (Num Lock, Caps Lock, Scroll Lock, Compose, and Kana) from
+the live XKB state rather than duplicating group or lock policy. It writes
+only LEDs advertised by each evdev device, synchronizes every writable
+keyboard on the seat, and avoids redundant packets when the relevant state
+has not changed. Startup, live keymap replacement, and VT resume synchronize
+the current state; VT release and shutdown clear the compositor-owned
+indicators before input is released.
+
 An **absent** key preserves normal libxkbcommon behavior: the corresponding
 `XKB_DEFAULT_RULES`, `XKB_DEFAULT_MODEL`, `XKB_DEFAULT_LAYOUT`,
 `XKB_DEFAULT_VARIANT`, or `XKB_DEFAULT_OPTIONS` environment value is used, then
@@ -473,6 +483,15 @@ serialization, or fd allocation fails, the diagnostic is printed and the
 previous working map remains active. An invalid explicit startup map falls back
 to environment/system defaults; an invalid live reload never does.
 
+Evdev nodes are opened read/write when permitted so the same descriptor can
+return `EV_LED` events without a path-reopen race. If only read access is
+available, keyboard input still works and a one-time diagnostic explains that
+write access is required for XKB/`grp_led` indicators. Unsupported or
+nonblocking-temporarily-unwritable LED output never disables keys or blocks
+the compositor. The regression suite checks the exact `EV_LED` packet stream
+and lifecycle; keyboard firmware and physical DRM/VT hardware still require
+target-machine testing.
+
 Compositor shortcuts and vehicle controls remain based on physical evdev codes:
 WASD/arrows, Meta+O, F8, and the other global actions do not move when the
 active XKB group changes. Every physical key event updates XKB, even when a
@@ -485,7 +504,9 @@ and keysym shortcuts do follow the selected layout. `make test` includes both
 pure XKB tests and a real libwayland client/server test for live broadcasts,
 group switching with and without focus, consumed group chords, physical
 shortcuts, held-key release, rollback, late binding, and invalid-startup
-fallback.
+fallback. The production evdev harness additionally checks exact LED packets,
+per-device capabilities, read-only fallback, multiple keyboards, live map
+replacement, and VT suspend/resume/shutdown synchronization.
 
 `backend = drm` opens `drm_device` (default `/dev/dri/card0`) with DRM-master
 access, selects a connected connector/compatible CRTC, and creates a GBM
