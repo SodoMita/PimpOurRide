@@ -594,25 +594,50 @@ static void render_door_interior(int side) {
  glPopMatrix();
 }
 
+/* Fixed dark weather seal around the actual empty aperture. */
+static void render_door_seams(int side) {
+ glDisable(GL_LIGHTING);ev_color(0.008f, 0.011f, 0.018f);glLineWidth(3.0f);
+ hull_seam(VEHICLE_DOOR_U0, VEHICLE_DOOR_V0, VEHICLE_DOOR_U0, VEHICLE_DOOR_V1, side);
+ hull_seam(VEHICLE_DOOR_U0, VEHICLE_DOOR_V0, VEHICLE_DOOR_U1, VEHICLE_DOOR_V0, side);
+ hull_seam(VEHICLE_DOOR_U1, VEHICLE_DOOR_V0, VEHICLE_DOOR_U1, VEHICLE_DOOR_V1, side);
+ hull_seam(VEHICLE_DOOR_U0, VEHICLE_DOOR_V1, VEHICLE_DOOR_U1, VEHICLE_DOOR_V1, side);
+ float cu0 = (VEHICLE_DOOR_U0 - 0.26f) / 0.64f;
+ float cu1 = (VEHICLE_DOOR_U1 - 0.26f) / 0.64f;
+ canopy_seam(cu0, 0, cu0, VEHICLE_DOOR_CANOPY_V1, side);
+ canopy_seam(cu1, 0, cu1, VEHICLE_DOOR_CANOPY_V1, side);
+ canopy_seam(cu0, 0, cu1, 0, side);
+ canopy_seam(cu0, VEHICLE_DOOR_CANOPY_V1, cu1, VEHICLE_DOOR_CANOPY_V1, side);
+ glLineWidth(1.0f);glEnable(GL_LIGHTING);
+}
+
+/* A door is a rigid assembly in door-local space. The hinge pose lives in the
+ * matrix above it (door_gl_transform) and the open flag only selects whether
+ * the occluded inner face is drawn, so the shell, canopy frame, handle and
+ * interior are immutable per (side, open) and belong in a display list like
+ * the fixed hull. Rebuilding them every frame re-evaluated the hull spline for
+ * every vertex and was the single most expensive part of the cockpit. */
+static void render_door_assembly(int side, bool open) {
+ render_door_shell(side, open);
+ render_door_canopy_structure(side);
+ render_door_handle(side);render_door_interior(side);
+}
+static GLuint door_lists[2][2],door_seam_lists[2];
+
 static void render_doors(Server *s) {
  for (int side = -1; side <= 1; side += 2) {
-  /* Fixed dark weather seal around the actual empty aperture. */
-  glDisable(GL_LIGHTING);ev_color(0.008f, 0.011f, 0.018f);glLineWidth(3.0f);
-  hull_seam(VEHICLE_DOOR_U0, VEHICLE_DOOR_V0, VEHICLE_DOOR_U0, VEHICLE_DOOR_V1, side);
-  hull_seam(VEHICLE_DOOR_U0, VEHICLE_DOOR_V0, VEHICLE_DOOR_U1, VEHICLE_DOOR_V0, side);
-  hull_seam(VEHICLE_DOOR_U1, VEHICLE_DOOR_V0, VEHICLE_DOOR_U1, VEHICLE_DOOR_V1, side);
-  hull_seam(VEHICLE_DOOR_U0, VEHICLE_DOOR_V1, VEHICLE_DOOR_U1, VEHICLE_DOOR_V1, side);
-  float cu0 = (VEHICLE_DOOR_U0 - 0.26f) / 0.64f;
-  float cu1 = (VEHICLE_DOOR_U1 - 0.26f) / 0.64f;
-  canopy_seam(cu0, 0, cu0, VEHICLE_DOOR_CANOPY_V1, side);
-  canopy_seam(cu1, 0, cu1, VEHICLE_DOOR_CANOPY_V1, side);
-  canopy_seam(cu0, 0, cu1, 0, side);
-  canopy_seam(cu0, VEHICLE_DOOR_CANOPY_V1, cu1, VEHICLE_DOOR_CANOPY_V1, side);
-  glLineWidth(1.0f);glEnable(GL_LIGHTING);
+  int si = side < 0 ? 0 : 1, oi = vehicle_door_open(&s->vehicle, side) > 0.001f ? 1 : 0;
+  /* The seal sits on the fixed aperture, not on the swinging leaf. */
+  if (!door_seam_lists[si]) {
+   GLuint l = glGenLists(1);
+   if (l) {glNewList(l, GL_COMPILE);render_door_seams(side);glEndList();door_seam_lists[si] = l;}
+  }
+  if (!door_lists[si][oi]) {
+   GLuint l = glGenLists(1);
+   if (l) {glNewList(l, GL_COMPILE);render_door_assembly(side, oi != 0);glEndList();door_lists[si][oi] = l;}
+  }
+  if (door_seam_lists[si]) glCallList(door_seam_lists[si]); else render_door_seams(side);
   glPushMatrix();door_gl_transform(&s->vehicle, side);
-  render_door_shell(side,vehicle_door_open(&s->vehicle,side)>0.001f);
-  render_door_canopy_structure(side);
-  render_door_handle(side);render_door_interior(side);
+  if (door_lists[si][oi]) glCallList(door_lists[si][oi]); else render_door_assembly(side, oi != 0);
   glPopMatrix();
  }
 }
@@ -1348,5 +1373,11 @@ void vehicle_scene_finish(void){
  for(int side=0;side<2;side++)for(int moving=0;moving<2;moving++){
   if(canopy_glass_lists[side][moving])glDeleteLists(canopy_glass_lists[side][moving],1);
   canopy_glass_lists[side][moving]=0;
+  if(door_lists[side][moving])glDeleteLists(door_lists[side][moving],1);
+  door_lists[side][moving]=0;
+ }
+ for(int side=0;side<2;side++){
+  if(door_seam_lists[side])glDeleteLists(door_seam_lists[side],1);
+  door_seam_lists[side]=0;
  }
 }
