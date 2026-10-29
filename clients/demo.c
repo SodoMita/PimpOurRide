@@ -303,7 +303,22 @@ int main(int argc,char **argv){
  a.surface=wl_compositor_create_surface(a.compositor);a.xdg=xdg_wm_base_get_xdg_surface(a.wm,a.surface);xdg_surface_add_listener(a.xdg,&xdg_listener,&a);a.top=xdg_surface_get_toplevel(a.xdg);xdg_toplevel_add_listener(a.top,&top_listener,&a);char app_id[100];snprintf(app_id,sizeof(app_id),"chromedrive.%s",mode);xdg_toplevel_set_app_id(a.top,app_id);xdg_toplevel_set_title(a.top,a.mode==0?tr("Files"):a.mode==1?tr("Audio / UI demo"):a.mode==2?tr("Meters"):tr("EV Instrument Cluster"));wl_surface_commit(a.surface);wl_display_roundtrip(a.display);
  double last=now();while(a.running&&!stop){
   while(wl_display_prepare_read(a.display)!=0)if(wl_display_dispatch_pending(a.display)<0)goto done;
-  wl_display_flush(a.display);struct pollfd fd={.fd=wl_display_get_fd(a.display),.events=POLLIN};int ret=poll(&fd,1,25);if(ret>0&&(fd.revents&POLLIN)){if(wl_display_read_events(a.display)<0)break;}else wl_display_cancel_read(a.display);if(ret<0&&errno!=EINTR)break;if(wl_display_dispatch_pending(a.display)<0)break;
+  wl_display_flush(a.display);struct pollfd fd={.fd=wl_display_get_fd(a.display),.events=POLLIN};
+  /* Wake when the next frame is actually due, not on a fixed 25 ms quantum.
+   * The animated modes redraw on a 60/90 ms clock, so a coarse timeout rounded
+   * every period up to the next tick (75/100 ms) and silently throttled them
+   * below their intended rate. Dirty one-shot modes poll with a zero timeout so
+   * the redraw lands in this iteration. */
+  int timeout=25;
+  if(a.frame_ready&&a.configured){
+   double period=a.mode==1?0.09:a.mode==3?0.06:0.0;
+   if(period>0.0){
+    double due=a.last_draw+period-now();
+    timeout=due<=0.0?0:(int)ceil(due*1000.0)+1;
+    if(timeout>25)timeout=25;
+   }else if(a.dirty)timeout=0;
+  }
+  int ret=poll(&fd,1,timeout);if(ret>0&&(fd.revents&POLLIN)){if(wl_display_read_events(a.display)<0)break;}else wl_display_cancel_read(a.display);if(ret<0&&errno!=EINTR)break;if(wl_display_dispatch_pending(a.display)<0)break;
   double current=now(),dt=current-last;last=current;if(a.mode==1&&a.playing){a.progress+=dt;if(a.progress>195){a.progress=0;a.track=(a.track+1)%4;}}
   if(a.mode==2&&current-a.last_metric>.5){read_metrics(&a);a.last_metric=current;a.dirty=true;}
   if(a.configured&&a.frame_ready&&(a.dirty||(a.mode==1&&current-a.last_draw>.09)||(a.mode==3&&current-a.last_draw>.06)))draw(&a,current-a.started);
