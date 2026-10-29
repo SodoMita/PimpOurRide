@@ -3,7 +3,17 @@ PKGS = wayland-server sdl2 egl gl cairo xkbcommon libvncserver libwebp libdrm gb
 CPPFLAGS += -Iinclude -I.generated $(shell pkg-config --cflags $(PKGS))
 CFLAGS ?= -O2 -g
 CFLAGS += -std=c11 -Wall -Wextra -Wno-unused-parameter -Wno-misleading-indentation -pthread
-LDLIBS = $(shell pkg-config --libs $(PKGS)) -lm -pthread
+# glvnd's libGL leaves its internal _glapi_tls_Current reference to
+# libGLdispatch. On hosts whose dynamic-linker search path also contains a
+# vendor libGLdispatch that does not export that symbol (e.g. NVIDIA's
+# /usr/lib64-nvidia), plain `-lGL` fails at link time with "undefined
+# reference to _glapi_tls_Current". -rpath-link makes the linker resolve
+# libGL's own DT_NEEDED from the libdir pkg-config reports for gl, without
+# adding a hard dependency on libGLdispatch (which non-glvnd Mesa lacks).
+comma := ,
+GL_LIBDIR := $(shell pkg-config --variable=libdir gl 2>/dev/null)
+GL_LINK_DIR := $(if $(GL_LIBDIR),-Wl$(comma)-rpath-link$(comma)$(GL_LIBDIR))
+LDLIBS = $(shell pkg-config --libs $(PKGS)) $(GL_LINK_DIR) -lm -pthread
 PROTO_DIR := $(shell pkg-config --variable=pkgdatadir wayland-protocols)
 GEN = .generated
 BIN = bin
